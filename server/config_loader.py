@@ -92,15 +92,14 @@ def load_config(config_path: Optional[str] = None) -> Dict:
 
             # Fixed sensors (reference positions)
             if 'fixed_sensors' in ha_options:
-                # Check if it's a string and try to parse it as JSON
-                if isinstance(ha_options['fixed_sensors'], str) and ha_options['fixed_sensors'].strip():
-                    try:
+                # It's now definitely a string, so parse it as JSON
+                try:
+                    if isinstance(ha_options['fixed_sensors'], str) and ha_options['fixed_sensors'].strip():
                         config['fixed_sensors'] = json.loads(ha_options['fixed_sensors'])
-                    except json.JSONDecodeError:
-                        logger.error("Failed to parse fixed_sensors as JSON, using empty dict")
+                    else:
                         config['fixed_sensors'] = {}
-                else:
-                    # If it's not a string or empty, use an empty dict
+                except json.JSONDecodeError:
+                    logger.error("Failed to parse fixed_sensors as JSON, using empty dict")
                     config['fixed_sensors'] = {}
             else:
                 config['fixed_sensors'] = {}
@@ -111,11 +110,9 @@ def load_config(config_path: Optional[str] = None) -> Dict:
         except Exception as e:
             logger.error(f"Failed to load HA options: {str(e)}")
 
-    # Debug output (only log config structure, not sensitive values)
-    safe_config = {**config}
-    if 'db' in safe_config and 'password' in safe_config['db']:
-        safe_config['db'] = {**safe_config['db'], 'password': '***'}
-    logger.debug(f"Final config structure: {json.dumps(safe_config, default=str)}")
+    # Debug output - REMOVE database masking
+    # Just log the entire config structure without any special handling for DB
+    logger.debug(f"Final config structure: {json.dumps(config, default=str)}")
 
     return config
 

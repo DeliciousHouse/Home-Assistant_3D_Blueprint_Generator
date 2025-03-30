@@ -1,11 +1,4 @@
 {
-  "db": {
-    "host": "core-mariadb",
-    "port": 3306,
-    "user": "",
-    "password": "",
-    "database": "homeassistant"
-  },
   "processing_params": {
     "rssi_threshold": -85,
     "minimum_sensors": 2,
