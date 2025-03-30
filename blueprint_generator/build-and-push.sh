@@ -11,37 +11,37 @@ else
   exit 1
 fi
 
-# Get current version from config.yaml one directory up
-CURRENT_VERSION=$(grep 'version:' ../config.yaml | sed 's/.*"\([0-9.]*\)".*/\1/')
+# Get current version from config.yaml in CURRENT directory
+CURRENT_VERSION=$(grep 'version:' config.yaml | sed 's/.*"\([0-9.]*\)".*/\1/')
 echo "Current version: $CURRENT_VERSION"
 
 # Increment version by 0.01
 NEW_VERSION=$(awk -v ver="$CURRENT_VERSION" 'BEGIN { printf("%.2f", ver + 0.01) }')
 echo "New version: $NEW_VERSION"
 
-# Update version in config.yaml (one directory up)
-sed -i "s/version: \"$CURRENT_VERSION\"/version: \"$NEW_VERSION\"/" ../config.yaml
+# Update version in config.yaml (current directory)
+sed -i "s/version: \"$CURRENT_VERSION\"/version: \"$NEW_VERSION\"/" config.yaml
 
-# Update repository.json in parent directory
-cd ..
-if [ -f repository.json ]; then
-    echo "Updating repository.json..."
-    # Update root version
-    sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" repository.json
-    # Update addon version
-    sed -i "s/\"version\": \"$CURRENT_VERSION\",/\"version\": \"$NEW_VERSION\",/" repository.json
-else
-    echo "Warning: repository.json not found in root directory."
-fi
-
-# Update build.yaml in blueprint_generator directory
-cd blueprint_generator
+# Update version in build.yaml
 if [ -f build.yaml ]; then
     echo "Updating build.yaml..."
     sed -i "s/org.opencontainers.image.version: \"$CURRENT_VERSION\"/org.opencontainers.image.version: \"$NEW_VERSION\"/" build.yaml
 else
     echo "Warning: build.yaml not found."
 fi
+
+# Update repository.json in parent directory
+cd ..
+if [ -f repository.json ]; then
+    echo "Updating repository.json..."
+    # Update the version in the repository.json for the blueprint_generator add-on
+    sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" repository.json
+else
+    echo "Warning: repository.json not found in root directory."
+fi
+
+# Go back to add-on directory
+cd blueprint_generator
 
 # Set version for building
 VERSION=$NEW_VERSION
@@ -62,16 +62,8 @@ echo "$GITHUB_TOKEN" | docker login ghcr.io -u DeliciousHouse --password-stdin
 docker push ghcr.io/delicioushouse/blueprint-generator-amd64:$VERSION
 docker push ghcr.io/delicioushouse/blueprint-generator-amd64:latest
 
-# Add all changes in blueprint_generator directory
-git config --local credential.helper store
-git config --local credential.username DeliciousHouse
-{
-  echo "url=https://github.com"
-  echo "username=DeliciousHouse"
-  echo "password=${GITHUB_TOKEN}"
-  echo ""
-} | git credential approve
-
+# Add all changes
+cd ..  # Go to repository root
 git add -A
 git commit -m "Update Blueprint Generator to version $VERSION"
 git push origin main

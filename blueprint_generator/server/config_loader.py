@@ -30,9 +30,10 @@ def load_config(config_path: Optional[str] = None) -> Dict:
         except Exception as e:
             logger.error(f"Failed to load config from {config_path}: {str(e)}")
 
-    # 2. Try to load the config.yaml file from one directory level up
+    # 2. Try to load the config.yaml file from one directory level up (not two)
+    # The config.yaml is now in the blueprint_generator directory
     root_config_path = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                       '..', '..', 'config.yaml'))
+                                       '..', 'config.yaml'))
     if root_config_path.exists():
         try:
             with open(root_config_path, 'r') as f:
@@ -65,34 +66,46 @@ def load_config(config_path: Optional[str] = None) -> Dict:
                 ha_options = json.load(f)
             logger.info(f"Loaded HA options from {ha_options_path}")
 
-            # Map HA options to internal config structure
-            if 'db' not in config:
-                config['db'] = {}
-
-            # Map database options
-            config['db']['host'] = ha_options.get('db_host', config['db'].get('host'))
-            config['db']['port'] = ha_options.get('db_port', config['db'].get('port'))
-            config['db']['database'] = ha_options.get('db_database', config['db'].get('database'))
-            config['db']['user'] = ha_options.get('db_user', config['db'].get('user'))
-            config['db']['password'] = ha_options.get('db_password', config['db'].get('password', ''))
-
-            # Add fixed_sensors directly (keep this structure)
-            config['fixed_sensors'] = ha_options.get('fixed_sensors', {})
-
-            # Add processing parameters
+            # Initialize config sections if they don't exist
             if 'processing_params' not in config:
                 config['processing_params'] = {}
 
-            config['processing_params']['rssi_threshold'] = ha_options.get('min_rssi',
-                config['processing_params'].get('rssi_threshold', -85))
-            config['processing_params']['update_interval'] = ha_options.get('update_interval',
+            if 'blueprint_validation' not in config:
+                config['blueprint_validation'] = {}
+
+            if 'ai_settings' not in config:
+                config['ai_settings'] = {}
+
+            # Map the new options structure
+
+            # Processing parameters
+            config['processing_params']['update_interval'] = ha_options.get('processing_interval',
                 config['processing_params'].get('update_interval', 300))
+
+            # AI settings
+            config['ai_settings']['enable_refinement'] = ha_options.get('enable_ai_refinement',
+                config['ai_settings'].get('enable_refinement', True))
+
+            # Room detection settings
+            config['room_detection'] = {
+                'use_areas': ha_options.get('use_room_areas', True)
+            }
+
+            # Fixed sensors (reference positions)
+            config['fixed_sensors'] = ha_options.get('fixed_sensors', {})
+
+            # Log level
+            config['log_level'] = ha_options.get('log_level', 'info')
 
         except Exception as e:
             logger.error(f"Failed to load HA options: {str(e)}")
 
-    # Debug output
-    logger.debug(f"Final config: {json.dumps(config, default=str)}")
+    # Debug output (only log config structure, not sensitive values)
+    safe_config = {**config}
+    if 'db' in safe_config and 'password' in safe_config['db']:
+        safe_config['db'] = {**safe_config['db'], 'password': '***'}
+    logger.debug(f"Final config structure: {json.dumps(safe_config, default=str)}")
+
     return config
 
 def _merge_configs(target, source):

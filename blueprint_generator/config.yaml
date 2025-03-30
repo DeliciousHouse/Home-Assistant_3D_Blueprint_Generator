@@ -1,0 +1,46 @@
+# config.yaml
+name: 3D Blueprint Generator
+version: "1.79"
+slug: blueprint_generator
+description: Generates 3D blueprints using BLE sensors and Home Assistant data
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+init: false
+startup: application
+boot: auto
+
+# Default values
+options:
+  log_level: info
+  processing_interval: 300
+  enable_ai_refinement: true
+  use_room_areas: true
+  fixed_sensors: {}
+
+# Schema for configuration UI
+schema:
+  log_level: list(trace|debug|info|notice|warning|error|fatal)
+  processing_interval: int(60,3600)
+  enable_ai_refinement: bool
+  use_room_areas: bool
+  fixed_sensors: "dict(str, dict(x=float, y=float, z=float))"
+
+# Container and network configuration
+map:
+  - data:rw
+# Expose the API port
+ports:
+  '5000/tcp': 5000
+ports_description:
+  '5000/tcp': 'Web interface/API port'
+
+# UI Configuration
+ingress: true
+ingress_port: 5000
+panel_icon: mdi:floor-plan
+panel_title: "3D Blueprint Generator"
+webui: "http://[HOST]:[PORT:5000]/"

@@ -1,44 +1,14 @@
 {
-  "name": "Home Assistant 3D Blueprint Generator Repository",
+  "name": "3D Blueprint Generator Repository",
   "url": "https://github.com/delicioushouse/home-assistant_3d_blueprint_generator",
-  "maintainer": "brendan3394@gmail.com",
-  "slug": "blueprint_generator_repository",
-  "version": "1.78",
+  "maintainer": "Brendan Kam <brendan3394@gmail.com>",
   "addons": [
     {
       "name": "3D Blueprint Generator",
-      "version": "1.78",
       "slug": "blueprint_generator",
-      "description": "Generate 3D home blueprints from Bluetooth sensor data",
-      "url": "https://github.com/delicioushouse/home-assistant_3d_blueprint_generator",
-      "arch": [
-        "armhf",
-        "armv7",
-        "aarch64",
-        "amd64",
-        "i386"
-      ],
-      "startup": "application",
-      "boot": "auto",
-      "options": {
-        "database_host": "core-mariadb",
-        "database_port": 3306,
-        "database_name": "homeassistant",
-        "database_username": "homeassistant",
-        "database_password": null,
-        "min_rssi": -75,
-        "update_interval": 5
-      },
-      "schema": {
-        "database_host": "str",
-        "database_port": "port",
-        "database_name": "str",
-        "database_username": "str",
-        "database_password": "str",
-        "min_rssi": "int",
-        "update_interval": "int"
-      },
-      "image": "ghcr.io/delicioushouse/blueprint-generator-{arch}"
+      "description": "Generates 3D blueprints using BLE sensors and Home Assistant data",
+      "version": "1.79",
+      "arch": ["aarch64", "amd64", "armhf", "armv7", "i386"]
     }
   ]
 }
