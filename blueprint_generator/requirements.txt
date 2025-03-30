@@ -13,7 +13,7 @@ gunicorn==20.1.0
 websocket-client==1.2.1
 
 # ML/AI dependencies
-tensorflow==2.8.0
+tensorflow==2.12.1
 pandas==1.3.5
 matplotlib==3.5.1
 joblib==1.1.0
