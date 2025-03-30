@@ -11,7 +11,7 @@ else
   exit 1
 fi
 
-# Get current version from config.yaml in CURRENT directory
+# Get current version from config.yaml
 CURRENT_VERSION=$(grep 'version:' config.yaml | sed 's/.*"\([0-9.]*\)".*/\1/')
 echo "Current version: $CURRENT_VERSION"
 
@@ -19,24 +19,27 @@ echo "Current version: $CURRENT_VERSION"
 NEW_VERSION=$(awk -v ver="$CURRENT_VERSION" 'BEGIN { printf("%.2f", ver + 0.01) }')
 echo "New version: $NEW_VERSION"
 
-# Update version in config.yaml (current directory)
+# Update version in config.yaml - using more specific pattern
 sed -i "s/version: \"$CURRENT_VERSION\"/version: \"$NEW_VERSION\"/" config.yaml
+echo "Updated config.yaml to version $NEW_VERSION"
 
-# Update version in build.yaml if it exists
+# Update repository.json
+if [ -f repository.json ]; then
+    echo "Updating repository.json..."
+    # More precise pattern to update version in repository.json
+    sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" repository.json
+    echo "Updated repository.json to version $NEW_VERSION"
+else
+    echo "Warning: repository.json not found."
+fi
+
+# Update build.yaml if it exists
 if [ -f build.yaml ]; then
     echo "Updating build.yaml..."
     sed -i "s/org.opencontainers.image.version: \"$CURRENT_VERSION\"/org.opencontainers.image.version: \"$NEW_VERSION\"/" build.yaml
+    echo "Updated build.yaml to version $NEW_VERSION"
 else
     echo "Warning: build.yaml not found."
-fi
-
-# Update repository.json in current directory
-if [ -f repository.json ]; then
-    echo "Updating repository.json..."
-    # Update the version in the repository.json
-    sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" repository.json
-else
-    echo "Warning: repository.json not found."
 fi
 
 # Set version for building
@@ -44,6 +47,7 @@ VERSION=$NEW_VERSION
 echo "Building version $VERSION"
 
 # Build the image
+echo "Building Docker image..."
 docker build --platform linux/amd64 -t blueprint-generator:$VERSION .
 
 # Tag for GitHub
@@ -55,10 +59,12 @@ echo "Logging in to GitHub Container Registry..."
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u DeliciousHouse --password-stdin
 
 # Push images
+echo "Pushing images to GitHub Container Registry..."
 docker push ghcr.io/delicioushouse/blueprint-generator-amd64:$VERSION
 docker push ghcr.io/delicioushouse/blueprint-generator-amd64:latest
 
 # Add all changes to git
+echo "Committing changes to git..."
 git add -A
 git commit -m "Update Blueprint Generator to version $VERSION"
 git push origin main
