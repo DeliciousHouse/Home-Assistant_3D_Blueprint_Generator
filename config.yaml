@@ -1,6 +1,6 @@
 # config.yaml
 name: 3D Blueprint Generator
-version: "1.80"
+version: "1.81"
 slug: blueprint_generator
 description: Generates 3D blueprints using BLE sensors and Home Assistant data
 arch:

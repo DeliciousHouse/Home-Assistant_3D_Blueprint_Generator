@@ -42,23 +42,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract version from config.yaml
+        id: config_version
+        run: |
+          VERSION=$(grep 'version:' config.yaml | sed 's/.*"\([0-9.]*\)".*/\1/')
+          echo "config_version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Extracted version: ${VERSION}"
+
       - name: Get version and lowercase owner
         id: prep
         run: |
-          version="${{ github.ref_name }}"
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            version="edge"
-          elif [[ "${{ github.ref }}" != refs/tags/* ]]; then
+            # Use version from config.yaml for main branch
+            version="${{ steps.config_version.outputs.config_version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # Use tag version if this is a tag
+            version="${{ github.ref_name }}"
+            version=${version#v}  # Remove 'v' prefix if present
+          else
+            # For PRs and other branches
             version="dev"
           fi
-          echo "version=${version#v}" >> $GITHUB_OUTPUT
+
+          echo "version=${version}" >> $GITHUB_OUTPUT
           echo "owner=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+          echo "Building version: ${version}"
 
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
-          context: ./blueprint_generator
-          file: ./blueprint_generator/Dockerfile
+          context: .  # Use root context now (no subdirectory)
+          file: ./Dockerfile  # Dockerfile is in the root now
           platforms: linux/${{ matrix.arch }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
@@ -68,3 +82,18 @@ jobs:
             BUILD_VERSION=${{ steps.prep.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Update repository.json version
+        if: github.ref == 'refs/heads/main'
+        run: |
+          VERSION="${{ steps.prep.outputs.version }}"
+          if [ -f "repository.json" ]; then
+            sed -i "s/\"version\": \"[0-9.]*\"/\"version\": \"${VERSION}\"/" repository.json
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            git add repository.json
+            git commit -m "Update version to ${VERSION} in repository.json" || echo "No changes to commit"
+            git push || echo "No changes to push"
+          else
+            echo "Warning: repository.json not found"
+          fi
