@@ -9,36 +9,67 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
 from .ai_processor import AIProcessor
-from .db import get_sqlite_connection, get_reference_positions_from_sqlite
+from .db import get_sqlite_connection, get_reference_positions_from_sqlite, save_device_position_to_sqlite
 
 logger = logging.getLogger(__name__)
 
 class BluetoothProcessor:
     """Process Bluetooth signals for position estimation."""
 
-    def __init__(self, config_path: Optional[str] = None):
-        """Initialize the Bluetooth processor with configuration."""
-        from .config_loader import load_config  # Change from .config to .config_loader
+    def __init__(self, config_path=None):
+        """Initialize the Bluetooth processor.
 
-        # Load configuration
+        Args:
+            config_path: Optional path to configuration file. If None, will load default config.
+        """
+        # Import and load configuration
+        from .config_loader import load_config
         self.config = load_config(config_path)
+
+        # Extract what we need from config
+        self.fixed_sensors = self.config.get('fixed_sensors', {})
+        self.rssi_threshold = self.config.get('processing_params', {}).get('rssi_threshold', -85)
 
         # Set processing parameters
         self.reference_power = self.config.get('processing_params', {}).get('distance_calculation', {}).get('reference_power', -65)
         self.path_loss_exponent = self.config.get('processing_params', {}).get('distance_calculation', {}).get('path_loss_exponent', 2.8)
-        self.rssi_threshold = self.config.get('processing_params', {}).get('rssi_threshold', -85)
         self.minimum_sensors = self.config.get('processing_params', {}).get('minimum_sensors', 3)
         self.accuracy_threshold = self.config.get('processing_params', {}).get('accuracy_threshold', 2.0)
 
         # Load fixed scanner locations from config
-        self.scanner_locations = {}
-        if 'fixed_sensors' in self.config:
-            self.scanner_locations = self.config['fixed_sensors']
-            logger.info(f"Loaded {len(self.scanner_locations)} fixed scanner locations from config")
+        self.scanner_locations = self.config.get('fixed_sensors', {})
+        logger.info(f"Loaded {len(self.scanner_locations)} fixed scanner locations from config")
 
         # Initialize AI processor for ML-based distance estimation
         self.ai_processor = AIProcessor(config_path)
         self.use_ml_distance = self.config.get('processing_params', {}).get('use_ml_distance', True)
+
+        # Load additional reference positions from database
+        self.load_reference_positions()
+
+    def load_reference_positions(self):
+        """Load fixed reference positions from the database."""
+        try:
+            logger.info("Loading fixed reference positions from database")
+
+            # Use the function from db to get reference positions
+            db_scanner_positions = get_reference_positions_from_sqlite()
+
+            # Update the scanner_locations dictionary
+            if db_scanner_positions:
+                # Add or update positions from database
+                for scanner_id, position in db_scanner_positions.items():
+                    if scanner_id not in self.scanner_locations:
+                        self.scanner_locations[scanner_id] = position
+                logger.info(f"Loaded {len(db_scanner_positions)} reference positions from database")
+                return True
+            else:
+                logger.warning("No reference positions found in database")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error loading reference positions: {e}")
+            return False
 
     def process_bluetooth_sensors(self) -> Dict:
         """Process Bluetooth signals from Home Assistant to determine device positions."""
@@ -47,41 +78,19 @@ class BluetoothProcessor:
         try:
             logger.info("Starting Bluetooth sensor processing from Home Assistant")
 
-            # Get all sensor entities from HA (expanded version that includes all sensors)
+            # Get all sensor entities from HA
             ha_client = HomeAssistantClient()
             all_sensors = ha_client.get_sensor_entities()
 
             logger.info(f"Fetched {len(all_sensors)} total sensors")
 
-            # Start with scanner locations from config (primary source)
-            scanner_locations = self.scanner_locations.copy()
-            logger.info(f"Using {len(scanner_locations)} scanner locations from config")
-
-            # Supplement with locations from database only if needed
-            if len(scanner_locations) < 3:
-                try:
-                    db_scanner_positions = get_reference_positions_from_sqlite()
-                    logger.info(f"Found {len(db_scanner_positions)} additional scanner positions in database")
-
-                    # Add positions from database that aren't already in config
-                    for scanner_id, position in db_scanner_positions.items():
-                        if scanner_id not in scanner_locations:
-                            scanner_locations[scanner_id] = position
-                except Exception as e:
-                    logger.error(f"Error loading scanner positions from database: {e}")
-
             # Initialize tracking structures
             distance_readings = {}     # {device_id: [{'scanner_id': scanner_name, 'distance': value}, ...]}
             device_positions = {}      # Final positions after processing
             device_groups = {}         # Group other BLE readings by device
-            direct_distance_readings = {}  # For compatibility with existing code
-
-            # Process all sensors to find distance readings
-            bermuda_count = 0
+            device_area_ids = {}       # Store area_id by device_id
 
             # First, collect all direct position readings and area_ids
-            device_area_ids = {}  # Store area_id by device_id
-
             for entity in all_sensors:
                 entity_id = entity.get('entity_id', '')
                 state = entity.get('state', '')
@@ -129,7 +138,8 @@ class BluetoothProcessor:
                     except (ValueError, TypeError) as e:
                         logger.warning(f"Error processing position for {device_id}: {e}")
 
-            # Next, process Bermuda distance readings
+            # Process Bermuda distance readings
+            bermuda_count = 0
             for entity in all_sensors:
                 entity_id = entity.get('entity_id', '')
                 state = entity.get('state', '')
@@ -179,12 +189,10 @@ class BluetoothProcessor:
                     except (ValueError, TypeError) as e:
                         logger.warning(f"Error processing Bermuda distance for {device_id}: {e}")
 
-            # Finally, collect RSSI readings and group by device
+            # Collect RSSI readings as fallback
             for entity in all_sensors:
                 entity_id = entity.get('entity_id', '')
                 attrs = entity.get('attributes', {})
-
-                # Extract device ID
                 device_id = entity.get('device_id')
 
                 # Skip if we already have position or Bermuda readings for this device
@@ -232,9 +240,9 @@ class BluetoothProcessor:
                         distance = reading['distance']
 
                         # Get scanner position from collected locations
-                        if scanner_id in scanner_locations:
-                            scanner_pos = scanner_locations[scanner_id]
-                            scanner_positions.append((scanner_pos['x'], scanner_pos['y'], scanner_pos['z']))
+                        if scanner_id in self.scanner_locations:
+                            scanner_pos = self.scanner_locations[scanner_id]
+                            scanner_positions.append((scanner_pos['x'], scanner_pos['y'], scanner_pos.get('z', 0)))
                             scanner_distances.append(distance)
 
                     # Need at least 3 valid readings with known scanner positions
@@ -264,12 +272,10 @@ class BluetoothProcessor:
                     rssi = data['rssi']
 
                     # Get the scanner ID - try to find which scanner this entity belongs to
-                    # This is a simplification - in a real implementation you'd need a
-                    # more robust way to determine which scanner reported each RSSI reading
                     scanner_id = entity_id.replace('sensor.', '')
 
                     # Only use readings from known scanners
-                    if scanner_id in scanner_locations:
+                    if scanner_id in self.scanner_locations:
                         rssi_readings[scanner_id] = rssi
 
                 # Calculate position from RSSI readings
@@ -277,16 +283,6 @@ class BluetoothProcessor:
                     position = self.calculate_device_position(device_id, rssi_readings)
                     if position:
                         device_positions[device_id] = position
-
-            # Add area names based on area_id
-            try:
-                if device_area_ids:
-                    # Add area_id to device positions if available
-                    for device_id, position in device_positions.items():
-                        if device_id in device_area_ids:
-                            position['area_id'] = device_area_ids[device_id]
-            except Exception as e:
-                logger.warning(f"Error adding area_ids to positions: {e}")
 
             # Save all collected device positions to the database
             if device_positions:
@@ -503,39 +499,26 @@ class BluetoothProcessor:
             return None
 
     def _save_device_positions_to_db(self, device_positions):
-        """Save device positions to database for blueprint generation (private method)."""
+        """Save device positions to database for blueprint generation."""
         try:
             count = 0
-            from .db import save_device_position_to_sqlite
-
             for device_id, position in device_positions.items():
-                if save_device_position_to_sqlite(device_id, position):
+                source = position.get('source', 'calculated')
+                accuracy = position.get('accuracy', 1.0)
+                area_id = position.get('area_id')
+
+                # Call db helper directly with all parameters
+                if save_device_position_to_sqlite(
+                    device_id,
+                    position,
+                    source=source,
+                    accuracy=accuracy,
+                    area_id=area_id
+                ):
                     count += 1
 
             logger.info(f"Saved {count}/{len(device_positions)} device positions to database")
             return count > 0
         except Exception as e:
             logger.error(f"Error saving device positions: {e}")
-            return False
-
-    def load_reference_positions(self):
-        """Load fixed reference positions from the database."""
-        try:
-            logger.info("Loading fixed reference positions from database")
-
-            # Use the function from db to get reference positions
-            from .db import get_reference_positions_from_sqlite
-            scanner_positions = get_reference_positions_from_sqlite()
-
-            # Update the scanner_locations dictionary
-            if scanner_positions:
-                self.scanner_locations.update(scanner_positions)
-                logger.info(f"Loaded {len(scanner_positions)} reference positions from database")
-                return True
-            else:
-                logger.warning("No reference positions found in database")
-                return False
-
-        except Exception as e:
-            logger.error(f"Error loading reference positions: {e}")
             return False

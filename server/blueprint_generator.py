@@ -10,7 +10,7 @@ from scipy.spatial import Delaunay
 
 from .bluetooth_processor import BluetoothProcessor
 from .ai_processor import AIProcessor
-from .db import save_blueprint_to_sqlite, execute_sqlite_query, execute_write_query
+from .db import save_blueprint_to_sqlite, execute_sqlite_query, execute_write_query, get_latest_blueprint_from_sqlite, get_device_positions_from_sqlite
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,6 @@ class BlueprintGenerator:
                 logger.warning("No rooms were detected. Cannot generate a blueprint.")
                 return None # Stop if still no rooms
 
-
             # 2. Generate Walls
             logger.info(f"Generating walls for {len(rooms)} rooms...")
             walls = self._generate_walls_geometric(rooms) # Use the geometric method
@@ -132,7 +131,6 @@ class BlueprintGenerator:
                 if not self._validate_blueprint(blueprint): # Validate minimal too
                      logger.error("Minimal blueprint also failed validation. Cannot proceed.")
                      return None
-
 
             # 6. Save and Cache
             logger.info(f"Saving final blueprint with {len(blueprint.get('rooms',[]))} rooms and {len(blueprint.get('walls',[]))} walls.")
@@ -625,7 +623,6 @@ class BlueprintGenerator:
                 return self.latest_generated_blueprint
 
             # Get from SQLite using helper function
-            from .db import get_latest_blueprint_from_sqlite
             blueprint = get_latest_blueprint_from_sqlite()
 
             if blueprint:
@@ -671,7 +668,6 @@ class BlueprintGenerator:
                 return False
 
             # Use helper function from db
-            from .db import save_blueprint_to_sqlite
             success = save_blueprint_to_sqlite(blueprint)
 
             if success:
@@ -688,63 +684,10 @@ class BlueprintGenerator:
     def get_device_positions_from_db(self):
         """Get the latest device positions from the SQLite database."""
         try:
-            from .db import get_sqlite_connection
-
-            # Get connection to SQLite
-            conn = get_sqlite_connection()
-            cursor = conn.cursor()
-
-            # Query for latest device positions
-            query = """
-            SELECT device_id, position_data, source, timestamp
-            FROM device_positions
-            ORDER BY timestamp DESC
-            LIMIT 100
-            """
-
-            cursor.execute(query)
-            results = cursor.fetchall()
-            conn.close()
-
-            # Process results
-            positions = {}
-            seen_devices = set()
-
-            for row in results:
-                device_id = row[0]
-                position_data = row[1]
-                source = row[2]
-
-                # Skip if we already have a position for this device
-                if device_id in seen_devices:
-                    continue
-
-                seen_devices.add(device_id)
-
-                # Parse position data
-                try:
-                    if position_data:
-                        if isinstance(position_data, str):
-                            position = json.loads(position_data)
-                        else:
-                            position = position_data
-
-                        # Ensure required fields exist
-                        if all(k in position for k in ['x', 'y', 'z']):
-                            positions[device_id] = {
-                                'x': float(position['x']),
-                                'y': float(position['y']),
-                                'z': float(position['z']),
-                                'accuracy': float(position.get('accuracy', 1.0)),
-                                'source': source or position.get('source', 'unknown'),
-                                'area_id': position.get('area_id')
-                            }
-                except (json.JSONDecodeError, TypeError) as e:
-                    logger.warning(f"Error parsing position data for {device_id}: {e}")
-
-            logger.info(f"Loaded {len(positions)} device positions from SQLite database")
-            return positions
-
+            # Use the helper function from db module
+            device_positions = get_device_positions_from_sqlite()
+            logger.info(f"Loaded {len(device_positions)} device positions from SQLite database")
+            return device_positions
         except Exception as e:
             logger.error(f"Error getting device positions from database: {e}")
             return {}

@@ -6,6 +6,7 @@ from typing import Dict, Optional
 from flask import Flask, jsonify, request, send_from_directory, render_template
 from flask_cors import CORS
 import os
+import random  # Added for random offsets in estimated scanner locations
 
 from .blueprint_generator import BlueprintGenerator
 from .bluetooth_processor import BluetoothProcessor
@@ -148,7 +149,7 @@ def scan_entities():
 def get_devices():
     """Get list of tracked devices."""
     try:
-        # Query unique device IDs from device_positions table instead of bluetooth_readings
+        # Query unique device IDs from device_positions table
         query = """
         SELECT DISTINCT device_id, MAX(timestamp) as last_seen
         FROM device_positions
@@ -794,10 +795,7 @@ def manage_sensor_locations():
     """Configure the locations of fixed sensors/reference points used for positioning."""
     try:
         if request.method == 'GET':
-            # Use SQLite helper function instead of execute_query
-            from .db import get_reference_positions_from_sqlite
-
-            # Get all fixed reference positions directly
+            # Use SQLite helper function
             reference_positions = get_reference_positions_from_sqlite()
 
             # Convert to the expected format
@@ -834,24 +832,27 @@ def manage_sensor_locations():
                     return jsonify({'error': 'Each position must have x, y, z coordinates'}), 400
 
             # Store sensors in database using SQLite helper directly
-            from .db import save_device_position_to_sqlite
             success_count = 0
 
             for sensor in sensors:
                 device_id = sensor['id']
                 position = sensor['position']
-                position['source'] = 'fixed_reference'
-                position['accuracy'] = sensor.get('accuracy', 1.0)
+                accuracy = sensor.get('accuracy', 1.0)
 
-                # Save to database using SQLite helper
-                result = save_device_position_to_sqlite(device_id, position)
+                # Save to database using SQLite helper with source='fixed_reference'
+                result = save_device_position_to_sqlite(
+                    device_id,
+                    position,
+                    source='fixed_reference',
+                    accuracy=accuracy
+                )
+
                 if result:
                     success_count += 1
                     logger.info(f"Configured fixed sensor: {device_id} at position {position}")
 
             # Update in-memory sensor locations in bluetooth processor
-            if hasattr(bluetooth_processor, 'load_reference_positions'):
-                bluetooth_processor.load_reference_positions()
+            bluetooth_processor.load_reference_positions()
 
             return jsonify({
                 'success': True,
@@ -861,6 +862,100 @@ def manage_sensor_locations():
 
     except Exception as e:
         logger.error(f"Sensor configuration failed: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/config/estimate_scanner_locations', methods=['GET'])
+def estimate_scanner_locations():
+    """Estimate scanner locations based on their assigned Home Assistant areas."""
+    try:
+        # Get all Home Assistant areas
+        areas = ha_client.get_areas()
+
+        # Find all potential scanner entities
+        scanner_entities = ha_client.find_entities_by_pattern(
+            ["bluetooth", "ble", "esp32"],
+            ["device_tracker", "sensor"]
+        )
+
+        logger.info(f"Found {len(areas)} areas and {len(scanner_entities)} potential scanner entities")
+
+        # Create a grid layout for areas (simple 2D grid)
+        area_coords = {}
+
+        # Assign sequential grid coordinates to areas
+        grid_size = 5.0  # 5 meters between area centers
+        cols = 3  # Default grid columns
+
+        for i, area in enumerate(areas):
+            row = i // cols
+            col = i % cols
+
+            area_coords[area['area_id']] = {
+                'x': col * grid_size,
+                'y': row * grid_size,
+                'z': 1.0,  # Default height
+                'name': area.get('name', f"Area {i}")
+            }
+
+        # Match scanners to areas and assign estimated coordinates
+        estimated_locations = {}
+
+        for entity in scanner_entities:
+            entity_id = entity.get('entity_id')
+            area_id = entity.get('area_id')
+
+            # Skip entities without area_id
+            if not area_id or area_id not in area_coords:
+                continue
+
+            # Use entity_id as scanner_id
+            scanner_id = entity_id.replace('sensor.', '').replace('device_tracker.', '')
+
+            # Get coordinates from area
+            coords = area_coords[area_id]
+
+            # Add some randomness to avoid exactly overlapping scanners in same area
+            x_offset = random.uniform(-0.5, 0.5)
+            y_offset = random.uniform(-0.5, 0.5)
+
+            estimated_locations[scanner_id] = {
+                'x': coords['x'] + x_offset,
+                'y': coords['y'] + y_offset,
+                'z': coords['z'],
+                'area_id': area_id,
+                'source': 'estimated',
+                'entity_id': entity_id
+            }
+
+        # Get existing scanner locations from database
+        existing_locations = get_reference_positions_from_sqlite()
+
+        # Merge existing with estimated (existing takes priority)
+        final_locations = estimated_locations.copy()
+
+        # Add existing locations that aren't in estimated
+        for scanner_id, position in existing_locations.items():
+            if scanner_id in final_locations:
+                # Mark existing scanners
+                final_locations[scanner_id]['source'] = 'database'
+                final_locations[scanner_id].update(position)
+            else:
+                position['source'] = 'database'
+                final_locations[scanner_id] = position
+
+        # Prepare output with additional metadata
+        result = {
+            'estimated_count': len(estimated_locations),
+            'database_count': len(existing_locations),
+            'final_count': len(final_locations),
+            'areas': {a['area_id']: a.get('name') for a in areas},
+            'scanner_locations': final_locations
+        }
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error estimating scanner locations: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/status', methods=['GET'])

@@ -8,21 +8,17 @@ from typing import Union
 
 # Use the standardized config loader
 try:
-    # Assuming config_loader.py is in the same directory (server/)
     from .config_loader import load_config
 except ImportError:
-    # Fallback if structure is different (e.g., config_loader is one level up)
     try:
-        from .config_loader import load_config
+        from config_loader import load_config
     except ImportError:
-        # Last resort: simple default
         def load_config(path=None): return {}
-        logger = logging.getLogger(__name__) # Need logger if fallback used
+        logger = logging.getLogger(__name__)
         logger.warning("Could not import config_loader. Using empty config.")
 
-
 logger = logging.getLogger(__name__)
-app_config = load_config() # Load config once when module is loaded
+app_config = load_config()
 
 SQLITE_DB_PATH = '/data/blueprint_data.db'
 
@@ -65,24 +61,22 @@ def init_sqlite_db():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_blueprints_created ON blueprints (created_at DESC);')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_blueprints_status ON blueprints (status);')
 
-        # --- Device Positions Table ---
+        # --- Area Observations Table (NEW) ---
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS device_positions (
+            CREATE TABLE IF NOT EXISTS area_observations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                device_id TEXT NOT NULL,
-                position_data TEXT NOT NULL, -- JSON: {'x':float, 'y':float, 'z':float, 'accuracy':float}
-                source TEXT NOT NULL,
-                accuracy REAL, -- Store separately for easier querying if needed
-                area_id TEXT,
-                timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP -- Store as ISO format string
+                timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Store as ISO format string
+                tracked_device_id TEXT NOT NULL,
+                predicted_area_id TEXT, -- Area ID predicted by Bermuda/Classifier
+                rssi_vector TEXT NOT NULL, -- JSON blob: {"scanner_id1": rssi1, "scanner_id2": rssi2, ...}
+                is_transition INTEGER DEFAULT 0 -- Flag: 1 if this marks a transition *into* predicted_area_id
             )
         ''')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_device_positions_timestamp ON device_positions (timestamp DESC);')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_device_positions_device ON device_positions (device_id, timestamp DESC);');
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_device_positions_source ON device_positions (source);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_obs_time ON area_observations (timestamp DESC);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_obs_device_area ON area_observations (tracked_device_id, predicted_area_id);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_obs_transition ON area_observations (is_transition, timestamp DESC);')
 
         # --- RSSI Distance Samples Table (for Training) ---
-        # Schema matches parameters in save_rssi_sample_to_sqlite
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS rssi_distance_samples (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,6 +125,22 @@ def init_sqlite_db():
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_feedback_timestamp ON ai_blueprint_feedback (timestamp DESC);')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_feedback_blueprint_id ON ai_blueprint_feedback (blueprint_id);')
+
+        # --- Device Positions Table ---
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS device_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                position_data TEXT NOT NULL, -- JSON blob with x, y, z
+                source TEXT NOT NULL,        -- 'fixed_reference', 'calculated', 'manual', etc.
+                accuracy REAL,               -- Estimated accuracy in meters
+                area_id TEXT,                -- Optional area/room identifier
+                timestamp TEXT NOT NULL      -- Store as ISO format string
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_device ON device_positions (device_id);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_timestamp ON device_positions (timestamp DESC);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_source ON device_positions (source);')
 
         conn.commit()
         logger.info("SQLite database schema initialized/verified successfully.")
@@ -216,36 +226,124 @@ def save_blueprint_to_sqlite(blueprint_data: Dict) -> bool:
         return False
 
 
-def save_device_position_to_sqlite(device_id: str, position_data: Dict) -> bool:
-    """Save a device's position in SQLite."""
+def save_device_position_to_sqlite(
+    device_id: str,
+    position_data: Dict,
+    source: str = 'calculated',
+    accuracy: Optional[float] = None,
+    area_id: Optional[str] = None
+) -> bool:
+    """Save a device position to the SQLite database.
+
+    Args:
+        device_id: Unique identifier for the device
+        position_data: Dictionary containing x, y, z coordinates
+        source: Source of the position data ('fixed_reference', 'calculated', 'manual')
+        accuracy: Estimated accuracy in meters (optional)
+        area_id: Optional area/room identifier
+
+    Returns:
+        bool: True if saved successfully, False otherwise
+    """
+    # Ensure we have the minimum position data
     if not all(k in position_data for k in ['x', 'y', 'z']):
-        logger.error(f"Attempted to save invalid position data for {device_id} (missing x, y, or z)")
+        logger.error(f"Invalid position data for device {device_id}: missing x/y/z coordinate")
         return False
 
     query = """
     INSERT INTO device_positions (device_id, position_data, source, accuracy, area_id, timestamp)
     VALUES (?, ?, ?, ?, ?, ?)
     """
-    pos_json = json.dumps({ # Store essential coords + accuracy in JSON blob
-        'x': position_data.get('x'),
-        'y': position_data.get('y'),
-        'z': position_data.get('z'),
-        'accuracy': position_data.get('accuracy', 1.0)
-    })
-    source = position_data.get('source', 'unknown')
-    accuracy = position_data.get('accuracy', 1.0)
-    area_id = position_data.get('area_id')
+
+    position_json = json.dumps(position_data)
     timestamp = datetime.now().isoformat()
-    params = (device_id, pos_json, source, accuracy, area_id, timestamp)
+    params = (device_id, position_json, source, accuracy, area_id, timestamp)
 
     result = _execute_sqlite_write(query, params)
     if result is not None:
-        logger.debug(f"Saved position for device {device_id} from source {source}")
+        logger.info(f"Saved position for device {device_id} (source: {source})")
         return True
     else:
         logger.error(f"Failed to save position for device {device_id}")
         return False
 
+def get_reference_positions_from_sqlite() -> Dict[str, Dict]:
+    """Get the latest positions of all fixed reference devices.
+
+    Returns:
+        Dict mapping device_id to position {x, y, z} dict
+    """
+    query = """
+    SELECT d1.device_id, d1.position_data
+    FROM device_positions d1
+    JOIN (
+        SELECT device_id, MAX(timestamp) as max_time
+        FROM device_positions
+        WHERE source = 'fixed_reference'
+        GROUP BY device_id
+    ) d2 ON d1.device_id = d2.device_id AND d1.timestamp = d2.max_time
+    WHERE d1.source = 'fixed_reference'
+    """
+
+    results = _execute_sqlite_read(query)
+    reference_positions = {}
+
+    if results:
+        for row in results:
+            try:
+                device_id = row['device_id']
+                position = json.loads(row['position_data'])
+                reference_positions[device_id] = position
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.error(f"Error parsing reference position for {row.get('device_id', 'unknown')}: {e}")
+
+    logger.debug(f"Retrieved {len(reference_positions)} reference positions from database")
+    return reference_positions
+
+def get_device_positions_from_sqlite() -> Dict[str, Dict]:
+    """Get the latest positions of all tracked devices.
+
+    Returns:
+        Dict mapping device_id to full position dict including source, accuracy, etc.
+    """
+    query = """
+    SELECT d1.device_id, d1.position_data, d1.source, d1.accuracy, d1.area_id, d1.timestamp
+    FROM device_positions d1
+    JOIN (
+        SELECT device_id, MAX(timestamp) as max_time
+        FROM device_positions
+        GROUP BY device_id
+    ) d2 ON d1.device_id = d2.device_id AND d1.timestamp = d2.max_time
+    """
+
+    results = _execute_sqlite_read(query)
+    device_positions = {}
+
+    if results:
+        for row in results:
+            try:
+                device_id = row['device_id']
+                position_data = json.loads(row['position_data'])
+
+                # Create a complete position record
+                position_record = {
+                    **position_data,  # Unpack the x, y, z
+                    'source': row['source'],
+                    'timestamp': row['timestamp'],
+                }
+
+                # Add optional fields if present
+                if row['accuracy'] is not None:
+                    position_record['accuracy'] = float(row['accuracy'])
+                if row['area_id']:
+                    position_record['area_id'] = row['area_id']
+
+                device_positions[device_id] = position_record
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.error(f"Error parsing device position for {row.get('device_id', 'unknown')}: {e}")
+
+    logger.debug(f"Retrieved {len(device_positions)} device positions from database")
+    return device_positions
 
 def save_ai_feedback_to_sqlite(blueprint_id: str, feedback_data: Dict, original_blueprint: Optional[Dict] = None, modified_blueprint: Optional[Dict] = None) -> bool:
     """Save AI blueprint feedback to the SQLite database."""
@@ -328,78 +426,6 @@ def get_latest_blueprint_from_sqlite() -> Optional[Dict[str, Any]]:
     return None
 
 
-def get_reference_positions_from_sqlite() -> Dict[str, Dict]:
-    """Get all unique, latest 'fixed_reference' positions from SQLite database."""
-    query = """
-    SELECT device_id, position_data
-    FROM (
-        SELECT
-            device_id,
-            position_data,
-            ROW_NUMBER() OVER(PARTITION BY device_id ORDER BY timestamp DESC) as rn
-        FROM device_positions
-        WHERE source = 'fixed_reference'
-    )
-    WHERE rn = 1
-    """
-    results = _execute_sqlite_read(query)
-    positions = {}
-    if results:
-        for row in results:
-            device_id = row.get('device_id')
-            pos_data_str = row.get('position_data')
-            if device_id and pos_data_str:
-                try:
-                    pos_data = json.loads(pos_data_str)
-                    # Ensure basic structure
-                    if all(k in pos_data for k in ['x','y','z']):
-                        positions[device_id] = pos_data
-                except json.JSONDecodeError:
-                    logger.warning(f"Could not parse position_data for fixed reference {device_id}")
-
-    logger.info(f"Loaded {len(positions)} unique fixed reference positions from SQLite")
-    return positions
-
-def get_device_positions_from_sqlite() -> Dict[str, Dict]:
-    """Get the latest position for each device from the SQLite database."""
-    # This query gets the most recent entry for each device_id
-    query = """
-    SELECT device_id, position_data, source, accuracy, area_id, timestamp
-    FROM (
-        SELECT
-            *,
-            ROW_NUMBER() OVER(PARTITION BY device_id ORDER BY timestamp DESC) as rn
-        FROM device_positions
-    )
-    WHERE rn = 1
-    ORDER BY timestamp DESC
-    LIMIT 200 -- Limit number of devices returned if needed
-    """
-    results = _execute_sqlite_read(query)
-    positions = {}
-    if results:
-        for row in results:
-            device_id = row.get('device_id')
-            pos_data_str = row.get('position_data')
-            if device_id and pos_data_str:
-                try:
-                    pos_data = json.loads(pos_data_str)
-                    # Combine stored data with other columns from the row
-                    positions[device_id] = {
-                        'x': float(pos_data['x']),
-                        'y': float(pos_data['y']),
-                        'z': float(pos_data['z']),
-                        'accuracy': float(row.get('accuracy', pos_data.get('accuracy', 1.0))),
-                        'source': row.get('source', 'unknown'),
-                        'area_id': row.get('area_id'),
-                        'timestamp': row.get('timestamp')
-                    }
-                except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-                    logger.warning(f"Error parsing position data for device {device_id}: {e}")
-
-    logger.info(f"Loaded latest positions for {len(positions)} devices from SQLite")
-    return positions
-
 def save_ai_model_sqlite(model_name: str, model_type: str, model_path: str, metrics: Dict) -> bool:
     """Save or update AI model metadata in SQLite."""
     query = """
@@ -424,6 +450,26 @@ def save_ai_model_sqlite(model_name: str, model_type: str, model_path: str, metr
         return True
     else:
         logger.error(f"Failed to save AI model info for '{model_name}'")
+        return False
+
+# --- NEW Helper for Area Observations ---
+def save_area_observation(tracked_device_id: str, predicted_area_id: Optional[str], rssi_vector: Dict[str, float], is_transition: bool) -> bool:
+    """Saves a snapshot of RSSI readings and predicted area."""
+    query = """
+    INSERT INTO area_observations (timestamp, tracked_device_id, predicted_area_id, rssi_vector, is_transition)
+    VALUES (?, ?, ?, ?, ?)
+    """
+    timestamp = datetime.now().isoformat()
+    rssi_json = json.dumps(rssi_vector)
+    transition_flag = 1 if is_transition else 0
+    params = (timestamp, tracked_device_id, predicted_area_id, rssi_json, transition_flag)
+
+    result = _execute_sqlite_write(query, params)
+    if result is not None:
+        logger.debug(f"Saved area observation for {tracked_device_id} -> {predicted_area_id} (Transition: {is_transition})")
+        return True
+    else:
+        logger.error(f"Failed to save area observation for {tracked_device_id}")
         return False
 
 # For compatibility with existing code

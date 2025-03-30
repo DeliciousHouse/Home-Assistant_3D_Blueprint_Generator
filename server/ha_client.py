@@ -916,3 +916,30 @@ class HomeAssistantClient:
         except Exception as e:
             logger.error(f"Error fetching sensor entities: {e}", exc_info=True)
             return []
+
+    # New method for getting device area predictions
+    def get_device_area_predictions(self) -> Dict[str, Optional[str]]:
+        """Gets the current predicted area for devices (e.g., from Bermuda's area sensor)."""
+        predictions = {}
+        try:
+            # Find entities matching the pattern Bermuda uses for area prediction
+            # Adjust the pattern if necessary!
+            area_sensors = self.get_entities(domain='sensor', name_contains='_area')
+            for entity in area_sensors:
+                entity_id = entity.get('entity_id')
+                state = entity.get('state')
+                # Extract device_id from entity_id (e.g., sensor.mywatch_area -> mywatch)
+                # This parsing needs to be robust based on your actual entity IDs
+                parts = entity_id.split('.')
+                if len(parts) == 2:
+                     device_id = parts[1].replace('_area', '') # Basic example
+                     area_name = state if state not in [None, 'unknown', 'not_home', 'away', 'unavailable'] else None
+                     # We need Area ID, not name, for consistency if possible
+                     # Ideally, Bermuda sensor attribute would provide area_id
+                     area_id = entity.get('attributes', {}).get('area_id', area_name) # Prefer ID if available
+                     predictions[device_id] = area_id
+            logger.info(f"Fetched current area predictions for {len(predictions)} devices.")
+            return predictions
+        except Exception as e:
+            logger.error(f"Error fetching device area predictions: {e}", exc_info=True)
+            return {}

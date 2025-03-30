@@ -59,7 +59,7 @@ def start_processing_scheduler(config):
     # Passing relevant parts can be cleaner:
     # bluetooth_processor = BluetoothProcessor(fixed_sensors=config.get('fixed_sensors', {}))
     # Or let them load the full config internally:
-    bluetooth_processor = BluetoothProcessor(config=config)# Assumes it calls load_config() internally
+    bluetooth_processor = BluetoothProcessor() # Assumes it calls load_config() internally
     blueprint_generator = BlueprintGenerator() # Assumes it calls load_config() internally
 
     def process_loop():
