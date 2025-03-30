@@ -1,19 +1,32 @@
 #!/usr/bin/env python3
 
 import logging
+import os
+import sys
 import threading
 import time
 from pathlib import Path
+from flask import Flask
 
 from server.config_loader import load_config
 
+# Set up basic logging instead of using logging.config
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+logger = logging.getLogger("blueprint_generator")
+logger.info("Starting Blueprint Generator")
+
+# Set the working directory to the script directory
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 # Load config first
 config = load_config()
-
-# Set up logging immediately after loading config
-log_level = config.get('log_level', 'info').upper()
-logging.config.fileConfig(Path('config/logging.conf'))
-logger = logging.getLogger(__name__)
 
 logger.info("Configuration loaded and processed successfully")
 

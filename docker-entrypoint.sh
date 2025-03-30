@@ -2,7 +2,7 @@
 set -e
 
 # Create log directories
-mkdir -p /var/log/blueprint_generator /var/log/nginx
+mkdir -p /var/log/ /var/log/nginx
 
 # Start nginx in the background
 echo "Starting nginx..."
@@ -11,5 +11,4 @@ sleep 1
 
 # Start Flask application
 echo "Starting Blueprint Generator at $(date)"
-cd /opt/blueprint_generator
 exec python3 run.py
