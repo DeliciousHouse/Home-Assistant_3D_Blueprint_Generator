@@ -46,8 +46,7 @@ def load_config(config_path: Optional[str] = None) -> Dict:
             logger.error(f"Failed to load YAML config from {root_config_path}: {str(e)}")
 
     # 3. Try app-specific config
-    app_config_path = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                       '..', 'config', 'config.json'))
+    app_config_path = Path(__file__).parent.parent / 'config' / 'config.json'
     if app_config_path.exists():
         try:
             with open(app_config_path, 'r') as f:
@@ -92,7 +91,19 @@ def load_config(config_path: Optional[str] = None) -> Dict:
             }
 
             # Fixed sensors (reference positions)
-            config['fixed_sensors'] = ha_options.get('fixed_sensors', {})
+            if 'fixed_sensors' in ha_options:
+                # Check if it's a string and try to parse it as JSON
+                if isinstance(ha_options['fixed_sensors'], str) and ha_options['fixed_sensors'].strip():
+                    try:
+                        config['fixed_sensors'] = json.loads(ha_options['fixed_sensors'])
+                    except json.JSONDecodeError:
+                        logger.error("Failed to parse fixed_sensors as JSON, using empty dict")
+                        config['fixed_sensors'] = {}
+                else:
+                    # If it's not a string or empty, use an empty dict
+                    config['fixed_sensors'] = {}
+            else:
+                config['fixed_sensors'] = {}
 
             # Log level
             config['log_level'] = ha_options.get('log_level', 'info')

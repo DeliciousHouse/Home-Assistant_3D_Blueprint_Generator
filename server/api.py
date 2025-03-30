@@ -30,13 +30,19 @@ logger = logging.getLogger(__name__)
 # Add root route handler
 @app.route('/', methods=['GET'])
 def index():
-    """Serve the main page or redirect to API documentation."""
+    """Serve the main page."""
     try:
-        # Check if templates directory exists and has index.html
-        if os.path.exists(os.path.join(app.root_path, 'templates', 'index.html')):
-            return render_template('index.html')
+        # Serve from the ui directory at the root level
+        ui_directory = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'ui')
+
+        if os.path.exists(os.path.join(ui_directory, 'index.html')):
+            # Return the index.html file from the ui directory
+            with open(os.path.join(ui_directory, 'index.html'), 'r') as f:
+                html_content = f.read()
+            return html_content
         else:
-            # Create a simple HTML response
+            # Fallback to simple HTML response
+            logger.warning(f"UI not found at {ui_directory}")
             return """
             <html>
                 <head>
@@ -920,3 +926,13 @@ def setup_environment():
     except Exception as e:
         logger.error(f"Setup failed: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/app.js')
+def serve_js():
+    ui_directory = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'ui')
+    return send_from_directory(ui_directory, 'app.js')
+
+@app.route('/styles.css')
+def serve_css():
+    ui_directory = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'ui')
+    return send_from_directory(ui_directory, 'styles.css')
