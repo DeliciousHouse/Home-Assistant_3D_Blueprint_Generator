@@ -27,7 +27,7 @@ import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-from .db import execute_query, execute_write_query
+from .db import execute_query, execute_write_query, get_sqlite_connection, save_rssi_sample_to_sqlite
 
 # Define model directory path
 MODEL_DIR = Path("/data/models")
@@ -39,7 +39,9 @@ class AIProcessor:
 
     def __init__(self, config_path: Optional[str] = None):
         """Initialize the AI processor."""
-        self.config = self._load_config(config_path)
+        # Use standardized config loader
+        from .config_loader import load_config
+        self.config = load_config(config_path)
 
         # Ensure model directory exists
         os.makedirs(MODEL_DIR, exist_ok=True)
@@ -53,47 +55,6 @@ class AIProcessor:
         self._create_tables()
         # Load models if they exist
         self._load_models()
-
-    def _load_config(self, config_path: Optional[str] = None) -> Dict:
-        """Load configuration from file or use defaults."""
-        if config_path:
-            with open(config_path, 'r') as f:
-                return json.load(f)
-        return {
-            'ai_settings': {
-                'rssi_distance': {
-                    'model_type': 'random_forest',
-                    'features': ['rssi', 'tx_power', 'frequency'],
-                    'hyperparams': {
-                        'n_estimators': 100,
-                        'max_depth': 10
-                    }
-                },
-                'room_clustering': {
-                    'algorithm': 'dbscan',
-                    'eps': 2.0,
-                    'min_samples': 3,
-                    'features': ['x', 'y', 'z'],
-                    'temporal_weight': 0.2
-                },
-                'wall_prediction': {
-                    'model_type': 'cnn',
-                    'input_shape': [64, 64, 1],
-                    'learning_rate': 0.001,
-                    'batch_size': 32,
-                    'epochs': 50
-                },
-                'blueprint_refinement': {
-                    'reward_weights': {
-                        'room_size': 0.3,
-                        'wall_alignment': 0.4,
-                        'flow_efficiency': 0.3
-                    },
-                    'learning_rate': 0.01,
-                    'discount_factor': 0.9
-                }
-            }
-        }
 
     def _create_tables(self) -> bool:
         """Create necessary database tables."""
@@ -213,81 +174,60 @@ class AIProcessor:
     def _get_training_sample_count(self, table_name: str) -> int:
         """Get the count of training samples for a model."""
         try:
+            from .db import get_sqlite_connection
+            conn = get_sqlite_connection()
+            cursor = conn.cursor()
+
+            # Check if table exists first
+            cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
+            if cursor.fetchone() is None:
+                conn.close()
+                return 0
+
             query = f"SELECT COUNT(*) FROM {table_name}"
-            result = execute_query(query)
-            return result[0][0] if result else 0
+            cursor.execute(query)
+            result = cursor.fetchone()
+            conn.close()
+
+            return result[0] if result else 0
         except Exception as e:
             logger.error(f"Error getting sample count for {table_name}: {str(e)}")
             return 0
 
     # RSSI-to-Distance ML Model methods
 
-    def rssi_distance_samples(self, device_id: str, sensor_id: str, rssi: int,
-                                 distance: float, tx_power: Optional[int] = None,
-                                 frequency: Optional[float] = None,
-                                 environment_type: Optional[str] = None) -> bool:
-        """Save a training sample for the RSSI-to-distance model."""
-        try:
-            query = """
-            INSERT INTO ai_rssi_distance_data
-            (device_id, sensor_id, rssi, distance, tx_power, frequency, environment_type)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """
-            execute_write_query(query, (
-                device_id, sensor_id, rssi, distance, tx_power,
-                frequency, environment_type
-            ))
-            logger.debug(f"Saved RSSI-distance sample: {rssi} -> {distance}m")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save RSSI-distance sample: {str(e)}")
-            return False
-
     def save_rssi_distance_sample(self, device_id, sensor_id, rssi, distance, **kwargs):
-        """Save RSSI-distance sample with enhanced metadata."""
+        """Save RSSI-distance sample using the DB helper."""
         try:
-            # Add these additional features
+            # Add these additional features if not passed in kwargs
             current_time = datetime.now()
-            time_of_day = current_time.hour
-            day_of_week = current_time.weekday()
+            time_of_day = kwargs.get('time_of_day', current_time.hour)
+            day_of_week = kwargs.get('day_of_week', current_time.weekday())
 
             # Extract device type from device_id if possible
-            device_type = 'unknown'
-            if 'phone' in device_id.lower() or 'iphone' in device_id.lower():
-                device_type = 'smartphone'
-            elif 'watch' in device_id.lower():
-                device_type = 'wearable'
+            device_type = kwargs.get('device_type')
+            if not device_type:
+                if 'phone' in device_id.lower() or 'iphone' in device_id.lower():
+                    device_type = 'smartphone'
+                elif 'watch' in device_id.lower():
+                    device_type = 'wearable'
+                else:
+                    device_type = 'unknown'
 
-            # Execute the database insertion with added features
-            from .db import get_sqlite_connection
-            conn = get_sqlite_connection()
-            cursor = conn.cursor()
-
-            # Check if the sample already exists
-            cursor.execute('''
-            SELECT id FROM rssi_distance_samples
-            WHERE device_id = ? AND sensor_id = ? AND rssi = ? AND distance = ?
-            ''', (device_id, sensor_id, rssi, distance))
-            existing_sample = cursor.fetchone()
-
-            if existing_sample:
-                logger.warning(f"Duplicate RSSI-distance sample found, skipping insertion.")
-                conn.close()
-                return False
-
-            cursor.execute('''
-            INSERT INTO rssi_distance_samples
-            (device_id, sensor_id, rssi, distance, tx_power, frequency,
-             environment_type, device_type, time_of_day, day_of_week, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            ''', (device_id, sensor_id, rssi, distance,
-                  kwargs.get('tx_power'), kwargs.get('frequency'),
-                  kwargs.get('environment_type'), device_type, time_of_day, day_of_week))
-            conn.commit()
-            conn.close()
-            return True
+            return save_rssi_sample_to_sqlite(
+                device_id=device_id,
+                sensor_id=sensor_id, # Pass sensor_id
+                rssi=rssi,
+                distance=distance,
+                tx_power=kwargs.get('tx_power'),
+                frequency=kwargs.get('frequency'),
+                environment_type=kwargs.get('environment_type'),
+                device_type=device_type,
+                time_of_day=time_of_day,
+                day_of_week=day_of_week
+            )
         except Exception as e:
-            logger.error(f"Failed to save RSSI sample: {e}")
+            logger.error(f"Failed to save RSSI sample via helper: {e}")
             return False
 
     def train_models(self):
@@ -306,8 +246,9 @@ class AIProcessor:
                 LIMIT 10000
             """)
             rssi_distance_data = cursor.fetchall()
+            conn.close()
 
-            if not rssi_distance_data:
+            if not rssi_distance_data or len(rssi_distance_data) < 10:
                 logger.info("Not enough training data for distance model")
                 return False
 
@@ -323,9 +264,9 @@ class AIProcessor:
             return False
 
     def train_rssi_distance_model(self, model_type: str = 'random_forest',
-                                 test_size: float = 0.2,
-                                 features: List[str] = None,
-                                 hyperparams: Dict = None) -> Dict:
+                                test_size: float = 0.2,
+                                features: List[str] = None,
+                                hyperparams: Dict = None) -> Dict:
         """Train the RSSI-to-distance regression model."""
         if features is None:
             features = ['rssi']
@@ -333,12 +274,20 @@ class AIProcessor:
             hyperparams = {}
 
         try:
-            # Get training data
+            # Get training data from SQLite
+            from .db import get_sqlite_connection
+            conn = get_sqlite_connection()
+            cursor = conn.cursor()
+
+            # Build query based on available features
             query = """
             SELECT rssi, distance, tx_power, frequency, environment_type
-            FROM ai_rssi_distance_data
+            FROM rssi_distance_samples
+            WHERE distance > 0
             """
-            results = execute_query(query)
+            cursor.execute(query)
+            results = cursor.fetchall()
+            conn.close()
 
             if not results or len(results) < 10:
                 return {
@@ -439,24 +388,16 @@ class AIProcessor:
             self.rssi_distance_model = model_data
 
             # Save model info to database
-            metrics_json = json.dumps({
+            metrics = {
                 'mse': float(mse),
                 'mae': float(mae),
                 'r2': float(r2),
                 'samples': len(df),
                 'features': features,
                 'hyperparams': hyperparams
-            })
+            }
 
-            execute_write_query("""
-            INSERT INTO ai_models (model_name, model_type, model_path, metrics)
-            VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                model_type = VALUES(model_type),
-                model_path = VALUES(model_path),
-                metrics = VALUES(metrics),
-                created_at = CURRENT_TIMESTAMP
-            """, ('rssi_distance', model_type, model_path, metrics_json))
+            self._save_model_info_to_sqlite('rssi_distance', model_type, str(model_path), metrics)
 
             logger.info(f"Trained RSSI-distance model: MSE={mse:.4f}, MAE={mae:.4f}, R²={r2:.4f}")
 
@@ -479,56 +420,131 @@ class AIProcessor:
                 "error": str(e)
             }
 
-    def estimate_distance(self, rssi, **kwargs):
-        """Estimate distance from RSSI using trained model or physics with overflow protection."""
+    def estimate_distance(self, rssi, tx_power=None, device_type=None, environment_type=None):
+        """
+        Estimate distance from RSSI using trained model or physics model with enhanced fallbacks.
+
+        Args:
+            rssi: The RSSI value (signal strength)
+            tx_power: Transmission power in dBm (optional)
+            device_type: Type of device ('smartphone', 'beacon', etc.) (optional)
+            environment_type: Environment type ('indoor', 'outdoor') (optional)
+
+        Returns:
+            Estimated distance in meters
+        """
         try:
-            # Try ML model first if enabled and available
-            if hasattr(self, 'use_ml_distance') and self.use_ml_distance:
+            # First try ML model if available and has required features
+            if self.rssi_distance_model is not None:
                 try:
-                    # Your existing ML model code here...
-                    pass
+                    # Prepare features
+                    features = {'rssi': float(rssi)}
+                    model_data = self.rssi_distance_model
+
+                    # Add additional features if they match what the model expects
+                    if 'features' in model_data:
+                        if 'tx_power' in model_data['features'] and tx_power is not None:
+                            features['tx_power'] = float(tx_power)
+                        if 'device_type' in model_data['features'] and device_type is not None:
+                            # Simple encoding: map device types to integers
+                            type_mapping = {'smartphone': 1, 'beacon': 2, 'wearable': 3, 'tag': 4}
+                            features['device_type'] = type_mapping.get(device_type.lower(), 0)
+                        if 'environment_type' in model_data['features'] and environment_type is not None:
+                            # Simple encoding: 1 for indoor, 0 for outdoor
+                            features['environment_type'] = 1 if environment_type.lower() == 'indoor' else 0
+
+                    # Create feature vector
+                    X = []
+                    for feature in model_data['features']:
+                        if feature in features:
+                            X.append(features[feature])
+                        else:
+                            # If missing a required feature, fall back to physics model
+                            logger.debug(f"Missing required feature: {feature}, falling back to physics model")
+                            raise ValueError(f"Missing required feature: {feature}")
+
+                    # Scale features if needed
+                    if 'scaler' in model_data:
+                        X = model_data['scaler'].transform([X])
+                    else:
+                        X = [X]
+
+                    # Predict distance
+                    distance = model_data['model'].predict(X)[0]
+
+                    # Ensure reasonable result
+                    distance = max(min(distance, 30.0), 0.1)  # Clamp between 10cm and 30m
+
+                    logger.debug(f"ML model estimated distance: {distance:.2f}m from RSSI {rssi}")
+                    return distance
+
                 except Exception as e:
-                    logger.warning(f"ML distance estimation failed: {e}")
+                    logger.warning(f"ML distance estimation failed: {e}, falling back to physics model")
                     # Fall through to physics model
 
-            # Physics-based calculation with strong overflow protection
+            # Physics-based calculation with enhanced protection
             # Ensure parameters are reasonable
-            ref_power = getattr(self, 'reference_power', -66)
-            path_loss = getattr(self, 'path_loss_exponent', 2.8)
+            ref_power = getattr(self, 'reference_power', -65)  # Default reference RSSI at 1m
+            path_loss = getattr(self, 'path_loss_exponent', 2.8)  # Default path loss exponent
 
-            # Clamp RSSI to safe range
-            safe_rssi = max(min(float(rssi), -20), -100)
+            # Apply environment-specific adjustments
+            if environment_type == 'indoor':
+                # Indoor environments have higher path loss
+                path_loss = max(path_loss, 3.0)
+            elif environment_type == 'outdoor':
+                # Outdoor environments have lower path loss
+                path_loss = min(path_loss, 2.5)
 
-            # Handle extreme values directly
-            if safe_rssi > -25:  # Very close
+            # If tx_power is provided, use it to adjust the reference power
+            if tx_power is not None:
+                try:
+                    # Adjust reference power based on tx_power
+                    # Reference power is typically measured at 1m with default tx_power
+                    ref_power_adjustment = tx_power - (-70)  # Assuming -70 is default tx_power
+                    ref_power += ref_power_adjustment
+                except (ValueError, TypeError):
+                    # Ignore if tx_power isn't a valid number
+                    pass
+
+            # Safe RSSI clamping
+            try:
+                safe_rssi = max(min(float(rssi), -20), -100)
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid RSSI value: {rssi}, using default")
+                safe_rssi = -65
+
+            # Quick checks for extreme RSSI values
+            if safe_rssi > -35:  # Very close
                 return 0.3  # 30cm
             if safe_rssi < -95:  # Very far
-                return 20.0  # 20m
+                return 25.0  # 25m
 
             try:
-                # Calculate with overflow protection
+                # Calculate with solid overflow protection
                 exponent = (ref_power - safe_rssi) / (10 * path_loss)
 
-                # Clamp exponent to prevent overflow
-                safe_exponent = max(min(exponent, 4.0), -1.0)  # Between 0.1m and 10km
+                # Safe calculation
+                distance = 10 ** exponent
 
-                # Calculate distance safely
-                distance = 10.0 ** safe_exponent
+                # Ensure reasonable result
+                distance = min(max(distance, 0.1), 30.0)  # Between 10cm and 30m
 
-                # Ensure reasonable output
-                return max(min(distance, 30.0), 0.1)  # Between 10cm and 30m
+                logger.debug(f"Physics model estimated distance: {distance:.2f}m from RSSI {rssi}")
+                return distance
 
-            except (OverflowError, ValueError, ZeroDivisionError):
-                logger.warning(f"Protected against overflow with RSSI {rssi}")
-                # Map RSSI ranges to approximate distances
-                if safe_rssi > -40: return 1.0
-                if safe_rssi > -65: return 5.0
-                if safe_rssi > -80: return 10.0
+            except Exception as e:
+                logger.warning(f"Physics-based distance calculation failed: {str(e)}")
+
+                # Map RSSI to distance ranges as ultimate fallback
+                if safe_rssi > -50: return 1.0
+                if safe_rssi > -65: return 3.0
+                if safe_rssi > -75: return 5.0
+                if safe_rssi > -85: return 10.0
                 return 15.0
 
         except Exception as e:
-            logger.error(f"Error estimating distance: {e}")
-            return 5.0  # Default distance
+            logger.error(f"Error in distance estimation: {e}", exc_info=True)
+            return 5.0  # Default reasonable distance
 
     def calibrate_rssi_reference_values(self):
         """Dynamically calibrate RSSI reference values based on collected data."""
@@ -718,24 +734,16 @@ class AIProcessor:
             # Update the model in memory
             self.room_clustering_model = model_data
 
-            # Save model info to database
-            metrics_json = json.dumps({
+            # Save model info to database using the helper function
+            metrics = {
                 'algorithm': algorithm,
                 'eps': eps,
                 'min_samples': min_samples,
                 'features': features,
                 'temporal_weight': temporal_weight
-            })
+            }
 
-            execute_write_query("""
-            INSERT INTO ai_models (model_name, model_type, model_path, metrics)
-            VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                model_type = VALUES(model_type),
-                model_path = VALUES(model_path),
-                metrics = VALUES(metrics),
-                created_at = CURRENT_TIMESTAMP
-            """, ('room_clustering', algorithm, model_path, metrics_json))
+            self._save_model_info_to_sqlite('room_clustering', algorithm, str(model_path), metrics)
 
             logger.info(f"Configured room clustering model: {algorithm}")
 
@@ -977,8 +985,8 @@ class AIProcessor:
             model_path = MODEL_DIR / 'wall_prediction_model.pt'
             self.wall_prediction_model = torch.load(model_path)
 
-            # Save model info to database
-            metrics_json = json.dumps({
+            # Save model info using the helper function
+            metrics = {
                 'model_type': model_type,
                 'epochs': epochs,
                 'batch_size': batch_size,
@@ -987,17 +995,9 @@ class AIProcessor:
                 'final_val_loss': metrics['val_loss'][-1],
                 'best_val_loss': best_val_loss,
                 'samples': len(dataset)
-            })
+            }
 
-            execute_write_query("""
-            INSERT INTO ai_models (model_name, model_type, model_path, metrics)
-            VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                model_type = VALUES(model_type),
-                model_path = VALUES(model_path),
-                metrics = VALUES(metrics),
-                created_at = CURRENT_TIMESTAMP
-            """, ('wall_prediction', model_type, model_path, metrics_json))
+            self._save_model_info_to_sqlite('wall_prediction', model_type, str(model_path), metrics)
 
             logger.info(f"Trained wall prediction model: best_val_loss={best_val_loss:.4f}")
 
@@ -1208,15 +1208,7 @@ class AIProcessor:
                 'samples': len(feedback_data)
             })
 
-            execute_write_query("""
-            INSERT INTO ai_models (model_name, model_type, model_path, metrics)
-            VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                model_type = VALUES(model_type),
-                model_path = VALUES(model_path),
-                metrics = VALUES(metrics),
-                created_at = CURRENT_TIMESTAMP
-            """, ('blueprint_refinement', 'ppo', model_path, metrics_json))
+            self._save_model_info_to_sqlite('blueprint_refinement', 'ppo', str(model_path), metrics)
 
             logger.info(f"Trained blueprint refinement model with {len(feedback_data)} feedback samples")
 
@@ -1495,16 +1487,23 @@ class AIProcessor:
             # Generate a unique ID for this refinement
             blueprint_id = original.get('id', str(uuid.uuid4()))
 
-            # Save to database
-            execute_write_query("""
+            # Save to database using SQLite directly
+            from .db import get_sqlite_connection
+            conn = get_sqlite_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
             INSERT INTO ai_blueprint_feedback
-            (blueprint_id, original_blueprint, modified_blueprint)
-            VALUES (%s, %s, %s)
+            (blueprint_id, original_blueprint, modified_blueprint, timestamp)
+            VALUES (?, ?, ?, datetime('now'))
             """, (
                 blueprint_id,
                 json.dumps(original),
                 json.dumps(refined)
             ))
+
+            conn.commit()
+            conn.close()
 
             logger.debug(f"Saved blueprint refinement for future training: {blueprint_id}")
 
@@ -1619,3 +1618,46 @@ class AIProcessor:
         except Exception as e:
             logger.error(f"Error applying spatial memory: {e}")
             return device_positions
+
+    def _save_model_info_to_sqlite(self, model_name: str, model_type: str,
+                              model_path: str, metrics: Dict) -> bool:
+        """Save model information to SQLite database."""
+        try:
+            from .db import get_sqlite_connection
+            conn = get_sqlite_connection()
+            cursor = conn.cursor()
+
+            # Check if model exists
+            cursor.execute(
+                "SELECT id FROM ai_models WHERE model_name = ?",
+                (model_name,)
+            )
+            model_exists = cursor.fetchone() is not None
+
+            # Serialize metrics
+            metrics_json = json.dumps(metrics)
+
+            if model_exists:
+                # Update existing model
+                cursor.execute("""
+                UPDATE ai_models
+                SET model_type = ?, model_data = ?, metrics = ?, version = version + 1
+                WHERE model_name = ?
+                """, (model_type, model_path, metrics_json, model_name))
+            else:
+                # Insert new model
+                cursor.execute("""
+                INSERT INTO ai_models
+                (model_name, model_type, model_data, metrics, version, created_at)
+                VALUES (?, ?, ?, ?, 1, datetime('now'))
+                """, (model_name, model_type, model_path, metrics_json))
+
+            conn.commit()
+            conn.close()
+
+            logger.info(f"Saved {model_name} model info to database")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to save model info to database: {str(e)}")
+            return False

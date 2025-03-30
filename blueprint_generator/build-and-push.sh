@@ -11,18 +11,18 @@ else
   exit 1
 fi
 
-# Get current version from config.yaml
-CURRENT_VERSION=$(grep 'version:' config.yaml | sed 's/.*"\([0-9.]*\)".*/\1/')
+# Get current version from config.yaml one directory up
+CURRENT_VERSION=$(grep 'version:' ../config.yaml | sed 's/.*"\([0-9.]*\)".*/\1/')
 echo "Current version: $CURRENT_VERSION"
 
 # Increment version by 0.01
 NEW_VERSION=$(awk -v ver="$CURRENT_VERSION" 'BEGIN { printf("%.2f", ver + 0.01) }')
 echo "New version: $NEW_VERSION"
 
-# Update version in config.yaml
-sed -i "s/version: \"$CURRENT_VERSION\"/version: \"$NEW_VERSION\"/" config.yaml
+# Update version in config.yaml (one directory up)
+sed -i "s/version: \"$CURRENT_VERSION\"/version: \"$NEW_VERSION\"/" ../config.yaml
 
-# Update repository.json in root directory
+# Update repository.json in parent directory
 cd ..
 if [ -f repository.json ]; then
     echo "Updating repository.json..."
@@ -34,7 +34,7 @@ else
     echo "Warning: repository.json not found in root directory."
 fi
 
-# Update build.yaml
+# Update build.yaml in blueprint_generator directory
 cd blueprint_generator
 if [ -f build.yaml ]; then
     echo "Updating build.yaml..."

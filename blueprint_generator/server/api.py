@@ -9,11 +9,11 @@ import os
 
 from .blueprint_generator import BlueprintGenerator
 from .bluetooth_processor import BluetoothProcessor
-from .db import test_connection, execute_query, execute_write_query
-from .schema_discovery import SchemaDiscovery
+from .db import get_sqlite_connection, execute_sqlite_query, get_reference_positions_from_sqlite, save_device_position_to_sqlite
 from .ha_client import HomeAssistantClient
 import uuid
 from datetime import datetime
+from .ai_processor import AIProcessor
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -22,7 +22,6 @@ CORS(app)
 # Initialize components
 blueprint_generator = BlueprintGenerator()
 bluetooth_processor = BluetoothProcessor()
-schema_discovery = SchemaDiscovery()
 ha_client = HomeAssistantClient()
 
 # Set up logging
@@ -84,18 +83,19 @@ def index():
 def health_check():
     """Health check endpoint."""
     try:
-        # Check database connection
-        db_status = test_connection()
-
-        # Check schema
-        schema_status = schema_discovery.validate_schema(
-            schema_discovery.discover_schema()
-        )
+        # Check database connection with a simple SQLite test
+        try:
+            conn = get_sqlite_connection()
+            conn.execute("SELECT 1")  # Simple query
+            conn.close()
+            db_status = True
+        except Exception as e_db:
+            logger.error(f"SQLite connection test failed: {e_db}")
+            db_status = False
 
         status = {
-            'status': 'healthy' if db_status and schema_status else 'unhealthy',
+            'status': 'healthy' if db_status else 'unhealthy',
             'database': 'connected' if db_status else 'disconnected',
-            'schema': 'valid' if schema_status else 'invalid'
         }
 
         return jsonify(status), 200 if status['status'] == 'healthy' else 503
@@ -142,11 +142,16 @@ def scan_entities():
 def get_devices():
     """Get list of tracked devices."""
     try:
-        # Query unique device IDs from readings
-        query = "SELECT DISTINCT device_id, MAX(timestamp) as last_seen FROM bluetooth_readings GROUP BY device_id ORDER BY last_seen DESC"
-        results = execute_query(query)
+        # Query unique device IDs from device_positions table instead of bluetooth_readings
+        query = """
+        SELECT DISTINCT device_id, MAX(timestamp) as last_seen
+        FROM device_positions
+        GROUP BY device_id
+        ORDER BY last_seen DESC
+        """
+        results = execute_sqlite_query(query)
 
-        devices = [{'id': row[0], 'last_seen': row[1].isoformat() if row[1] else None} for row in results]
+        devices = [{'id': row['device_id'], 'last_seen': row['last_seen'] if row['last_seen'] else None} for row in results]
         return jsonify({'devices': devices})
     except Exception as e:
         logger.error(f"Failed to get devices: {str(e)}")
@@ -156,9 +161,9 @@ def get_devices():
 def generate_blueprint():
     """Generate a new blueprint from collected data."""
     try:
-        # Call the blueprint generator with correct method name
-        time_window = request.json.get('time_window', 300) if request.json else 300
-        result = blueprint_generator.generate_blueprint(time_window)
+        # Call the blueprint generator without arguments
+        # (it will fetch device positions internally)
+        result = blueprint_generator.generate_blueprint()
 
         return jsonify({
             'status': 'success',
@@ -171,8 +176,9 @@ def generate_blueprint():
 
 @app.route('/api/blueprint', methods=['GET'])
 def get_blueprint():
+    """Get the latest blueprint from the database."""
     try:
-        blueprint_generator = BlueprintGenerator()
+        # Use the existing instance instead of creating a new one
         blueprint = blueprint_generator.get_latest_blueprint()
 
         if not blueprint:
@@ -202,13 +208,13 @@ def get_blueprint_status():
 def fix_schema():
     """Fix schema issues manually."""
     try:
-        # Use the fix_schema_validation method
-        schema_discovery = SchemaDiscovery()
-        result = schema_discovery.fix_schema_validation()
+        # Simply create tables if they don't exist
+        from .db import init_sqlite_db
+        result = init_sqlite_db()
 
         return jsonify({
             'success': result,
-            'message': 'Schema fix attempted'
+            'message': 'SQLite tables created/validated'
         })
     except Exception as e:
         logger.error(f"Schema fix failed: {str(e)}")
@@ -240,55 +246,32 @@ def sync_bermuda():
         if not positions:
             return jsonify({'message': 'No Bermuda positions found'}), 404
 
-        # Store positions in database
+        # Store positions in database using direct SQLite
+        from .db import save_device_position_to_sqlite
+        success_count = 0
+
         for position in positions:
-            execute_write_query("""
-            INSERT INTO device_positions
-            (device_id, position_data, source, timestamp)
-            VALUES (%s, %s, 'bermuda', NOW())
-            ON DUPLICATE KEY UPDATE position_data = %s, timestamp = NOW()
-            """, (position['device_id'], json.dumps(position['position']), json.dumps(position['position'])))
+            device_id = position['device_id']
+            pos_data = position['position']
+            # Add source information
+            pos_data['source'] = 'bermuda'
+
+            # Call helper with device_id and full position dict
+            result = save_device_position_to_sqlite(device_id, pos_data)
+            if result:
+                success_count += 1
 
         return jsonify({
             'success': True,
-            'count': len(positions),
-            'message': f'Synced {len(positions)} positions from Bermuda'
+            'count': success_count,
+            'message': f'Synced {success_count} positions from Bermuda'
         })
 
     except Exception as e:
         logger.error(f"Bermuda sync failed: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/sync/esp32-ble', methods=['POST'])
-def sync_esp32_ble():
-    """Sync data from ESP32 BLE Monitor."""
-    try:
-        devices = ha_client.get_private_ble_devices()
-
-        if not devices:
-            return jsonify({'message': 'No ESP32 BLE Monitor devices found'}), 404
-
-        # Store readings in database
-        count = 0
-        for device in devices:
-            if device.get('rssi') and device.get('mac'):
-                execute_write_query("""
-                INSERT INTO w_readings
-                (timestamp, sensor_id, rssi, device_id, sensor_location)
-                VALUES (NOW(), %s, %s, %s, %s)
-                """, ('esp32_monitor', device['rssi'], device['mac'],
-                      json.dumps({'x': 0, 'y': 0, 'z': 0})))
-                count += 1
-
-        return jsonify({
-            'success': True,
-            'count': count,
-            'message': f'Synced {count} ESP32 BLE Monitor devices'
-        })
-
-    except Exception as e:
-        logger.error(f"ESP32 BLE sync failed: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+# Removing /api/sync/esp32-ble endpoint
 
 # AI-related endpoints
 
@@ -586,15 +569,9 @@ def debug_blueprint():
         blueprint = blueprint_generator.get_latest_blueprint()
 
         if not blueprint:
-            # Check both sources if not found
-            logger.warning("No blueprint in blueprints table, checking manual_updates")
-            from .db import get_latest_blueprint as db_get_latest
-            blueprint = db_get_latest()
-
-            if not blueprint:
-                return jsonify({"error": "No blueprint found in any table"}), 404
-            else:
-                logger.info("Found blueprint in manual_updates table instead")
+            # Check if blueprint generator's instance method returned None
+            logger.warning("No blueprint found in blueprints table")
+            return jsonify({"error": "No blueprint found"}), 404
 
         # Return the raw blueprint data as JSON for inspection
         return jsonify({
@@ -604,7 +581,7 @@ def debug_blueprint():
                 "walls": len(blueprint.get('walls', [])),
                 "floors": len(blueprint.get('floors', []))
             },
-            "source": "Instance method" if hasattr(blueprint, 'rooms') and len(blueprint.get('rooms', [])) > 1 else "DB function"
+            "source": "BlueprintGenerator.get_latest_blueprint()"
         })
     except Exception as e:
         logger.error(f"Debug blueprint error: {str(e)}")
@@ -782,7 +759,6 @@ def generate_default_blueprint():
             from .bluetooth_processor import save_device_position
             save_device_position(device_id, position)
             logger.info(f"Created reference point {device_id} at position {position}")
-            logger.info(f"Created reference point {device_id} at position {position}")
 
         # Use blueprint generator to save the blueprint
         # This uses your existing _save_blueprint method
@@ -805,4 +781,142 @@ def generate_default_blueprint():
 
     except Exception as e:
         logger.error(f"Default blueprint generation failed: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/config/sensors', methods=['GET', 'POST'])
+def manage_sensor_locations():
+    """Configure the locations of fixed sensors/reference points used for positioning."""
+    try:
+        if request.method == 'GET':
+            # Use SQLite helper function instead of execute_query
+            from .db import get_reference_positions_from_sqlite
+
+            # Get all fixed reference positions directly
+            reference_positions = get_reference_positions_from_sqlite()
+
+            # Convert to the expected format
+            sensors = []
+            for device_id, position in reference_positions.items():
+                sensors.append({
+                    'id': device_id,
+                    'position': {
+                        'x': position.get('x', 0),
+                        'y': position.get('y', 0),
+                        'z': position.get('z', 0)
+                    },
+                    'accuracy': position.get('accuracy', 1.0),
+                    'timestamp': position.get('timestamp')
+                })
+
+            return jsonify({
+                'sensors': sensors,
+                'count': len(sensors)
+            })
+        else:  # POST request
+            # Get sensor data from request
+            sensors = request.json
+            if not sensors or not isinstance(sensors, list):
+                return jsonify({'error': 'Invalid data format. Expected list of sensors.'}), 400
+
+            # Validate sensor data
+            for sensor in sensors:
+                if not all(key in sensor for key in ['id', 'position']):
+                    return jsonify({'error': 'Each sensor must have id and position fields'}), 400
+
+                position = sensor['position']
+                if not all(key in position for key in ['x', 'y', 'z']):
+                    return jsonify({'error': 'Each position must have x, y, z coordinates'}), 400
+
+            # Store sensors in database using SQLite helper directly
+            from .db import save_device_position_to_sqlite
+            success_count = 0
+
+            for sensor in sensors:
+                device_id = sensor['id']
+                position = sensor['position']
+                position['source'] = 'fixed_reference'
+                position['accuracy'] = sensor.get('accuracy', 1.0)
+
+                # Save to database using SQLite helper
+                result = save_device_position_to_sqlite(device_id, position)
+                if result:
+                    success_count += 1
+                    logger.info(f"Configured fixed sensor: {device_id} at position {position}")
+
+            # Update in-memory sensor locations in bluetooth processor
+            if hasattr(bluetooth_processor, 'load_reference_positions'):
+                bluetooth_processor.load_reference_positions()
+
+            return jsonify({
+                'success': True,
+                'sensors_configured': success_count,
+                'message': f'Successfully configured {success_count} sensors'
+            })
+
+    except Exception as e:
+        logger.error(f"Sensor configuration failed: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/status', methods=['GET'])
+def get_status():
+    """Check if the add-on is running properly and connected to HA."""
+    try:
+        # Check HA connection
+        ha_connected = False
+        try:
+            # Direct API call to check connection
+            response = requests.get(f"{ha_client.base_url}/api/config", headers=ha_client.headers)
+            ha_connected = response.status_code == 200
+        except Exception as e_ha:
+            logger.error(f"HA connection test failed: {e_ha}")
+
+        # Check database
+        db_status = False
+        try:
+            conn = get_sqlite_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            conn.close()
+            db_status = True
+        except Exception as e_db:
+            logger.error(f"Database connection test failed: {e_db}")
+
+        return jsonify({
+            'status': 'running',
+            'ha_connected': ha_connected,
+            'database_ready': db_status,
+            'version': '1.0.0'
+        })
+    except Exception as e:
+        logger.error(f"Status check failed: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
+
+@app.route('/api/setup', methods=['GET'])
+def setup_environment():
+    """Initialize the database and environment."""
+    try:
+        # Use SQLite initialization function instead of MariaDB
+        from .db import init_sqlite_db
+        result = init_sqlite_db()
+
+        # Check if models directory exists
+        model_path = os.environ.get('MODEL_PATH', 'models')
+        os.makedirs(model_path, exist_ok=True)
+
+        # Initialize the AI processor
+        global ai_processor
+        ai_processor = AIProcessor()
+
+        return jsonify({
+            'success': True,
+            'database_initialized': result,
+            'environment_ready': True,
+            'model_path': model_path
+        })
+    except Exception as e:
+        logger.error(f"Setup failed: {str(e)}")
         return jsonify({'error': str(e)}), 500

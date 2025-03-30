@@ -3,13 +3,14 @@ import logging
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import uuid
+import math
 
 import numpy as np
 from scipy.spatial import Delaunay
 
 from .bluetooth_processor import BluetoothProcessor
 from .ai_processor import AIProcessor
-from .db import save_blueprint_update, execute_query, execute_write_query
+from .db import save_blueprint_to_sqlite, execute_sqlite_query, execute_write_query
 
 logger = logging.getLogger(__name__)
 
@@ -27,143 +28,125 @@ class BlueprintGenerator:
         return cls._instance
 
     def __init__(self, config_path: Optional[str] = None):
-        """Initialize only once."""
-        if getattr(self, '_initialized', False):
+        """Initialize the blueprint generator."""
+        if hasattr(self, '_initialized') and self._initialized:
             return
 
-        # Your existing initialization code
+        # Use standardized config loader
+        from .config_loader import load_config
+
+        # Load configuration
+        self.config = load_config(config_path)
+
+        # Initialize components with config path for consistency
         self.bluetooth_processor = BluetoothProcessor(config_path)
         self.ai_processor = AIProcessor(config_path)
-        self.config = self._load_config(config_path)
-        self.validation = self.config['blueprint_validation']
+
+        # Get validation settings
+        self.validation = self.config.get('blueprint_validation', {
+            'min_room_area': 4,
+            'max_room_area': 100,
+            'min_room_dimension': 1.5,
+            'max_room_dimension': 15,
+            'min_wall_thickness': 0.1,
+            'max_wall_thickness': 0.5,
+            'min_ceiling_height': 2.2,
+            'max_ceiling_height': 4.0
+        })
+
         self.status = {"state": "idle", "progress": 0}
         self.latest_job_id = None
-        self.latest_generated_blueprint = None  # In-memory blueprint storage
-
-        # Initialize AI database tables if needed
-        self.ai_processor._create_tables()
+        self.latest_generated_blueprint = None
 
         self._initialized = True
 
-    def _load_config(self, config_path: Optional[str] = None) -> Dict:
-        """Load configuration from file or use defaults."""
-        if config_path:
-            with open(config_path, 'r') as f:
-                return json.load(f)
-        return {
-            'blueprint_validation': {
-                'min_room_area': 4,
-                'max_room_area': 100,
-                'min_room_dimension': 1.5,
-                'max_room_dimension': 15,
-                'min_wall_thickness': 0.1,
-                'max_wall_thickness': 0.5,
-                'min_ceiling_height': 2.2,
-                'max_ceiling_height': 4.0
-            },
-            'ai_settings': {
-                'use_ml_wall_prediction': True,
-                'use_ml_blueprint_refinement': True,
-                'training_data_collection': True
-            }
-        }
-
-    def generate_blueprint(self, device_positions=None, rooms=None):
-        """Generate a 3D blueprint based on device positions and detected rooms."""
+    def generate_blueprint(self):
+        """Generate a 3D blueprint by processing sensor data and detecting rooms/walls."""
         try:
-            # Debug info - print what's being passed in
-            logger.info(f"Generate blueprint called with: {len(device_positions) if device_positions else 0} positions, {len(rooms) if rooms else 0} rooms")
+            logger.info("Starting blueprint generation process...")
 
-            # Skip database loading if we already have data
-            if device_positions and rooms:
-                logger.info("Using provided positions and rooms, skipping database loading")
-            else:
-                # If no positions are provided, load from database
-                if not device_positions:
-                    device_positions = self.get_device_positions_from_db()
+            # 1. Process sensors to get positions and detect rooms
+            #    This implicitly saves positions to DB via the processor
+            logger.info("Processing Bluetooth sensors for latest data...")
+            processing_result = self.bluetooth_processor.process_bluetooth_sensors()
 
-                # If no rooms are provided, try to detect them
-                if not rooms and device_positions:
-                    bluetooth_processor = BluetoothProcessor()
-                    rooms = bluetooth_processor.detect_rooms(device_positions)
+            if not processing_result or "error" in processing_result:
+                logger.error(f"Bluetooth processing failed: {processing_result.get('error', 'Unknown error')}")
+                return None # Cannot proceed
 
-            # Now proceed with blueprint generation
-            if not rooms:  # If still no rooms, check if we have positions to work with
-                if not device_positions:
-                    logger.warning("No valid positions found for blueprint generation")
-                    return {}
+            # Extract the results needed
+            # Use .get() with defaults to avoid KeyErrors if processing partially fails
+            device_positions = processing_result.get("device_positions", {})
+            rooms = processing_result.get("rooms", [])
+            logger.info(f"Processing complete. Found {len(device_positions)} positions, detected {len(rooms)} rooms.")
 
-                # Debug what positions we have
-                logger.info(f"Have {len(device_positions)} positions but no rooms. Position keys: {list(device_positions.keys())}")
+            # Check if we have enough data
+            if not rooms:
+                logger.warning("No rooms were detected. Cannot generate a blueprint.")
+                return None # Stop if still no rooms
 
-                # Try one more time to create rooms from positions directly
-                bluetooth_processor = BluetoothProcessor()
-                rooms = bluetooth_processor.detect_rooms(device_positions)
 
-                if not rooms:
-                    logger.warning("Failed to generate rooms from available positions")
-                    return {}
+            # 2. Generate Walls
+            logger.info(f"Generating walls for {len(rooms)} rooms...")
+            walls = self._generate_walls_geometric(rooms) # Use the geometric method
+            logger.info(f"Generated {len(walls)} wall segments.")
 
-            # Now we should have rooms to generate a blueprint
-            logger.info(f"Generating blueprint with {len(rooms)} rooms")
-
-            # Generate walls between rooms
-            walls = self._generate_walls(rooms, device_positions)
-            logger.info(f"Generated {len(walls)} walls between rooms")
-
-            # Create the blueprint structure
+            # 3. Assemble Blueprint
             blueprint = {
                 'version': '1.0',
                 'generated_at': datetime.now().isoformat(),
                 'rooms': rooms,
-                'walls': walls,  # Add walls to the blueprint
-                'floors': self._group_rooms_into_floors(rooms),
+                'walls': walls,
+                'floors': self._group_rooms_into_floors(rooms), # Ensure this uses the final 'rooms' list
                 'metadata': {
-                    'device_count': len(device_positions),
+                    'device_count': len(device_positions), # Count from processed data
                     'room_count': len(rooms),
-                    'wall_count': len(walls)
+                    'wall_count': len(walls),
+                    'source': 'auto_generator_v2' # Indicate source
                 }
             }
 
-            # Validate before saving
+            # 4. (Optional) AI Refinement
+            if self.config.get('ai_settings', {}).get('use_ml_blueprint_refinement', False): # Check config
+                try:
+                    logger.info("Applying AI blueprint refinement...")
+                    refined_blueprint = self.ai_processor.refine_blueprint(blueprint)
+                    if refined_blueprint:
+                        # Important: Validate the *refined* blueprint
+                        if self._validate_blueprint(refined_blueprint):
+                            logger.info("AI refinement successful and validated.")
+                            blueprint = refined_blueprint
+                        else:
+                            logger.warning("AI refined blueprint failed validation. Using original.")
+                    else:
+                         logger.warning("AI refinement returned None. Using original.")
+                except Exception as e:
+                    logger.warning(f"AI refinement failed with exception: {e}")
+
+            # 5. Validate Final Blueprint
+            logger.info("Validating final blueprint...")
             if not self._validate_blueprint(blueprint):
-                logger.warning("Generated blueprint failed validation")
-                # Create a minimal valid blueprint
+                logger.warning("Generated blueprint failed validation. Attempting minimal.")
+                # Use the original 'rooms' list before potential refinement issues
                 blueprint = self._create_minimal_valid_blueprint(rooms)
+                if not self._validate_blueprint(blueprint): # Validate minimal too
+                     logger.error("Minimal blueprint also failed validation. Cannot proceed.")
+                     return None
 
-            # Store in memory before trying database
-            self.latest_generated_blueprint = blueprint
 
-            # Save blueprint to database (fixing method name)
-            self._save_blueprint(blueprint)  # Changed from _save_blueprint_to_db
-
-            logger.info(f"Final blueprint has {len(blueprint.get('rooms', []))} rooms and {len(blueprint.get('walls', []))} walls")
-
-            # If blueprint is somehow empty but we have rooms, create a minimal blueprint
-            if not blueprint.get('rooms') and rooms:
-                logger.warning("Blueprint is empty but we have rooms - creating minimal blueprint")
-                minimal_blueprint = {
-                    'version': '1.0',
-                    'generated_at': datetime.now().isoformat(),
-                    'rooms': rooms,
-                    'walls': [],
-                    'floors': [{'level': 0, 'rooms': [r.get('id', f'room_{i}') for i, r in enumerate(rooms)]}],
-                    'metadata': {
-                        'device_count': len(device_positions),
-                        'room_count': len(rooms),
-                        'is_minimal': True
-                    }
-                }
-                return minimal_blueprint
+            # 6. Save and Cache
+            logger.info(f"Saving final blueprint with {len(blueprint.get('rooms',[]))} rooms and {len(blueprint.get('walls',[]))} walls.")
+            saved = self._save_blueprint(blueprint) # Uses SQLite helper
+            if saved:
+                self.latest_generated_blueprint = blueprint # Update cache
+            else:
+                logger.error("Failed to save the generated blueprint to the database.")
 
             return blueprint
 
         except Exception as e:
-            logger.error(f"Error generating blueprint: {e}")
-            logger.info(f"Stored in memory: {self.latest_generated_blueprint is not None}, with {len(self.latest_generated_blueprint.get('rooms', []))} rooms")
-            import traceback
-            logger.error(traceback.format_exc())  # More detailed error information
-            return {}
+            logger.error(f"Critical error during blueprint generation: {e}", exc_info=True)
+            return None
 
     def _create_minimal_valid_blueprint(self, rooms):
         """Create a minimal valid blueprint when validation fails."""
@@ -191,7 +174,7 @@ class BlueprintGenerator:
         if use_ml and positions:
             try:
                 # Try to use the ML-based wall prediction
-                walls = self.ai_processor.predict_walls(positions, rooms)
+                walls = self.ai_processor.predict_walls(positions, rooms) if self.ai_processor else []
                 if walls:
                     logger.debug(f"Using ML-based wall prediction: generated {len(walls)} walls")
                     return walls
@@ -214,7 +197,7 @@ class BlueprintGenerator:
                 [bounds['max']['x'], bounds['max']['y']]
             ])
 
-        if len(vertices) < 3:
+        if len(vertices) < 3 or len(rooms) < 2:
             return walls
 
         # Create Delaunay triangulation
@@ -252,8 +235,251 @@ class BlueprintGenerator:
 
         return walls
 
+    def _generate_walls_geometric(self, rooms: List[Dict]) -> List[Dict]:
+        """Generate walls between rooms using geometric analysis."""
+        if not rooms:
+            return []
+
+        walls = []
+        logger.info(f"Generating walls for {len(rooms)} rooms using geometric method")
+
+        # Threshold for considering rooms adjacent (in meters)
+        adjacency_threshold = 0.5
+
+        # Function to check if two rooms are adjacent
+        def are_adjacent(room1, room2):
+            # Get bounding boxes
+            bounds1 = room1['bounds']
+            bounds2 = room2['bounds']
+
+            # Check if bounds overlap or are very close
+            x_overlap = (
+                bounds1['min']['x'] <= bounds2['max']['x'] + adjacency_threshold and
+                bounds2['min']['x'] <= bounds1['max']['x'] + adjacency_threshold
+            )
+
+            y_overlap = (
+                bounds1['min']['y'] <= bounds2['max']['y'] + adjacency_threshold and
+                bounds2['min']['y'] <= bounds1['max']['y'] + adjacency_threshold
+            )
+
+            z_overlap = (
+                bounds1['min']['z'] <= bounds2['max']['z'] + adjacency_threshold and
+                bounds2['min']['z'] <= bounds1['max']['z'] + adjacency_threshold
+            )
+
+            # Rooms must overlap in at least 2 dimensions to be adjacent
+            overlap_count = sum([x_overlap, y_overlap, z_overlap])
+            return overlap_count >= 2
+
+        # Function to find the overlapping segment between two rooms
+        def find_overlapping_segment(room1, room2):
+            bounds1 = room1['bounds']
+            bounds2 = room2['bounds']
+
+            # Determine which dimension has the smallest overlap or is closest
+            x_distance = min(
+                abs(bounds1['min']['x'] - bounds2['max']['x']),
+                abs(bounds2['min']['x'] - bounds1['max']['x'])
+            )
+
+            y_distance = min(
+                abs(bounds1['min']['y'] - bounds2['max']['y']),
+                abs(bounds2['min']['y'] - bounds1['max']['y'])
+            )
+
+            # Default to vertical wall (along x-axis)
+            is_vertical = x_distance <= y_distance
+
+            # Find the overlapping segment
+            if is_vertical:
+                # Wall runs north-south
+                if bounds1['min']['x'] <= bounds2['min']['x']:
+                    # Room1 is west of Room2
+                    wall_x = (bounds1['max']['x'] + bounds2['min']['x']) / 2
+                else:
+                    # Room1 is east of Room2
+                    wall_x = (bounds1['min']['x'] + bounds2['max']['x']) / 2
+
+                # Find y range of overlap
+                start_y = max(bounds1['min']['y'], bounds2['min']['y'])
+                end_y = min(bounds1['max']['y'], bounds2['max']['y'])
+
+                # Ensure proper ordering
+                if start_y > end_y:
+                    start_y, end_y = end_y, start_y
+
+                return {
+                    'start': {'x': wall_x, 'y': start_y},
+                    'end': {'x': wall_x, 'y': end_y},
+                    'is_vertical': True
+                }
+            else:
+                # Wall runs east-west
+                if bounds1['min']['y'] <= bounds2['min']['y']:
+                    # Room1 is south of Room2
+                    wall_y = (bounds1['max']['y'] + bounds2['min']['y']) / 2
+                else:
+                    # Room1 is north of Room2
+                    wall_y = (bounds1['min']['y'] + bounds2['max']['y']) / 2
+
+                # Find x range of overlap
+                start_x = max(bounds1['min']['x'], bounds2['min']['x'])
+                end_x = min(bounds1['max']['x'], bounds2['max']['x'])
+
+                # Ensure proper ordering
+                if start_x > end_x:
+                    start_x, end_x = end_x, start_x
+
+                return {
+                    'start': {'x': start_x, 'y': wall_y},
+                    'end': {'x': end_x, 'y': wall_y},
+                    'is_vertical': False
+                }
+
+        # Function to snap point to grid
+        def snap_to_grid(x, grid_size=0.1):
+            return round(x / grid_size) * grid_size
+
+        # Function to check if two wall segments are collinear and can be merged
+        def can_merge_walls(wall1, wall2):
+            # Must have same orientation
+            if wall1.get('is_vertical') != wall2.get('is_vertical'):
+                return False
+
+            if wall1.get('is_vertical'):
+                # Vertical walls - must have same x coordinate and overlapping y range
+                if abs(wall1['start']['x'] - wall2['start']['x']) > 0.1:
+                    return False
+
+                # Check if y ranges overlap
+                y_min1, y_max1 = min(wall1['start']['y'], wall1['end']['y']), max(wall1['start']['y'], wall1['end']['y'])
+                y_min2, y_max2 = min(wall2['start']['y'], wall2['end']['y']), max(wall2['start']['y'], wall2['end']['y'])
+
+                return (y_min1 <= y_max2 + 0.1) and (y_min2 <= y_max1 + 0.1)
+            else:
+                # Horizontal walls - must have same y coordinate and overlapping x range
+                if abs(wall1['start']['y'] - wall2['start']['y']) > 0.1:
+                    return False
+
+                # Check if x ranges overlap
+                x_min1, x_max1 = min(wall1['start']['x'], wall1['end']['x']), max(wall1['start']['x'], wall1['end']['x'])
+                x_min2, x_max2 = min(wall2['start']['x'], wall2['end']['x']), max(wall2['start']['x'], wall2['end']['x'])
+
+                return (x_min1 <= x_max2 + 0.1) and (x_min2 <= x_max1 + 0.1)
+
+        # Function to merge two collinear wall segments
+        def merge_walls(wall1, wall2):
+            if wall1.get('is_vertical'):
+                # Merge vertical walls
+                x = (wall1['start']['x'] + wall2['start']['x']) / 2  # Average x value
+                y_min = min(wall1['start']['y'], wall1['end']['y'], wall2['start']['y'], wall2['end']['y'])
+                y_max = max(wall1['start']['y'], wall1['end']['y'], wall2['start']['y'], wall2['end']['y'])
+
+                merged = {
+                    'start': {'x': x, 'y': y_min},
+                    'end': {'x': x, 'y': y_max},
+                    'is_vertical': True,
+                    'thickness': max(wall1.get('thickness', 0.2), wall2.get('thickness', 0.2)),
+                    'height': max(wall1.get('height', 2.5), wall2.get('height', 2.5))
+                }
+            else:
+                # Merge horizontal walls
+                y = (wall1['start']['y'] + wall2['start']['y']) / 2  # Average y value
+                x_min = min(wall1['start']['x'], wall1['end']['x'], wall2['start']['x'], wall2['end']['x'])
+                x_max = max(wall1['start']['x'], wall1['end']['x'], wall2['start']['x'], wall2['end']['x'])
+
+                merged = {
+                    'start': {'x': x_min, 'y': y},
+                    'end': {'x': x_max, 'y': y},
+                    'is_vertical': False,
+                    'thickness': max(wall1.get('thickness', 0.2), wall2.get('thickness', 0.2)),
+                    'height': max(wall1.get('height', 2.5), wall2.get('height', 2.5))
+                }
+
+            return merged
+
+        # Create a list of adjacent room pairs
+        adjacent_pairs = []
+        for i in range(len(rooms)):
+            for j in range(i+1, len(rooms)):
+                if are_adjacent(rooms[i], rooms[j]):
+                    adjacent_pairs.append((rooms[i], rooms[j]))
+
+        logger.info(f"Found {len(adjacent_pairs)} adjacent room pairs")
+
+        # Generate raw wall segments for each adjacent pair
+        raw_walls = []
+        for room1, room2 in adjacent_pairs:
+            segment = find_overlapping_segment(room1, room2)
+            if segment:
+                # Snap to grid
+                segment['start']['x'] = snap_to_grid(segment['start']['x'])
+                segment['start']['y'] = snap_to_grid(segment['start']['y'])
+                segment['end']['x'] = snap_to_grid(segment['end']['x'])
+                segment['end']['y'] = snap_to_grid(segment['end']['y'])
+
+                # Add wall properties
+                thickness = self.validation['min_wall_thickness']
+
+                # Get height based on rooms
+                height = min(
+                    room1['dimensions']['height'],
+                    room2['dimensions']['height'],
+                    self.validation['max_ceiling_height']
+                )
+
+                # Create wall from segment
+                wall = {
+                    'start': segment['start'],
+                    'end': segment['end'],
+                    'is_vertical': segment['is_vertical'],
+                    'thickness': thickness,
+                    'height': height
+                }
+
+                # Calculate angle
+                dx = wall['end']['x'] - wall['start']['x']
+                dy = wall['end']['y'] - wall['start']['y']
+                angle = 0 if dx == 0 else math.atan2(dy, dx)
+                wall['angle'] = angle
+
+                # Only add walls with non-zero length
+                length = math.sqrt(dx**2 + dy**2)
+                if length > 0.1:
+                    raw_walls.append(wall)
+
+        # Merge collinear wall segments
+        processed_walls = []
+        raw_walls_copy = raw_walls.copy()
+
+        while raw_walls_copy:
+            current_wall = raw_walls_copy.pop(0)
+            merged = False
+
+            for i, other_wall in enumerate(raw_walls_copy):
+                if can_merge_walls(current_wall, other_wall):
+                    merged_wall = merge_walls(current_wall, other_wall)
+                    raw_walls_copy[i] = merged_wall
+                    merged = True
+                    break
+
+            if not merged:
+                # Convert to the final wall format expected by the system
+                final_wall = {
+                    'start': current_wall['start'],
+                    'end': current_wall['end'],
+                    'thickness': current_wall.get('thickness', self.validation['min_wall_thickness']),
+                    'height': current_wall.get('height', self.validation['min_ceiling_height']),
+                    'angle': current_wall.get('angle', 0)
+                }
+                processed_walls.append(final_wall)
+
+        logger.info(f"Generated {len(processed_walls)} walls after merging")
+        return processed_walls
+
     def _generate_walls_between_rooms(self, rooms):
-        """Generate walls between rooms using more realistic algorithms."""
+        """Generate walls between rooms using more realistic algorithms (fallback)."""
         walls = []
 
         try:
@@ -337,6 +563,10 @@ class BlueprintGenerator:
             # Log the validation criteria
             logger.debug(f"Validation criteria: {self.validation}")
 
+            # Check if blueprint has the required keys
+            if not all(key in blueprint for key in ['rooms', 'walls']):
+                raise ValueError("Blueprint is missing required keys: rooms or walls")
+
             # Validate rooms
             for room in blueprint['rooms']:
                 # Log room data for debugging
@@ -352,7 +582,7 @@ class BlueprintGenerator:
                    dims['height'] < self.validation['min_ceiling_height'] or \
                    dims['height'] > self.validation['max_ceiling_height']:
                     logger.error(f"Room {room['id']} dimensions out of valid range: width={dims['width']}, length={dims['length']}, height={dims['height']}")
-                    return False
+                    raise ValueError(f"Room {room['id']} dimensions out of valid range")
 
                 # Check area
                 area = dims['width'] * dims['length']
@@ -370,13 +600,13 @@ class BlueprintGenerator:
                 if wall['thickness'] < self.validation['min_wall_thickness'] or \
                    wall['thickness'] > self.validation['max_wall_thickness']:
                     logger.error(f"Wall {idx} thickness out of valid range: {wall['thickness']}")
-                    return False
+                    raise ValueError(f"Wall {idx} thickness out of valid range")
 
                 # Check height
                 if wall['height'] < self.validation['min_ceiling_height'] or \
                    wall['height'] > self.validation['max_ceiling_height']:
                     logger.error(f"Wall {idx} height out of valid range: {wall['height']}")
-                    return False
+                    raise ValueError(f"Wall {idx} height out of valid range")
 
             logger.info("Blueprint validation passed successfully")
             return True
@@ -387,82 +617,29 @@ class BlueprintGenerator:
             logger.error(traceback.format_exc())
             return False
 
-    def get_latest_blueprint(self) -> Optional[Dict]:
-        """Get the latest saved blueprint, with fallback to in-memory."""
-        # First check our in-memory blueprint
-        if hasattr(self, 'latest_generated_blueprint') and self.latest_generated_blueprint:
-            logger.info(f"Using in-memory blueprint with {len(self.latest_generated_blueprint.get('rooms', []))} rooms")
-            return self.latest_generated_blueprint
-
-        # Otherwise try database (existing code)
+    def get_latest_blueprint(self):
+        """Get the latest blueprint from the database."""
         try:
-            logger.info("No in-memory blueprint, checking database")
+            # First check in-memory cache
+            if hasattr(self, 'latest_generated_blueprint') and self.latest_generated_blueprint:
+                return self.latest_generated_blueprint
 
-            # Get multiple blueprints to ensure we find the latest one
-            query = """
-            SELECT data, created_at, id FROM blueprints
-            ORDER BY created_at DESC, id DESC LIMIT 5
-            """
-            results = execute_query(query)
+            # Get from SQLite using helper function
+            from .db import get_latest_blueprint_from_sqlite
+            blueprint = get_latest_blueprint_from_sqlite()
 
-            if not results:
-                logger.warning("No blueprints found in database")
-                return None
+            if blueprint:
+                # Store in memory for later access
+                self.latest_generated_blueprint = blueprint
+                logger.info(f"Retrieved latest blueprint with {len(blueprint.get('rooms', []))} rooms")
+                return blueprint
 
-            logger.info(f"Found {len(results)} blueprints in database")
-
-            # Sort results by created_at to ensure we get the latest
-            latest_blueprint = None
-            latest_created_at = None
-
-            for result in results:
-                # Extract data based on result format
-                if isinstance(result, tuple):
-                    blueprint_data, created_at, blueprint_id = result
-                elif isinstance(result, dict):
-                    blueprint_data = result.get('data')
-                    created_at = result.get('created_at')
-                    blueprint_id = result.get('id')
-                else:
-                    continue
-
-                logger.info(f"Examining blueprint {blueprint_id} from {created_at}")
-
-                # Parse JSON data
-                try:
-                    if isinstance(blueprint_data, str):
-                        blueprint = json.loads(blueprint_data)
-                    else:
-                        blueprint = blueprint_data
-
-                    # Verify this is a valid blueprint with rooms
-                    if 'rooms' in blueprint and isinstance(blueprint['rooms'], list) and len(blueprint['rooms']) > 0:
-                        if latest_created_at is None or (created_at and created_at > latest_created_at):
-                            latest_blueprint = blueprint
-                            latest_created_at = created_at
-                            logger.info(f"Found valid blueprint from {created_at} with {len(blueprint['rooms'])} rooms")
-                except (json.JSONDecodeError, TypeError) as e:
-                    logger.warning(f"Error parsing blueprint {blueprint_id}: {e}")
-
-            if latest_blueprint:
-                logger.info(f"Using blueprint from {latest_created_at} with {len(latest_blueprint.get('rooms', []))} rooms")
-                return latest_blueprint
-            else:
-                logger.warning("No valid blueprints found")
-                return None
-        except Exception as e:
-            logger.error(f"Failed to get latest blueprint: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.warning("No blueprint found in database")
             return None
 
-    def update_blueprint(self, blueprint_data: Dict) -> bool:
-        """Update blueprint with manual changes."""
-        if not self._validate_blueprint(blueprint_data):
-            logger.error("Updated blueprint failed validation")
-            return False
-
-        return save_blueprint_update(blueprint_data)
+        except Exception as e:
+            logger.error(f"Error retrieving latest blueprint: {e}")
+            return None
 
     def get_status(self):
         """Get the current status of blueprint generation."""
@@ -472,7 +649,7 @@ class BlueprintGenerator:
         """Refine the blueprint using AI techniques."""
         try:
             logger.debug("Applying AI-based blueprint refinement")
-            refined_blueprint = self.ai_processor.refine_blueprint(blueprint)
+            refined_blueprint = self.ai_processor.refine_blueprint(blueprint) if self.ai_processor else blueprint
 
             # Validate the refined blueprint
             if self._validate_blueprint(refined_blueprint):
@@ -489,71 +666,87 @@ class BlueprintGenerator:
     def _save_blueprint(self, blueprint):
         """Save blueprint to database."""
         try:
-            # Convert blueprint to JSON string
-            blueprint_json = json.dumps(blueprint)
+            if not blueprint:
+                logger.warning("Blueprint is empty, not saving to database.")
+                return False
 
-            # Get current timestamp
-            current_time = datetime.now().isoformat()
+            # Use helper function from db
+            from .db import save_blueprint_to_sqlite
+            success = save_blueprint_to_sqlite(blueprint)
 
-            # Insert into database with explicit timestamp
-            query = """
-            INSERT INTO blueprints (data, status, created_at)
-            VALUES (%s, 'active', %s)
-            """
-            execute_write_query(query, (blueprint_json, current_time))
-            logger.info(f"Blueprint saved successfully to database with timestamp {current_time}")
-            return True
+            if success:
+                # Update in-memory cache
+                self.latest_generated_blueprint = blueprint
+                logger.info(f"Successfully saved blueprint with {len(blueprint.get('rooms', []))} rooms")
+
+            return success
 
         except Exception as e:
-            logger.error(f"Failed to save blueprint: {str(e)}")
+            logger.error(f"Failed to save blueprint: {e}")
             return False
 
     def get_device_positions_from_db(self):
-        """Get the latest device positions from the database."""
+        """Get the latest device positions from the SQLite database."""
         try:
-            logger.info("Loading device positions from database")
+            from .db import get_sqlite_connection
+
+            # Get connection to SQLite
+            conn = get_sqlite_connection()
+            cursor = conn.cursor()
+
+            # Query for latest device positions
             query = """
             SELECT device_id, position_data, source, timestamp
             FROM device_positions
-            WHERE timestamp = (SELECT MAX(timestamp) FROM device_positions)
+            ORDER BY timestamp DESC
+            LIMIT 100
             """
-            results = execute_query(query)
 
+            cursor.execute(query)
+            results = cursor.fetchall()
+            conn.close()
+
+            # Process results
             positions = {}
+            seen_devices = set()
+
             for row in results:
-                if isinstance(row, tuple):
-                    device_id, position_data, source, timestamp = row
-                else:
-                    device_id = row.get('device_id')
-                    position_data = row.get('position_data')
-                    source = row.get('source')
-                    timestamp = row.get('timestamp')
+                device_id = row[0]
+                position_data = row[1]
+                source = row[2]
 
-                # Parse position data from JSON
+                # Skip if we already have a position for this device
+                if device_id in seen_devices:
+                    continue
+
+                seen_devices.add(device_id)
+
+                # Parse position data
                 try:
-                    if isinstance(position_data, str):
-                        position = json.loads(position_data)
-                    else:
-                        position = position_data
+                    if position_data:
+                        if isinstance(position_data, str):
+                            position = json.loads(position_data)
+                        else:
+                            position = position_data
 
-                    # Ensure all required fields exist
-                    if all(k in position for k in ['x', 'y', 'z']):
-                        positions[device_id] = {
-                            'x': float(position['x']),
-                            'y': float(position['y']),
-                            'z': float(position['z']),
-                            'accuracy': float(position.get('accuracy', 1.0)),  # Get accuracy from the position JSON
-                            'source': source or position.get('source', 'unknown')
-                        }
+                        # Ensure required fields exist
+                        if all(k in position for k in ['x', 'y', 'z']):
+                            positions[device_id] = {
+                                'x': float(position['x']),
+                                'y': float(position['y']),
+                                'z': float(position['z']),
+                                'accuracy': float(position.get('accuracy', 1.0)),
+                                'source': source or position.get('source', 'unknown'),
+                                'area_id': position.get('area_id')
+                            }
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.warning(f"Error parsing position data for {device_id}: {e}")
 
-            logger.info(f"Loaded {len(positions)} device positions from database")
+            logger.info(f"Loaded {len(positions)} device positions from SQLite database")
             return positions
+
         except Exception as e:
-            logger.error(f"Error loading device positions from database: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f"Error getting device positions from database: {e}")
             return {}
 
     def _group_rooms_into_floors(self, rooms: List[Dict]) -> List[Dict]:
@@ -584,9 +777,8 @@ class BlueprintGenerator:
         logger.info(f"Grouped {len(rooms)} rooms into {len(floors)} floors")
         return floors
 
-# Add this to your main.py or blueprint_generator.py
 def ensure_reference_positions():
-    """Make sure we have at least some reference positions in the database"""
+    """Make sure we have at least some reference positions in the SQLite database"""
     from .db import get_sqlite_connection
 
     conn = get_sqlite_connection()
@@ -603,10 +795,11 @@ def ensure_reference_positions():
             "reference_point_2": {"x": 5, "y": 0, "z": 0},
             "reference_point_3": {"x": 0, "y": 5, "z": 0}
         }
-        from .bluetooth_processor import save_device_position
+        # Use SQLite functions directly
+        from .db import save_device_position_to_sqlite
         for device_id, position in default_positions.items():
             position['source'] = 'initial_setup'
             position['accuracy'] = 1.0
-            save_device_position(device_id, position)
+            save_device_position_to_sqlite(device_id, position)
         return default_positions
     return None

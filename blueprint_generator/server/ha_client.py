@@ -143,6 +143,32 @@ class HomeAssistantClient:
         # Return empty string if no token found (will fail authentication)
         return ""
 
+    def test_connection(self) -> bool:
+        """Test connection to Home Assistant API."""
+        try:
+            url = f"{self.base_url}/api/" # Test base API endpoint
+            response = requests.get(url, headers=self.headers, timeout=5)
+            # Check for successful status code (e.g., 200 OK)
+            # Also check response content if necessary (e.g., {"message": "API running."})
+            if response.status_code == 200:
+                 # Simple check if response looks like expected HA API response
+                 try:
+                     data = response.json()
+                     if isinstance(data, dict) and 'message' in data:
+                         logger.info("Home Assistant API connection successful.")
+                         return True
+                 except json.JSONDecodeError:
+                      logger.warning("HA API connection test: Unexpected response format, but status 200.")
+                      return True # Assume connected if status is OK
+            logger.error(f"Home Assistant API connection test failed: Status {response.status_code}")
+            return False
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Home Assistant API connection test failed: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error during HA connection test: {e}")
+            return False
+
     def find_entities_by_pattern(self, patterns: List[str], domains: List[str] = None) -> List[Dict]:
         """Find entities matching any of the patterns in their entity_id or attributes."""
         try:
@@ -304,8 +330,8 @@ class HomeAssistantClient:
                 # More flexible matching - look for position indicators in entity ID or attributes
                 has_position_keyword = any(keyword in entity_id for keyword in position_keywords)
                 has_position_attrs = ('position' in attributes or
-                                    ('x' in attributes and 'y' in attributes) or
-                                    ('latitude' in attributes and 'longitude' in attributes))
+                                      ('x' in attributes and 'y' in attributes) or
+                                      ('latitude' in attributes and 'longitude' in attributes))
 
                 if has_position_keyword or has_position_attrs:
                     # Try different formats of position data
@@ -346,25 +372,24 @@ class HomeAssistantClient:
                             'y': float(position_data.get('y', 0)),
                             'z': float(position_data.get('z', 0))
                         }
-
-                        positions.append({
-                            'device_id': device_id,
-                            'position': position,
-                            'entity_id': state.get('entity_id')  # Keep original entity ID for reference
-                        })
-
-                        # Debug logging
-                        logger.debug(f"Found position entity: {state.get('entity_id')} at {position}")
-
                     except (ValueError, TypeError):
                         logger.warning(f"Could not convert position data to float for {state.get('entity_id')}")
                         continue
+
+                    positions.append({
+                        'device_id': device_id,
+                        'position': position,
+                        'entity_id': state.get('entity_id')  # Keep original entity ID for reference
+                    })
+
+                    # Debug logging
+                    logger.debug(f"Found position entity: {state.get('entity_id')} at {position}")
 
             logger.info(f"Found {len(positions)} position entities")
             return positions
 
         except Exception as e:
-            logger.error(f"Failed to get position data from Home Assistant: {str(e)}")
+            logger.error(f"Error in get_bermuda_positions: {e}")
             return []
 
     def process_bluetooth_data(self, data: Dict) -> Dict:
@@ -596,4 +621,298 @@ class HomeAssistantClient:
 
         except Exception as e:
             logger.error(f"All entity registry methods failed: {e}")
+            return []
+
+    def get_entities(self, domain: Optional[str] = None, name_contains: Optional[str] = None) -> List[Dict]:
+        """
+        Get entities from Home Assistant, optionally filtered by domain and name.
+
+        Args:
+            domain: Optional domain to filter entities (e.g., 'sensor', 'light')
+            name_contains: Optional string to filter entities by name or ID
+
+        Returns:
+            List of entity dictionaries
+        """
+        try:
+            # Get all entities
+            response = requests.get(f"{self.base_url}/api/states", headers=self.headers)
+            response.raise_for_status()
+            entities = response.json()
+
+            # Apply domain filter if specified
+            if (domain):
+                entities = [e for e in entities if e.get('entity_id', '').startswith(f"{domain}.")]
+
+            # Apply name filter if specified
+            if (name_contains):
+                name_contains = name_contains.lower()
+                entities = [e for e in entities if (
+                    name_contains in e.get('entity_id', '').lower() or
+                    name_contains in e.get('attributes', {}).get('friendly_name', '').lower()
+                )]
+
+            logger.debug(f"Found {len(entities)} entities matching filters: domain={domain}, name_contains={name_contains}")
+            return entities
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error getting entities from Home Assistant: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error in get_entities: {e}")
+            return []
+
+    def get_entity(self, entity_id: str) -> Optional[Dict]:
+        """Get a specific entity from Home Assistant."""
+        try:
+            response = requests.get(f"{self.base_url}/api/states/{entity_id}", headers=self.headers)
+            if response.status_code == 200:
+                return response.json()
+            logger.warning(f"Entity {entity_id} not found, status code: {response.status_code}")
+            return None
+        except Exception as e:
+            logger.error(f"Error getting entity {entity_id}: {e}")
+            return None
+
+    def get_area_coordinates(self, area_id: str) -> Optional[Dict[str, float]]:
+        """
+        Get coordinates for an area if available.
+        This usually requires a custom component or blueprint that stores area coordinates.
+        """
+        try:
+            # Try to get coordinates from area attributes
+            # This is implementation dependent - you may need to adjust based on your setup
+
+            # First check if there's a dedicated area position entity
+            area_pos_entities = self.get_entities("sensor", f"area_position_{area_id}")
+            if area_pos_entities:
+                entity = area_pos_entities[0]
+                attrs = entity.get('attributes', {})
+                if 'x' in attrs and 'y' in attrs:
+                    return {
+                        'x': float(attrs['x']),
+                        'y': float(attrs['y']),
+                        'z': float(attrs.get('z', 0))
+                    }
+
+            # Alternatively, look for entities in this area that might have position
+            area_entities = []
+
+            # Get entities that might have area_id in their attributes
+            all_entities = self.get_entities()
+            for entity in all_entities:
+                entity_area = entity.get('attributes', {}).get('area_id')
+                if entity_area == area_id:
+                    area_entities.append(entity)
+
+            # Check if any entity has position information
+            for entity in area_entities:
+                attrs = entity.get('attributes', {})
+                if all(k in attrs for k in ['x', 'y']):
+                    return {
+                        'x': float(attrs['x']),
+                        'y': float(attrs['y']),
+                        'z': float(attrs.get('z', 0))
+                    }
+
+            # If no position found, generate a placeholder position based on area index
+            areas = self.get_areas()
+            if areas:
+                for i, area in enumerate(areas):
+                    if area.get('area_id') == area_id:
+                        # Generate a grid layout
+                        grid_size = 5  # 5 areas per row
+                        row = i // grid_size
+                        col = i % grid_size
+                        return {
+                            'x': col * 5.0,  # 5 meter spacing
+                            'y': row * 5.0,
+                            'z': 0.0
+                        }
+
+            logger.warning(f"No coordinates found for area {area_id}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error getting area coordinates for {area_id}: {e}")
+            return None
+
+    def get_sensor_entities(self) -> List[Dict]:
+        """
+        Get all sensor entities with position, distance, or RSSI data.
+        More comprehensive than get_private_ble_devices, with area_id integration.
+        """
+        try:
+            # Get all states for relevant domains
+            url = f"{self.base_url}/api/states"
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            all_states = response.json()
+
+            # Get entity registry for area_id lookup
+            entity_registry = {}
+            try:
+                registry_entries = self.get_entity_registry()
+                for entry in registry_entries:
+                    if isinstance(entry, dict) and 'entity_id' in entry:
+                        entity_registry[entry['entity_id']] = entry
+                logger.info(f"Loaded {len(entity_registry)} entries from entity registry")
+            except Exception as e:
+                logger.warning(f"Error loading entity registry: {e}")
+
+            sensor_entities = []
+            relevant_domains = ['sensor', 'device_tracker', 'binary_sensor']
+
+            # Keywords that might indicate relevant entities
+            position_keywords = ['position', 'location', 'coordinates', 'xy', 'xyz']
+            distance_keywords = ['distance', 'range', 'proximity', 'meters']
+            rssi_keywords = ['rssi', 'signal', 'strength', 'ble', 'bluetooth']
+
+            for state in all_states:
+                entity_id = state.get('entity_id', '')
+                domain = entity_id.split('.')[0] if '.' in entity_id else ''
+
+                # Skip if not in relevant domains
+                if domain not in relevant_domains:
+                    continue
+
+                attributes = state.get('attributes', {})
+                entity_state = state.get('state')
+
+                # Initialize entity data
+                entity_data = {
+                    'entity_id': entity_id,
+                    'state': entity_state,
+                    'attributes': attributes.copy(),  # Copy to avoid modifying original
+                    'domain': domain
+                }
+
+                # Add area_id from registry if available
+                registry_entry = entity_registry.get(entity_id)
+                if registry_entry and 'area_id' in registry_entry:
+                    entity_data['area_id'] = registry_entry['area_id']
+                elif 'area_id' in attributes:
+                    entity_data['area_id'] = attributes['area_id']
+
+                # Determine entity type and extract relevant data
+
+                # 1. Check for direct position data
+                has_position = False
+                if 'position' in attributes and isinstance(attributes['position'], dict):
+                    position = attributes['position']
+                    if 'x' in position and 'y' in position:
+                        entity_data['position_data'] = {
+                            'x': float(position['x']),
+                            'y': float(position['y']),
+                            'z': float(position.get('z', 0))
+                        }
+                        has_position = True
+
+                # Also check for top-level position attributes
+                elif all(k in attributes for k in ['x', 'y']):
+                    entity_data['position_data'] = {
+                        'x': float(attributes['x']),
+                        'y': float(attributes['y']),
+                        'z': float(attributes.get('z', 0))
+                    }
+                    has_position = True
+
+                # Or lat/long coordinates
+                elif all(k in attributes for k in ['latitude', 'longitude']):
+                    # Convert to x/y coordinates (simplified)
+                    # In a real implementation, use proper geo to cartesian conversion
+                    entity_data['position_data'] = {
+                        'x': float(attributes['longitude']) * 100,
+                        'y': float(attributes['latitude']) * 100,
+                        'z': float(attributes.get('elevation', 0))
+                    }
+                    has_position = True
+
+                # 2. Check for distance data
+                has_distance = False
+                if 'distance' in attributes:
+                    entity_data['distance'] = float(attributes['distance'])
+                    has_distance = True
+                elif any(k in entity_id for k in distance_keywords):
+                    try:
+                        # If entity_id suggests this is distance and state is numeric
+                        entity_data['distance'] = float(entity_state)
+                        has_distance = True
+                    except (ValueError, TypeError):
+                        pass
+
+                # Also check for source_id for distance readings
+                if has_distance and 'source_id' in attributes:
+                    entity_data['source_id'] = attributes['source_id']
+                elif has_distance and ('scanner_id' in attributes):
+                    entity_data['source_id'] = attributes['scanner_id']
+
+                # For Bermuda format: sensor.<device>_distance_<scanner>
+                if '_distance_' in entity_id and has_distance:
+                    parts = entity_id.split('_distance_')
+                    if len(parts) == 2:
+                        device_part = parts[0].split('sensor.')[1] if parts[0].startswith('sensor.') else parts[0]
+                        scanner_id = parts[1]
+                        entity_data['device_id'] = device_part
+                        entity_data['source_id'] = scanner_id
+
+                # 3. Check for RSSI data
+                has_rssi = False
+                if 'rssi' in attributes:
+                    try:
+                        entity_data['rssi'] = float(attributes['rssi'])
+                        has_rssi = True
+                    except (ValueError, TypeError):
+                        if attributes['rssi'] not in (None, 'unavailable', 'unknown'):
+                            logger.debug(f"Non-numeric RSSI value in {entity_id}: {attributes['rssi']}")
+
+                # 4. Check for transmission power (tx_power)
+                if 'tx_power' in attributes:
+                    try:
+                        entity_data['tx_power'] = float(attributes['tx_power'])
+                    except (ValueError, TypeError):
+                        pass
+
+                # 5. Extract MAC address or device identifier
+                for id_field in ['mac', 'address', 'uuid', 'bluetooth_address']:
+                    if id_field in attributes:
+                        entity_data['device_id'] = attributes[id_field]
+                        break
+
+                # If we don't have a device_id yet, try to extract from entity_id
+                if 'device_id' not in entity_data and '_' in entity_id:
+                    parts = entity_id.split('_')
+                    # Try to extract a meaningful identifier - often the last part
+                    if len(parts) >= 3:
+                        entity_data['device_id'] = parts[-1]
+
+                # Determine if this entity is relevant for our purposes
+                is_relevant = (
+                    has_position or
+                    has_distance or
+                    has_rssi or
+                    any(keyword in entity_id.lower() for keyword in position_keywords + distance_keywords + rssi_keywords)
+                )
+
+                if is_relevant:
+                    sensor_entities.append(entity_data)
+
+            logger.info(f"Found {len(sensor_entities)} relevant sensor entities")
+
+            # Log some examples of what we found
+            if sensor_entities and logger.isEnabledFor(logging.DEBUG):
+                examples = sensor_entities[:min(3, len(sensor_entities))]
+                for example in examples:
+                    logger.debug(f"Example entity: {example['entity_id']}")
+                    if 'position_data' in example:
+                        logger.debug(f"  Position: {example['position_data']}")
+                    if 'distance' in example:
+                        logger.debug(f"  Distance: {example['distance']}")
+                    if 'rssi' in example:
+                        logger.debug(f"  RSSI: {example['rssi']}")
+
+            return sensor_entities
+
+        except Exception as e:
+            logger.error(f"Error fetching sensor entities: {e}", exc_info=True)
             return []
