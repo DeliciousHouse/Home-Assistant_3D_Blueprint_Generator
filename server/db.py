@@ -4,6 +4,7 @@ import sqlite3
 import os
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
+from typing import Union
 
 # Use the standardized config loader
 try:
@@ -168,7 +169,7 @@ def _execute_sqlite_write(query: str, params: Optional[Tuple] = None, fetch_last
         if conn:
             conn.close()
 
-def _execute_sqlite_read(query: str, params: Optional[Tuple] = None, fetch_one: bool = False) -> Optional[List[Dict[str, Any]] | Dict[str, Any]]:
+def _execute_sqlite_read(query: str, params: Optional[Tuple] = None, fetch_one: bool = False) -> Optional[Union[List[Dict[str, Any]], Dict[str, Any]]]:
     """Helper function for SQLite reads. Returns list of dicts or single dict."""
     conn = None
     try:

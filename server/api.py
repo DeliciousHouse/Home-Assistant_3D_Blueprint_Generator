@@ -496,7 +496,7 @@ def add_rssi_distance_data():
         logger.error(f"Failed to save RSSI-to-distance data: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-def start_api(host: str = '0.0.0.0', port: int = 5000, debug: bool = False):
+def start_api(host: str = '0.0.0.0', port: int = 8000, debug: bool = False):
     """Start the Flask API server."""
     app.run(host=host, port=port, debug=debug)
 
