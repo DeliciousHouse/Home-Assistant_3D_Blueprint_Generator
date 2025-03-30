@@ -22,6 +22,9 @@ logging.basicConfig(
 logger = logging.getLogger("blueprint_generator")
 logger.info("Starting Blueprint Generator")
 
+# Add the parent directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Set the working directory to the script directory
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 

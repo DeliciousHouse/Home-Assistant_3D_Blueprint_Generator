@@ -13,7 +13,7 @@ try:
 except ImportError:
     # Fallback if structure is different (e.g., config_loader is one level up)
     try:
-        from config_loader import load_config
+        from .config_loader import load_config
     except ImportError:
         # Last resort: simple default
         def load_config(path=None): return {}
