@@ -1,6 +1,6 @@
 # config.yaml
 name: 3D Blueprint Generator
-version: "1.02" # Or your actual version
+version: "1.78" # Or your actual version
 slug: blueprint_generator # Choose a unique slug
 description: Generates 3D blueprints using BLE sensors and HA data
 arch:
