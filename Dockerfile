@@ -50,7 +50,14 @@ COPY nginx.conf /etc/nginx/nginx.conf
 
 # Create log directories
 RUN mkdir -p /var/log/ /var/log/nginx
+
+# Create data directory
 RUN mkdir -p /data
+# Explicitly set ownership to root (common for container processes)
+# Or use 'nginx:nginx' if your entrypoint switches user
+RUN chown -R root:root /data
+# Grant write permissions broadly (adjust if security is paramount)
+RUN chmod -R 777 /data
 VOLUME /data
 
 # Make scripts executable and move entrypoint
