@@ -9,7 +9,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-# Load GitHub token (using the same approach as build-and-push.sh)
+# Load GitHub token
 if [ -f ~/.github_token ]; then
   GITHUB_TOKEN=$(cat ~/.github_token)
 else
@@ -24,6 +24,43 @@ BRANCH_NAME=${2:-main}
 
 echo -e "${YELLOW}Starting development push workflow...${NC}"
 
+# Check if user wants to update version
+read -p "Do you want to update the version number? (y/n): " VERSION_CHOICE
+
+if [[ $VERSION_CHOICE == "y" || $VERSION_CHOICE == "Y" ]]; then
+    # Get current version from config.yaml
+    CURRENT_VERSION=$(grep 'version:' config.yaml | sed 's/.*"\([0-9.]*\)".*/\1/')
+    echo -e "${YELLOW}Current version: $CURRENT_VERSION${NC}"
+
+    # Increment version by 0.01
+    NEW_VERSION=$(awk -v ver="$CURRENT_VERSION" 'BEGIN { printf("%.2f", ver + 0.01) }')
+    echo -e "${GREEN}New version: $NEW_VERSION${NC}"
+
+    # Update version in config.yaml
+    sed -i "s/version: \"$CURRENT_VERSION\"/version: \"$NEW_VERSION\"/" config.yaml
+    echo -e "${GREEN}Updated config.yaml to version $NEW_VERSION${NC}"
+
+    # Update repository.json
+    if [ -f repository.json ]; then
+        echo "Updating repository.json..."
+        sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" repository.json
+        echo -e "${GREEN}Updated repository.json to version $NEW_VERSION${NC}"
+    else
+        echo -e "${YELLOW}Warning: repository.json not found.${NC}"
+    fi
+
+    # Update build.yaml if it exists
+    if [ -f build.yaml ]; then
+        echo "Updating build.yaml..."
+        sed -i "s/org.opencontainers.image.version: \"$CURRENT_VERSION\"/org.opencontainers.image.version: \"$NEW_VERSION\"/" build.yaml
+        echo -e "${GREEN}Updated build.yaml to version $NEW_VERSION${NC}"
+    else
+        echo -e "${YELLOW}Warning: build.yaml not found.${NC}"
+    fi
+
+    echo -e "${GREEN}Version updated successfully.${NC}"
+fi
+
 # Check if we have uncommitted changes
 if [[ -n $(git status -s) ]]; then
     echo -e "${YELLOW}Uncommitted changes detected.${NC}"
@@ -35,8 +72,15 @@ if [[ -n $(git status -s) ]]; then
     read -p "Do you want to commit these changes? (y/n): " COMMIT_CHOICE
 
     if [[ $COMMIT_CHOICE == "y" || $COMMIT_CHOICE == "Y" ]]; then
+        # If we updated the version, suggest a commit message
+        DEFAULT_MSG=""
+        if [[ $VERSION_CHOICE == "y" || $VERSION_CHOICE == "Y" ]]; then
+            DEFAULT_MSG="Update to version $NEW_VERSION"
+        fi
+
         # Ask for commit message
-        read -p "Enter commit message: " COMMIT_MSG
+        read -p "Enter commit message [$DEFAULT_MSG]: " COMMIT_MSG
+        COMMIT_MSG=${COMMIT_MSG:-$DEFAULT_MSG}
 
         # Add and commit changes
         git add .
