@@ -941,8 +941,17 @@ class HomeAssistantClient:
         """Gets entities likely representing distance measurements."""
         sensors = []
         try:
+            # This call should now use the corrected URL construction inside get_entities
+            logger.debug("HA_Client: Fetching entities with domain 'sensor' for distance check.")
+            all_states = self.get_entities(domain='sensor')
+            if all_states is None: # Check if get_entities failed
+                 logger.error("HA_Client: get_entities returned None, cannot find distance sensors.")
+                 return [] # Return empty list explicitly
+            if not all_states:
+                 logger.warning("HA_Client: get_entities returned empty list for domain 'sensor'.")
+                 return []
+
             # Pattern for Bermuda distance sensors: sensor.<device>_distance_<scanner>
-            all_states = self.get_entities(domain='sensor') # Or broader search if needed
             for state in all_states:
                 entity_id = state.get('entity_id', '')
                 if '_distance_' in entity_id and entity_id.startswith('sensor.'):
@@ -961,7 +970,7 @@ class HomeAssistantClient:
                                 })
                     except (ValueError, TypeError):
                         continue # Skip non-numeric states
-            logger.info(f"Found {len(sensors)} potential distance sensor entities.")
+            logger.info(f"HA_Client: Found {len(sensors)} potential distance sensor entities.")
         except Exception as e:
             logger.error(f"Error fetching distance sensors: {e}", exc_info=True)
         return sensors
@@ -970,9 +979,16 @@ class HomeAssistantClient:
         """Gets the current predicted area for devices (e.g., from Bermuda's area sensor)."""
         predictions = {}
         try:
-            # Find entities matching the pattern Bermuda uses for area prediction
-            # Adjust the pattern if necessary!
+            logger.debug("HA_Client: Fetching entities with domain 'sensor' and name containing '_area'.")
             area_sensors = self.get_entities(domain='sensor', name_contains='_area')
+            if area_sensors is None: # Check if get_entities failed
+                 logger.error("HA_Client: get_entities returned None, cannot find area sensors.")
+                 return {} # Return empty dict explicitly
+            if not area_sensors:
+                 logger.warning("HA_Client: get_entities returned empty list for area sensors.")
+                 return {}
+
+            # Find entities matching the pattern Bermuda uses for area prediction
             for entity in area_sensors:
                 entity_id = entity.get('entity_id')
                 state = entity.get('state')
@@ -986,7 +1002,7 @@ class HomeAssistantClient:
                      # Ideally, Bermuda sensor attribute would provide area_id
                      area_id = entity.get('attributes', {}).get('area_id', area_name) # Prefer ID if available
                      predictions[device_id] = area_id
-            logger.info(f"Fetched current area predictions for {len(predictions)} devices.")
+            logger.info(f"HA_Client: Fetched current area predictions for {len(predictions)} devices.")
             return predictions
         except Exception as e:
             logger.error(f"Error fetching device area predictions: {e}", exc_info=True)

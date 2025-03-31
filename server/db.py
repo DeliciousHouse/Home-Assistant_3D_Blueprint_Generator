@@ -32,16 +32,18 @@ SQLITE_DB_PATH = '/data/blueprint_data.db'
 def get_sqlite_connection():
     """Get connection to the add-on's local SQLite database."""
     try:
-        # Ensure the /data directory exists
-        os.makedirs('/data', exist_ok=True)
+        db_dir = os.path.dirname(SQLITE_DB_PATH)
+        os.makedirs(db_dir, exist_ok=True) # Ensure directory exists
+        logger.debug(f"Attempting to connect to SQLite DB at {SQLITE_DB_PATH}")
         conn = sqlite3.connect(SQLITE_DB_PATH, timeout=10)
         conn.row_factory = sqlite3.Row # Use Row factory for dict-like access
         # Enable WAL mode for better concurrency
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys = ON;") # Enforce foreign keys if used
+        logger.debug("SQLite connection successful.")
         return conn
     except sqlite3.Error as e:
-        logger.error(f"Failed to connect to SQLite at {SQLITE_DB_PATH}: {str(e)}", exc_info=True)
+        logger.error(f"CRITICAL: Failed to connect to SQLite at {SQLITE_DB_PATH}: {type(e).__name__} - {str(e)}", exc_info=True)
         raise # Re-raise critical error
 
 # --- Schema Initialization ---
@@ -159,6 +161,20 @@ def init_sqlite_db():
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_ref_positions_device_id ON reference_positions (device_id);')
 
+        # --- Test Write/Read ---
+        cursor.execute("INSERT INTO blueprints (data, status, created_at) VALUES (?, ?, ?)", ('{"test": true}', 'test', datetime.now().isoformat()))
+        conn.commit()
+        cursor.execute("SELECT id FROM blueprints WHERE status = 'test' LIMIT 1")
+        test_result = cursor.fetchone()
+        if test_result:
+            cursor.execute("DELETE FROM blueprints WHERE status = 'test'")
+            conn.commit()
+            logger.info("SQLite basic write/read test successful.")
+        else:
+            logger.error("SQLite basic write/read test FAILED.")
+            return False # Indicate failure if test fails
+        # --- End Test ---
+
         conn.commit()
         logger.info("SQLite database schema initialized/verified successfully.")
         return True
@@ -175,42 +191,57 @@ def init_sqlite_db():
 # --- Internal Execution Helpers ---
 
 def _execute_sqlite_write(query: str, params: Optional[Tuple] = None, fetch_last_id: bool = False) -> Optional[int]:
-    """Helper function for SQLite writes."""
+    """Helper function for SQLite writes with enhanced logging."""
     conn = None
     last_id = None
+    # Limit query logging for brevity
+    log_query = query.strip()[:150] + ('...' if len(query.strip()) > 150 else '')
+    # Mask sensitive data in params if necessary (not needed here)
+    log_params = params or ()
+
     try:
         conn = get_sqlite_connection()
         cursor = conn.cursor()
+        logger.debug(f"Executing SQLite write: Query='{log_query}' PARAMS={log_params}")
         cursor.execute(query, params or ())
         if fetch_last_id:
             last_id = cursor.lastrowid
         conn.commit()
-        logger.debug(f"SQLite write successful: {query[:60]}...")
+        logger.debug(f"SQLite write successful for Query='{log_query}'")
         return last_id
     except sqlite3.Error as e:
-        logger.error(f"SQLite write query failed: {query[:60]}... Error: {str(e)}", exc_info=True)
+        logger.error(f"SQLite write FAILED! Query='{log_query}' PARAMS={log_params} Error: {type(e).__name__} - {str(e)}", exc_info=True)
         if conn:
-            conn.rollback()
+            try:
+                conn.rollback()
+                logger.info("SQLite transaction rolled back.")
+            except sqlite3.Error as rb_e:
+                logger.error(f"Failed to rollback transaction: {rb_e}")
         return None # Indicate failure explicitly
     finally:
         if conn:
             conn.close()
 
 def _execute_sqlite_read(query: str, params: Optional[Tuple] = None, fetch_one: bool = False) -> Optional[Union[List[Dict[str, Any]], Dict[str, Any]]]:
-    """Helper function for SQLite reads. Returns list of dicts or single dict."""
+    """Helper function for SQLite reads with enhanced logging."""
     conn = None
+    log_query = query.strip()[:150] + ('...' if len(query.strip()) > 150 else '')
+    log_params = params or ()
     try:
         conn = get_sqlite_connection()
         cursor = conn.cursor()
+        logger.debug(f"Executing SQLite read: Query='{log_query}' PARAMS={log_params}")
         cursor.execute(query, params or ())
         if fetch_one:
             row = cursor.fetchone()
+            logger.debug(f"SQLite read fetch_one successful for Query='{log_query}'. Found: {row is not None}")
             return dict(row) if row else None
         else:
-            # Convert all rows to dictionaries
-            return [dict(row) for row in cursor.fetchall()]
+            rows = cursor.fetchall()
+            logger.debug(f"SQLite read fetch_all successful for Query='{log_query}'. Rows fetched: {len(rows)}")
+            return [dict(row) for row in rows] # Convert all rows
     except sqlite3.Error as e:
-        logger.error(f"SQLite read query failed: {query[:60]}... Error: {str(e)}", exc_info=True)
+        logger.error(f"SQLite read FAILED! Query='{log_query}' PARAMS={log_params} Error: {type(e).__name__} - {str(e)}", exc_info=True)
         return None # Indicate failure
     finally:
         if conn:
@@ -366,13 +397,13 @@ def save_distance_log(tracked_device_id: str, scanner_id: str, distance: float) 
     """
     timestamp = datetime.now().isoformat()
     params = (timestamp, tracked_device_id, scanner_id, distance)
+    logger.debug(f"Attempting to save distance log with params: {params}") # Log before write attempt
     result = _execute_sqlite_write(query, params)
-    if result is not None:
-        logger.debug(f"Saved distance log: {tracked_device_id} to {scanner_id}: {distance}m")
-        return True
-    else:
-        logger.error(f"Failed to save distance log for {tracked_device_id}")
+    if result is None:
+        logger.error(f"Failed DB write for distance log: device={tracked_device_id}, scanner={scanner_id}, dist={distance}")
         return False
+    else:
+        return True
 
 def save_area_observation(tracked_device_id: str, predicted_area_id: Optional[str]) -> bool:
     """Save an area prediction observation to the database."""
@@ -382,13 +413,13 @@ def save_area_observation(tracked_device_id: str, predicted_area_id: Optional[st
     """
     timestamp = datetime.now().isoformat()
     params = (timestamp, tracked_device_id, predicted_area_id)
+    logger.debug(f"Attempting to save area observation with params: {params}") # Log before write attempt
     result = _execute_sqlite_write(query, params)
-    if result is not None:
-        logger.debug(f"Saved area observation for {tracked_device_id} in {predicted_area_id}")
-        return True
-    else:
-        logger.error(f"Failed to save area observation for {tracked_device_id}")
+    if result is None:
+        logger.error(f"Failed DB write for area observation: device={tracked_device_id}, area={predicted_area_id}")
         return False
+    else:
+        return True
 
 def get_recent_distances(time_window_minutes: int = 10) -> List[Dict[str, Any]]:
     """Fetches recent distance logs within specified time window."""
@@ -400,7 +431,7 @@ def get_recent_distances(time_window_minutes: int = 10) -> List[Dict[str, Any]]:
     """
     cutoff_time = datetime.fromtimestamp(datetime.now().timestamp() - time_window_minutes * 60).isoformat()
     params = (cutoff_time,)
-    results = _execute_sqlite_read(query, params)
+    results = _execute_sqlite_read(query, params) # Use the enhanced reader
     return results if results is not None else []
 
 def get_recent_area_predictions(time_window_minutes: int = 5) -> Dict[str, Optional[str]]:
@@ -417,7 +448,7 @@ def get_recent_area_predictions(time_window_minutes: int = 5) -> Dict[str, Optio
     """
     cutoff_time = datetime.fromtimestamp(datetime.now().timestamp() - time_window_minutes * 60).isoformat()
     params = (cutoff_time, cutoff_time)
-    results = _execute_sqlite_read(query, params)
+    results = _execute_sqlite_read(query, params) # Use the enhanced reader
     if results is None:
         return {}
     return {row['tracked_device_id']: row['predicted_area_id'] for row in results}
