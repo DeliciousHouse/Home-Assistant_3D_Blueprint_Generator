@@ -66,3 +66,13 @@ def load_config(config_path: Optional[str] = None) -> Dict:
     return config
 
 # Removed _merge_configs as direct update/get is used now
+
+def get_api_config():
+    config = load_config()
+    # Try port 8001, fall back to 8002 if busy
+    port = config.get('api', {}).get('port', 8001)
+    return {
+        'host': config.get('api', {}).get('host', '0.0.0.0'),
+        'port': port,
+        'debug': config.get('api', {}).get('debug', False)
+    }

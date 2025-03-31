@@ -114,7 +114,17 @@ def main():
 
         logger.info(f"Starting API server on {host}:{port}")
         # Ensure your start_api function or the components it uses can access the loaded config
-        start_api(host=host, port=port, debug=debug) # Pass config if needed by API directly
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                start_api(host=host, port=port, debug=debug)
+                break
+            except OSError as e:
+                if "Address already in use" in str(e) and attempt < max_attempts - 1:
+                    logger.warning(f"Port {port} already in use, trying port {port+1}")
+                    port += 1
+                else:
+                    raise
 
     except Exception as e:
         logger.error(f"Application startup failed: {str(e)}", exc_info=True) # Add exc_info for traceback
