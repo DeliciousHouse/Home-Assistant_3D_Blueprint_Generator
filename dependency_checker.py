@@ -5,7 +5,6 @@ import os
 import re
 import sys
 import importlib
-import subprocess
 from pathlib import Path
 
 # ANSI colors for output
@@ -15,35 +14,49 @@ RED = '\033[91m'
 ENDC = '\033[0m'
 
 def get_project_files(directory='.'):
-    """Get all Python files in the project."""
+    """Get Python files in the project directory only, avoiding system files."""
+    base_path = os.path.abspath(directory)
     python_files = []
-    for root, _, files in os.walk(directory):
-        # Skip virtual environments and hidden directories
-        if '/venv/' in root or '/.venv/' in root or '/\.' in root:
-            continue
+
+    # Define directories to skip
+    skip_dirs = [
+        '.git', 'venv', '.venv', '.tox', '__pycache__',
+        'node_modules', 'build', 'dist', '.ipynb_checkpoints'
+    ]
+
+    for root, dirs, files in os.walk(base_path):
+        # Skip directories we don't want to process
+        dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.')]
+
         for file in files:
             if file.endswith('.py'):
                 python_files.append(os.path.join(root, file))
+
     return python_files
 
 def extract_imports(file_path):
-    """Extract import statements from a Python file."""
+    """Extract import statements from a Python file, handling encoding errors."""
     imports = set()
 
-    with open(file_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
 
-    # Match standard imports
-    import_pattern = re.compile(r'^import\s+([\w\.]+)', re.MULTILINE)
-    for match in import_pattern.finditer(content):
-        package = match.group(1).split('.')[0]
-        imports.add(package)
+        # Match standard imports
+        import_pattern = re.compile(r'^import\s+([\w\.]+)', re.MULTILINE)
+        for match in import_pattern.finditer(content):
+            package = match.group(1).split('.')[0]
+            imports.add(package)
 
-    # Match from ... import
-    from_pattern = re.compile(r'^from\s+([\w\.]+)\s+import', re.MULTILINE)
-    for match in from_pattern.finditer(content):
-        package = match.group(1).split('.')[0]
-        imports.add(package)
+        # Match from ... import
+        from_pattern = re.compile(r'^from\s+([\w\.]+)\s+import', re.MULTILINE)
+        for match in from_pattern.finditer(content):
+            package = match.group(1).split('.')[0]
+            if package != '' and package != '.' and package != '..':
+                imports.add(package)
+
+    except Exception as e:
+        print(f"{YELLOW}Skipping {file_path}: {str(e)}{ENDC}")
 
     return imports
 
@@ -55,7 +68,7 @@ def check_package_installed(package):
     except ImportError:
         return False
 
-def get_docker_requirements():
+def get_requirements():
     """Extract packages from requirements.txt."""
     requirements = set()
     req_file = Path('requirements.txt')
@@ -68,16 +81,21 @@ def get_docker_requirements():
                 if line and not line.startswith('#'):
                     # Handle version specifiers
                     package = line.split('==')[0].split('>=')[0].split('<=')[0].split('>')[0].split('<')[0].strip()
-                    requirements.add(package)
+                    requirements.add(package.lower())
 
     return requirements
 
 def main():
     print(f"{YELLOW}Checking project dependencies...{ENDC}")
 
-    # Get all Python files
-    python_files = get_project_files()
-    print(f"Found {len(python_files)} Python files")
+    server_dir = os.path.join(os.getcwd(), 'server')
+    if os.path.exists(server_dir):
+        print(f"Focusing on server directory only")
+        python_files = get_project_files(server_dir)
+    else:
+        python_files = get_project_files()
+
+    print(f"Found {len(python_files)} Python files to check")
 
     # Extract unique imports
     all_imports = set()
@@ -85,26 +103,28 @@ def main():
         file_imports = extract_imports(file)
         all_imports.update(file_imports)
 
-    # Remove standard library modules
+    # Remove standard library modules and local modules
     standard_libs = set(sys.builtin_module_names)
     try:
         stdlib_path = os.path.dirname(os.__file__)
         standard_libs.update([name for name in os.listdir(stdlib_path)
-                             if os.path.isdir(os.path.join(stdlib_path, name)) or
-                             name.endswith('.py')])
+                            if os.path.isdir(os.path.join(stdlib_path, name)) or
+                            name.endswith('.py')])
     except:
         pass
 
+    # Remove our own modules
+    all_imports = {imp for imp in all_imports if not imp.startswith('server')}
     third_party_imports = all_imports - standard_libs
 
     # Compare with requirements.txt
-    requirements = get_docker_requirements()
+    requirements = get_requirements()
 
     print(f"\n{YELLOW}Checking {len(third_party_imports)} third-party imports against requirements.txt...{ENDC}")
 
     missing_in_requirements = []
     for package in sorted(third_party_imports):
-        if package.lower() not in [req.lower() for req in requirements]:
+        if package.lower() not in requirements:
             missing_in_requirements.append(package)
 
     # Check which packages are actually installed

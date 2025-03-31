@@ -145,6 +145,20 @@ def init_sqlite_db():
         # --- REMOVED device_positions table ---
         cursor.execute('DROP TABLE IF EXISTS device_positions;') # Optional cleanup
 
+        # --- Reference Positions Table ---
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS reference_positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            x REAL NOT NULL,
+            y REAL NOT NULL,
+            z REAL NOT NULL,
+            area_id TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ref_positions_device_id ON reference_positions (device_id);')
+
         conn.commit()
         logger.info("SQLite database schema initialized/verified successfully.")
         return True
@@ -205,6 +219,14 @@ def _execute_sqlite_read(query: str, params: Optional[Tuple] = None, fetch_one: 
 def execute_sqlite_query(query: str, params: Optional[Tuple] = None) -> List[Dict[str, Any]]:
     """Alias for _execute_sqlite_read for backward compatibility."""
     return _execute_sqlite_read(query, params)
+
+def execute_query(query: str, params: Optional[Tuple] = None) -> List[Dict[str, Any]]:
+    """Alias for _execute_sqlite_read for backward compatibility."""
+    return _execute_sqlite_read(query, params)
+
+def execute_write_query(query: str, params: Optional[Tuple] = None, fetch_last_id: bool = False) -> Optional[int]:
+    """Alias for _execute_sqlite_write for backward compatibility."""
+    return _execute_sqlite_write(query, params, fetch_last_id)
 
 # --- Public Helper Functions ---
 
@@ -424,3 +446,28 @@ def get_area_observations(
 
     results = _execute_sqlite_read(query, tuple(params))
     return results if results is not None else []
+
+def get_reference_positions_from_sqlite() -> Dict[str, Dict[str, Any]]:
+    """Retrieve reference positions from SQLite database.
+    Returns a dictionary mapping device_id to position data.
+    """
+    query = """
+    SELECT device_id, x, y, z, area_id
+    FROM reference_positions
+    """
+    results = _execute_sqlite_read(query)
+
+    if not results:
+        return {}
+
+    reference_positions = {}
+    for row in results:
+        device_id = row['device_id']
+        reference_positions[device_id] = {
+            'x': row['x'],
+            'y': row['y'],
+            'z': row['z'],
+            'area_id': row['area_id']
+        }
+
+    return reference_positions

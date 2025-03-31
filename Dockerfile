@@ -29,11 +29,10 @@ WORKDIR /opt/blueprint_generator
 
 # Upgrade pip and install requirements
 COPY requirements.txt .
-RUN pip install protobuf==3.20.0
 RUN pip install --upgrade pip wheel setuptools
 RUN pip install --no-cache-dir -r requirements.txt
 # Add missing package
-RUN pip install python-json-logger pyyaml
+RUN pip install python-json-logger
 
 # Copy your application code
 COPY . .
