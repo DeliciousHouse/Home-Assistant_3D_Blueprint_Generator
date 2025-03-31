@@ -2,7 +2,7 @@ import json
 import logging
 import sqlite3
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime
 from typing import Union
 

@@ -114,7 +114,7 @@ def main():
 
         logger.info(f"Starting API server on {host}:{port}")
         # Ensure your start_api function or the components it uses can access the loaded config
-        start_api(config=config, host=host, port=port, debug=debug) # Pass config if needed by API directly
+        start_api(host=host, port=port, debug=debug) # Pass config if needed by API directly
 
     except Exception as e:
         logger.error(f"Application startup failed: {str(e)}", exc_info=True) # Add exc_info for traceback
