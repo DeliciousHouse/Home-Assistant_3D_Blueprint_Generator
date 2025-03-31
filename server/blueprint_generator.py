@@ -8,7 +8,7 @@ import math
 from .db import (get_recent_distances, get_recent_area_predictions,
                 save_blueprint_to_sqlite, get_latest_blueprint_from_sqlite,
                 execute_sqlite_query)
-from .data_logger import DataLogger  # Assuming renamed processor
+from .bluetooth_processor import BluetoothProcessor as DataLogger
 from .ai_processor import AIProcessor
 from .ha_client import HomeAssistantClient
 
