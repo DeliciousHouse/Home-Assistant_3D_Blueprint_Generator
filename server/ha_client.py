@@ -97,6 +97,11 @@ class HomeAssistantClient:
         """Initialize with Home Assistant connection details."""
         # Use provided values or get from environment (for add-on)
         self.base_url = base_url or self._get_base_url()
+
+        # Remove trailing /api if it exists to prevent doubles
+        if self.base_url.endswith('/api'):
+            self.base_url = self.base_url[:-4]
+
         self.token = token or self._get_token()
         self.headers = {
             'Authorization': f'Bearer {self.token}',
@@ -106,9 +111,20 @@ class HomeAssistantClient:
 
     def _get_base_url(self) -> str:
         """Get base URL from environment or use default."""
-        # For Home Assistant add-on
+        # First check config.json for home_assistant.api_url
+        try:
+            config_path = '/opt/blueprint_generator/config/config.json'
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    if 'home_assistant' in config and 'api_url' in config['home_assistant']:
+                        return config['home_assistant']['api_url']
+        except Exception as e:
+            logger.warning(f"Failed to read API URL from config.json: {e}")
+
+        # Fallback to environment-based detection
         if os.environ.get('SUPERVISOR_TOKEN'):
-            return "http://supervisor/core/api"
+            return "http://supervisor/core"  # Note: no /api suffix here
 
         # Check for options file
         options_path = '/data/options.json'
@@ -480,7 +496,8 @@ class HomeAssistantClient:
         """Get entity registry from Home Assistant using WebSocket."""
         # Convert HTTP URL to WebSocket URL
         ws_url = self.base_url.replace('http://', 'ws://').replace('https://', 'wss://')
-        ws_url = f"{ws_url}/api/websocket"
+        ws_url = ws_url.replace('/api', '') # Add this line to remove /api if present
+        ws_url = f"{ws_url}/websocket"  # Change from /api/websocket to just /websocket
 
         entities = []
         response_received = Event()
