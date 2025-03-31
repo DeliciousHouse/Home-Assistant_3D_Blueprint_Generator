@@ -63,15 +63,6 @@ echo "Pushing images to GitHub Container Registry..."
 docker push ghcr.io/delicioushouse/blueprint-generator-amd64:$VERSION
 docker push ghcr.io/delicioushouse/blueprint-generator-amd64:latest
 
-# Add this to your build script before git operations
-git config --global credential.helper 'store --timeout=3600'
-git config --global user.name "DeliciousHouse"
-git config --global user.email "brendan3394@gmail.com"
-
-# Set up token for git operations
-echo "https://DeliciousHouse:${GITHUB_TOKEN}@github.com" > ~/.git-credentials
-chmod 600 ~/.git-credentials
-
 # Add all changes to git
 echo "Committing changes to git..."
 git add -A
