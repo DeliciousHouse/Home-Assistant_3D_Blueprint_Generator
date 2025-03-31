@@ -143,7 +143,7 @@ def init_sqlite_db():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_feedback_blueprint_id ON ai_blueprint_feedback (blueprint_id);')
 
         # --- REMOVED device_positions table ---
-        cursor.execute('DROP TABLE IF EXISTS device_positions;') # Optional cleanup
+        # cursor.execute('DROP TABLE IF EXISTS device_positions;') # Optional cleanup
 
         # --- Reference Positions Table ---
         cursor.execute('''
@@ -471,3 +471,28 @@ def get_reference_positions_from_sqlite() -> Dict[str, Dict[str, Any]]:
         }
 
     return reference_positions
+
+def save_device_position_to_sqlite(device_id: str, x: float, y: float, z: float = 0.0, area_id: Optional[str] = None) -> bool:
+    """Save a device's reference position to the SQLite database.
+    This replaces the old device_positions functionality with reference_positions.
+    """
+    query = """
+    INSERT INTO reference_positions (device_id, x, y, z, area_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(device_id) DO UPDATE SET
+        x=excluded.x,
+        y=excluded.y,
+        z=excluded.z,
+        area_id=excluded.area_id,
+        created_at=excluded.created_at
+    """
+    timestamp = datetime.now().isoformat()
+    params = (device_id, x, y, z, area_id, timestamp)
+
+    result = _execute_sqlite_write(query, params)
+    if result is not None:
+        logger.debug(f"Saved reference position for {device_id}: ({x}, {y}, {z}) in area {area_id}")
+        return True
+    else:
+        logger.error(f"Failed to save reference position for {device_id}")
+        return False
