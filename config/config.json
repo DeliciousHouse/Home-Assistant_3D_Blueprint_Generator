@@ -1,5 +1,6 @@
 {
   "processing_params": {
+    "update_interval": 300,
     "rssi_threshold": -85,
     "minimum_sensors": 2,
     "accuracy_threshold": 10.0,
@@ -8,7 +9,6 @@
       "reference_power": -66,
       "path_loss_exponent": 2.8
     },
-    "update_interval": 2,
     "max_distance": 1000
   },
   "blueprint_validation": {
@@ -27,8 +27,18 @@
     "debug": false,
     "cors_origins": ["*"]
   },
-  "home_assistant": {
-    "api_url": "http://supervisor/core/api",
-    "use_supervisor_token": true
-  }
+  "generation_settings": {
+      "distance_window_minutes": 15,
+      "area_window_minutes": 10,
+      "mds_dimensions": 2,
+      "use_adjacency": true,
+      "min_points_per_room": 3
+  },
+   "ai_settings": {
+      "enable_refinement": true
+   },
+   "room_detection": {
+      "use_areas": true
+   },
+   "log_level": "info"
 }
