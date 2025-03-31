@@ -202,6 +202,9 @@ def _execute_sqlite_read(query: str, params: Optional[Tuple] = None, fetch_one: 
         if conn:
             conn.close()
 
+def execute_sqlite_query(query: str, params: Optional[Tuple] = None) -> List[Dict[str, Any]]:
+    """Alias for _execute_sqlite_read for backward compatibility."""
+    return _execute_sqlite_read(query, params)
 
 # --- Public Helper Functions ---
 

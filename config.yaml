@@ -1,6 +1,6 @@
 # config.yaml
 name: 3D Blueprint Generator
-version: "1.93"
+version: "1.94"
 slug: blueprint_generator
 description: "Generate 3D home blueprints from Bluetooth sensor data"
 arch:
@@ -32,13 +32,13 @@ map:
   - data:rw
 # Expose the API port
 ports:
-  '8000/tcp': 8000
+  '8001/tcp': 8001
 ports_description:
-  '8000/tcp': 'Web interface/API port'
+  '8001/tcp': 'Web interface/API port'
 
 # UI Configuration
 ingress: true
 ingress_port: 8000
 panel_icon: mdi:floor-plan
 panel_title: "3D Blueprint Generator"
-webui: "http://[HOST]:[PORT:8000]/"
+webui: "http://[HOST]:[PORT:8001]/"

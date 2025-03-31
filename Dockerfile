@@ -54,7 +54,7 @@ RUN chmod +x run.py docker-entrypoint.sh
 RUN cp docker-entrypoint.sh /usr/local/bin/
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8001
 
 # Set up entrypoint
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
