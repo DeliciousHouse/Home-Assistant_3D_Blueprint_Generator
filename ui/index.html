@@ -4,20 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>3D Blueprint Generator</title>
-    
+
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    
+
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    
+
     <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
-    
-    <!-- Three.js -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    
+
     <!-- Custom CSS -->
     <link rel="stylesheet" href="styles.css">
 </head>
@@ -34,9 +30,6 @@
                     <button id="generateBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
                         <i class="fas fa-sync-alt mr-2"></i>Generate
                     </button>
-                    <button id="saveBtn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors">
-                        <i class="fas fa-save mr-2"></i>Save
-                    </button>
                 </div>
             </div>
         </nav>
@@ -46,65 +39,28 @@
     <main class="container mx-auto px-4 py-8">
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <!-- 3D Viewer -->
-            <div class="lg:col-span-2 bg-white rounded-lg shadow-md p-4">
-                <div id="viewer" class="w-full h-[600px] bg-gray-50 rounded-lg"></div>
+            <div class="lg:col-span-3 bg-white rounded-lg shadow-md p-4">
+                <div id="viewer" class="w-full h-[600px] bg-gray-50 rounded-lg">
+                    <canvas id="blueprint-canvas" class="w-full h-full"></canvas>
+                </div>
                 <div class="mt-4 flex justify-center space-x-4">
-                    <button id="resetViewBtn" class="text-gray-600 hover:text-blue-600">
-                        <i class="fas fa-home mr-2"></i>Reset View
+                    <button id="floor-down" class="text-gray-600 hover:text-blue-600">
+                        <i class="fas fa-arrow-down mr-2"></i>Floor Down
                     </button>
-                    <button id="toggleWireframeBtn" class="text-gray-600 hover:text-blue-600">
-                        <i class="fas fa-vector-square mr-2"></i>Toggle Wireframe
-                    </button>
-                    <button id="toggleGridBtn" class="text-gray-600 hover:text-blue-600">
-                        <i class="fas fa-border-all mr-2"></i>Toggle Grid
+                    <span id="current-floor" class="text-gray-800 font-medium">Floor 0</span>
+                    <button id="floor-up" class="text-gray-600 hover:text-blue-600">
+                        <i class="fas fa-arrow-up mr-2"></i>Floor Up
                     </button>
                 </div>
             </div>
+        </div>
 
-            <!-- Controls Panel -->
-            <div class="bg-white rounded-lg shadow-md p-4">
-                <h2 class="text-lg font-semibold mb-4">Blueprint Controls</h2>
-                
-                <!-- Room List -->
-                <div class="mb-6">
-                    <h3 class="text-sm font-medium text-gray-600 mb-2">Rooms</h3>
-                    <div id="roomList" class="space-y-2">
-                        <!-- Room items will be added here dynamically -->
-                    </div>
-                </div>
-
-                <!-- Wall Controls -->
-                <div class="mb-6">
-                    <h3 class="text-sm font-medium text-gray-600 mb-2">Wall Properties</h3>
-                    <div class="space-y-4">
-                        <div>
-                            <label class="block text-sm text-gray-600 mb-1">Thickness</label>
-                            <input type="range" id="wallThickness" min="0.1" max="0.5" step="0.1" 
-                                   class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
-                        </div>
-                        <div>
-                            <label class="block text-sm text-gray-600 mb-1">Height</label>
-                            <input type="range" id="wallHeight" min="2.2" max="4.0" step="0.1"
-                                   class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Settings -->
-                <div>
-                    <h3 class="text-sm font-medium text-gray-600 mb-2">Settings</h3>
-                    <div class="space-y-4">
-                        <div>
-                            <label class="block text-sm text-gray-600 mb-1">Update Interval (seconds)</label>
-                            <input type="number" id="updateInterval" min="1" max="60" value="5"
-                                   class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        </div>
-                        <div>
-                            <label class="block text-sm text-gray-600 mb-1">RSSI Threshold</label>
-                            <input type="number" id="rssiThreshold" min="-100" max="-40" value="-75"
-                                   class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        </div>
-                    </div>
+        <!-- Status Messages -->
+        <div class="mt-4">
+            <div id="status-message" class="alert alert-info mt-3 d-none"></div>
+            <div id="loading-spinner" class="d-none">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
                 </div>
             </div>
         </div>

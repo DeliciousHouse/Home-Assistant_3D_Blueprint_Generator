@@ -1,8 +1,6 @@
 // Blueprint Generator Web UI JavaScript
 
 // Main DOM elements
-let deviceList;
-let devicePositions;
 let canvas;
 let ctx;
 let statusMessage;
@@ -10,7 +8,6 @@ let loadingSpinner;
 
 // Global state
 let blueprint = null;
-let selectedDevices = [];
 let currentFloor = 0;
 let camera = { x: 0, y: 0, scale: 1 };
 let isDragging = false;
@@ -25,8 +22,6 @@ const COLORS = [
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     // Get DOM elements
-    deviceList = document.getElementById('device-list');
-    devicePositions = document.getElementById('device-positions');
     canvas = document.getElementById('blueprint-canvas');
     statusMessage = document.getElementById('status-message');
     loadingSpinner = document.getElementById('loading-spinner');
@@ -41,7 +36,6 @@ document.addEventListener('DOMContentLoaded', function() {
     setupEventListeners();
 
     // Initial data loading
-    fetchDevices();
     fetchBlueprint();
 });
 
@@ -50,18 +44,6 @@ function setupEventListeners() {
     const generateBtn = document.getElementById('generate-btn');
     if (generateBtn) {
         generateBtn.addEventListener('click', generateBlueprint);
-    }
-
-    // Note: Save button functionality removed as it's not yet implemented
-
-    const refreshBtn = document.getElementById('refresh-btn');
-    if (refreshBtn) {
-        refreshBtn.addEventListener('click', fetchDevices);
-    }
-
-    const syncBtn = document.getElementById('sync-btn');
-    if (syncBtn) {
-        syncBtn.addEventListener('click', syncFromHA);
     }
 
     // Floor navigation
@@ -140,143 +122,6 @@ function drawGrid() {
 }
 
 // API Functions
-function fetchDevices() {
-    showLoading('Loading devices...');
-
-    fetch('/api/devices')
-        .then(response => {
-            if (!response.ok) throw new Error('Network response was not ok');
-            return response.json();
-        })
-        .then(data => {
-            populateDeviceList(data.devices);
-            hideLoading();
-        })
-        .catch(error => {
-            console.error('Error fetching devices:', error);
-            displayErrorMessage('Failed to load devices. Check console for details.');
-            hideLoading();
-        });
-}
-
-function populateDeviceList(devices) {
-    if (!deviceList) return;
-
-    deviceList.innerHTML = '';
-
-    if (!devices || devices.length === 0) {
-        deviceList.innerHTML = '<p class="text-muted">No devices found.</p>';
-        return;
-    }
-
-    const ul = document.createElement('ul');
-    ul.className = 'list-group';
-
-    devices.forEach(device => {
-        const li = document.createElement('li');
-        li.className = 'list-group-item d-flex justify-content-between align-items-center';
-        li.innerHTML = `
-            <div>
-                <input type="checkbox" id="device-${device.id}" class="device-checkbox me-2"
-                    data-device-id="${device.id}">
-                <label for="device-${device.id}">${device.id}</label>
-            </div>
-            <span class="badge bg-primary rounded-pill">
-                ${device.last_seen ? new Date(device.last_seen).toLocaleTimeString() : 'N/A'}
-            </span>
-        `;
-        ul.appendChild(li);
-    });
-
-    deviceList.appendChild(ul);
-
-    // Add event listeners to checkboxes
-    document.querySelectorAll('.device-checkbox').forEach(checkbox => {
-        checkbox.addEventListener('change', handleDeviceSelection);
-    });
-}
-
-function handleDeviceSelection(e) {
-    const deviceId = e.target.dataset.deviceId;
-
-    if (e.target.checked) {
-        if (!selectedDevices.includes(deviceId)) {
-            selectedDevices.push(deviceId);
-        }
-    } else {
-        const index = selectedDevices.indexOf(deviceId);
-        if (index !== -1) {
-            selectedDevices.splice(index, 1);
-        }
-    }
-
-    // Update display or fetch positions for selected devices
-    fetchDevicePositions();
-}
-
-function fetchDevicePositions() {
-    if (selectedDevices.length === 0) {
-        if (devicePositions) {
-            devicePositions.innerHTML = '<p class="text-muted">No devices selected.</p>';
-        }
-        return;
-    }
-
-    showLoading('Loading positions...');
-
-    const queryParams = selectedDevices.map(id => `device_id=${id}`).join('&');
-    fetch(`/api/positions?${queryParams}`)
-        .then(response => {
-            if (!response.ok) throw new Error('Network response was not ok');
-            return response.json();
-        })
-        .then(data => {
-            displayDevicePositions(data.positions);
-            hideLoading();
-        })
-        .catch(error => {
-            console.error('Error fetching positions:', error);
-            displayErrorMessage('Failed to load positions. Check console for details.');
-            hideLoading();
-        });
-}
-
-function displayDevicePositions(positions) {
-    if (!devicePositions || !positions) return;
-
-    devicePositions.innerHTML = '';
-
-    const table = document.createElement('table');
-    table.className = 'table table-sm';
-    table.innerHTML = `
-        <thead>
-            <tr>
-                <th>Device</th>
-                <th>X</th>
-                <th>Y</th>
-                <th>Z</th>
-            </tr>
-        </thead>
-        <tbody id="positions-table-body">
-        </tbody>
-    `;
-
-    const tbody = table.querySelector('#positions-table-body');
-
-    for (const [deviceId, position] of Object.entries(positions)) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td>${deviceId}</td>
-            <td>${position.x.toFixed(2)}</td>
-            <td>${position.y.toFixed(2)}</td>
-            <td>${position.z.toFixed(2)}</td>
-        `;
-        tbody.appendChild(tr);
-    }
-
-    devicePositions.appendChild(table);
-}
-
 function fetchBlueprint() {
     showLoading('Loading blueprint...');
 
@@ -511,28 +356,6 @@ function pollBlueprintStatus() {
         .catch(error => {
             console.error('Error polling blueprint status:', error);
             displayErrorMessage('Failed to check blueprint status. Check console for details.');
-            hideLoading();
-        });
-}
-
-function syncFromHA() {
-    showLoading('Syncing data from Home Assistant...');
-
-    fetch('/api/sync/bermuda', {
-        method: 'POST'
-    })
-        .then(response => {
-            if (!response.ok) throw new Error('Network response was not ok');
-            return response.json();
-        })
-        .then(data => {
-            displayStatusMessage(`Synced ${data.count} positions from Home Assistant.`);
-            fetchDevices();
-            hideLoading();
-        })
-        .catch(error => {
-            console.error('Error syncing from HA:', error);
-            displayErrorMessage('Failed to sync from Home Assistant. Check console for details.');
             hideLoading();
         });
 }

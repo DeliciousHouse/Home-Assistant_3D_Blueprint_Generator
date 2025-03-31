@@ -1,24 +1,29 @@
+# server/db.py
 import json
 import logging
 import sqlite3
 import os
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union # Added Union
 from datetime import datetime
-from typing import Union
 
 # Use the standardized config loader
 try:
+    # Assuming config_loader.py is in the same directory (server/)
     from .config_loader import load_config
 except ImportError:
+    # Fallback if structure is different (e.g., config_loader is one level up)
     try:
         from config_loader import load_config
     except ImportError:
+        # Last resort: simple default
         def load_config(path=None): return {}
+        # Setup basic logger if config load fails early
+        logging.basicConfig(level=logging.WARNING)
         logger = logging.getLogger(__name__)
         logger.warning("Could not import config_loader. Using empty config.")
 
 logger = logging.getLogger(__name__)
-app_config = load_config()
+app_config = load_config() # Load config once when module is loaded
 
 SQLITE_DB_PATH = '/data/blueprint_data.db'
 
@@ -61,86 +66,84 @@ def init_sqlite_db():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_blueprints_created ON blueprints (created_at DESC);')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_blueprints_status ON blueprints (status);')
 
-        # --- Area Observations Table (NEW) ---
+        # --- Distance Log Table ---
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS distance_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL, -- ISO format string
+                tracked_device_id TEXT NOT NULL,
+                scanner_id TEXT NOT NULL,
+                distance REAL NOT NULL
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_dist_log_time ON distance_log (timestamp DESC);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_dist_log_device_scanner_time ON distance_log (tracked_device_id, scanner_id, timestamp DESC);')
+
+        # --- Area Observations Table ---
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS area_observations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Store as ISO format string
+                timestamp TEXT NOT NULL, -- ISO format string
                 tracked_device_id TEXT NOT NULL,
-                predicted_area_id TEXT, -- Area ID predicted by Bermuda/Classifier
-                rssi_vector TEXT NOT NULL, -- JSON blob: {"scanner_id1": rssi1, "scanner_id2": rssi2, ...}
-                is_transition INTEGER DEFAULT 0 -- Flag: 1 if this marks a transition *into* predicted_area_id
+                predicted_area_id TEXT -- Can be NULL if prediction is unavailable
             )
         ''')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_obs_time ON area_observations (timestamp DESC);')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_obs_device_area ON area_observations (tracked_device_id, predicted_area_id);')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_obs_transition ON area_observations (is_transition, timestamp DESC);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_area_obs_time ON area_observations (timestamp DESC);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_area_obs_device_time ON area_observations (tracked_device_id, timestamp DESC);')
 
-        # --- RSSI Distance Samples Table (for Training) ---
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS rssi_distance_samples (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                device_id TEXT NOT NULL,
-                sensor_id TEXT NOT NULL,
-                rssi REAL NOT NULL,
-                distance REAL,
-                tx_power REAL,
-                frequency REAL,
-                environment_type TEXT,
-                device_type TEXT,
-                time_of_day INTEGER,
-                day_of_week INTEGER,
-                timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP -- Store as ISO format string
-            )
-        ''')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_rssi_samples_time ON rssi_distance_samples (timestamp DESC);')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_rssi_samples_device_sensor ON rssi_distance_samples (device_id, sensor_id);')
+        # # --- RSSI Distance Samples Table (Optional: For separate distance model training) ---
+        # # Keep if you might manually calibrate distance later, otherwise remove
+        # cursor.execute('''
+        #     CREATE TABLE IF NOT EXISTS rssi_distance_samples (
+        #         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        #         device_id TEXT NOT NULL,
+        #         sensor_id TEXT NOT NULL,
+        #         rssi REAL NOT NULL,
+        #         distance REAL,
+        #         tx_power REAL,
+        #         frequency REAL,
+        #         environment_type TEXT,
+        #         device_type TEXT,
+        #         time_of_day INTEGER,
+        #         day_of_week INTEGER,
+        #         timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP -- Store as ISO format string
+        #     )
+        # ''')
+        # cursor.execute('CREATE INDEX IF NOT EXISTS idx_rssi_samples_time ON rssi_distance_samples (timestamp DESC);')
+        # cursor.execute('CREATE INDEX IF NOT EXISTS idx_rssi_samples_device_sensor ON rssi_distance_samples (device_id, sensor_id);')
 
         # --- AI Models Metadata Table ---
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS ai_models (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model_name TEXT UNIQUE NOT NULL, -- e.g., 'rssi_distance', 'wall_prediction'
-                model_type TEXT,               -- e.g., 'random_forest', 'cnn'
-                model_path TEXT,               -- Path within /data/models
-                metrics TEXT,                  -- JSON string of training metrics
+                model_name TEXT UNIQUE NOT NULL,
+                model_type TEXT,
+                model_path TEXT,
+                metrics TEXT,
                 version INTEGER DEFAULT 1,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Store as ISO format string
-                last_trained_at TEXT           -- Store as ISO format string
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_trained_at TEXT
             )
         ''')
         cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_models_name ON ai_models (model_name);')
 
 
-        # --- AI Blueprint Feedback Table (Optional, for RL) ---
+        # --- AI Blueprint Feedback Table (Optional, for RL/Refinement) ---
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS ai_blueprint_feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                blueprint_id TEXT NOT NULL,    -- Identifier for the original blueprint
-                original_blueprint TEXT,       -- JSON of blueprint before refinement
-                modified_blueprint TEXT,       -- JSON of blueprint after refinement
-                feedback_data TEXT,            -- JSON containing score or other feedback
-                timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP -- Store as ISO format string
+                blueprint_id TEXT NOT NULL,
+                original_blueprint TEXT,
+                modified_blueprint TEXT,
+                feedback_data TEXT,
+                timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_feedback_timestamp ON ai_blueprint_feedback (timestamp DESC);')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_feedback_blueprint_id ON ai_blueprint_feedback (blueprint_id);')
 
-        # --- Device Positions Table ---
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS device_positions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                device_id TEXT NOT NULL,
-                position_data TEXT NOT NULL, -- JSON blob with x, y, z
-                source TEXT NOT NULL,        -- 'fixed_reference', 'calculated', 'manual', etc.
-                accuracy REAL,               -- Estimated accuracy in meters
-                area_id TEXT,                -- Optional area/room identifier
-                timestamp TEXT NOT NULL      -- Store as ISO format string
-            )
-        ''')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_device ON device_positions (device_id);')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_timestamp ON device_positions (timestamp DESC);')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_source ON device_positions (source);')
+        # --- REMOVED device_positions table ---
+        cursor.execute('DROP TABLE IF EXISTS device_positions;') # Optional cleanup
 
         conn.commit()
         logger.info("SQLite database schema initialized/verified successfully.")
@@ -226,125 +229,6 @@ def save_blueprint_to_sqlite(blueprint_data: Dict) -> bool:
         return False
 
 
-def save_device_position_to_sqlite(
-    device_id: str,
-    position_data: Dict,
-    source: str = 'calculated',
-    accuracy: Optional[float] = None,
-    area_id: Optional[str] = None
-) -> bool:
-    """Save a device position to the SQLite database.
-
-    Args:
-        device_id: Unique identifier for the device
-        position_data: Dictionary containing x, y, z coordinates
-        source: Source of the position data ('fixed_reference', 'calculated', 'manual')
-        accuracy: Estimated accuracy in meters (optional)
-        area_id: Optional area/room identifier
-
-    Returns:
-        bool: True if saved successfully, False otherwise
-    """
-    # Ensure we have the minimum position data
-    if not all(k in position_data for k in ['x', 'y', 'z']):
-        logger.error(f"Invalid position data for device {device_id}: missing x/y/z coordinate")
-        return False
-
-    query = """
-    INSERT INTO device_positions (device_id, position_data, source, accuracy, area_id, timestamp)
-    VALUES (?, ?, ?, ?, ?, ?)
-    """
-
-    position_json = json.dumps(position_data)
-    timestamp = datetime.now().isoformat()
-    params = (device_id, position_json, source, accuracy, area_id, timestamp)
-
-    result = _execute_sqlite_write(query, params)
-    if result is not None:
-        logger.info(f"Saved position for device {device_id} (source: {source})")
-        return True
-    else:
-        logger.error(f"Failed to save position for device {device_id}")
-        return False
-
-def get_reference_positions_from_sqlite() -> Dict[str, Dict]:
-    """Get the latest positions of all fixed reference devices.
-
-    Returns:
-        Dict mapping device_id to position {x, y, z} dict
-    """
-    query = """
-    SELECT d1.device_id, d1.position_data
-    FROM device_positions d1
-    JOIN (
-        SELECT device_id, MAX(timestamp) as max_time
-        FROM device_positions
-        WHERE source = 'fixed_reference'
-        GROUP BY device_id
-    ) d2 ON d1.device_id = d2.device_id AND d1.timestamp = d2.max_time
-    WHERE d1.source = 'fixed_reference'
-    """
-
-    results = _execute_sqlite_read(query)
-    reference_positions = {}
-
-    if results:
-        for row in results:
-            try:
-                device_id = row['device_id']
-                position = json.loads(row['position_data'])
-                reference_positions[device_id] = position
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.error(f"Error parsing reference position for {row.get('device_id', 'unknown')}: {e}")
-
-    logger.debug(f"Retrieved {len(reference_positions)} reference positions from database")
-    return reference_positions
-
-def get_device_positions_from_sqlite() -> Dict[str, Dict]:
-    """Get the latest positions of all tracked devices.
-
-    Returns:
-        Dict mapping device_id to full position dict including source, accuracy, etc.
-    """
-    query = """
-    SELECT d1.device_id, d1.position_data, d1.source, d1.accuracy, d1.area_id, d1.timestamp
-    FROM device_positions d1
-    JOIN (
-        SELECT device_id, MAX(timestamp) as max_time
-        FROM device_positions
-        GROUP BY device_id
-    ) d2 ON d1.device_id = d2.device_id AND d1.timestamp = d2.max_time
-    """
-
-    results = _execute_sqlite_read(query)
-    device_positions = {}
-
-    if results:
-        for row in results:
-            try:
-                device_id = row['device_id']
-                position_data = json.loads(row['position_data'])
-
-                # Create a complete position record
-                position_record = {
-                    **position_data,  # Unpack the x, y, z
-                    'source': row['source'],
-                    'timestamp': row['timestamp'],
-                }
-
-                # Add optional fields if present
-                if row['accuracy'] is not None:
-                    position_record['accuracy'] = float(row['accuracy'])
-                if row['area_id']:
-                    position_record['area_id'] = row['area_id']
-
-                device_positions[device_id] = position_record
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.error(f"Error parsing device position for {row.get('device_id', 'unknown')}: {e}")
-
-    logger.debug(f"Retrieved {len(device_positions)} device positions from database")
-    return device_positions
-
 def save_ai_feedback_to_sqlite(blueprint_id: str, feedback_data: Dict, original_blueprint: Optional[Dict] = None, modified_blueprint: Optional[Dict] = None) -> bool:
     """Save AI blueprint feedback to the SQLite database."""
     query = """
@@ -380,10 +264,8 @@ def save_rssi_sample_to_sqlite(
     """Save an RSSI-to-distance training sample to SQLite database."""
     # Get current time information if not provided
     current_time = datetime.now()
-    if time_of_day is None:
-        time_of_day = current_time.hour
-    if day_of_week is None:
-        day_of_week = current_time.weekday() # 0-6, Monday is 0
+    if time_of_day is None: time_of_day = current_time.hour
+    if day_of_week is None: day_of_week = current_time.weekday() # 0-6, Monday is 0
 
     query = '''
     INSERT INTO rssi_distance_samples (
@@ -438,7 +320,6 @@ def save_ai_model_sqlite(model_name: str, model_type: str, model_path: str, metr
         last_trained_at=excluded.last_trained_at,
         version=version + 1
     """
-    # Ensure model_path is a string
     model_path_str = str(model_path)
     metrics_json = json.dumps(metrics)
     timestamp = datetime.now().isoformat()
@@ -452,53 +333,81 @@ def save_ai_model_sqlite(model_name: str, model_type: str, model_path: str, metr
         logger.error(f"Failed to save AI model info for '{model_name}'")
         return False
 
-# --- NEW Helper for Area Observations ---
-def save_area_observation(tracked_device_id: str, predicted_area_id: Optional[str], rssi_vector: Dict[str, float], is_transition: bool) -> bool:
-    """Saves a snapshot of RSSI readings and predicted area."""
+def save_distance_log(tracked_device_id: str, scanner_id: str, distance: float) -> bool:
+    """Save a distance reading to the database."""
     query = """
-    INSERT INTO area_observations (timestamp, tracked_device_id, predicted_area_id, rssi_vector, is_transition)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO distance_log (timestamp, tracked_device_id, scanner_id, distance)
+    VALUES (?, ?, ?, ?)
     """
     timestamp = datetime.now().isoformat()
-    rssi_json = json.dumps(rssi_vector)
-    transition_flag = 1 if is_transition else 0
-    params = (timestamp, tracked_device_id, predicted_area_id, rssi_json, transition_flag)
-
+    params = (timestamp, tracked_device_id, scanner_id, distance)
     result = _execute_sqlite_write(query, params)
     if result is not None:
-        logger.debug(f"Saved area observation for {tracked_device_id} -> {predicted_area_id} (Transition: {is_transition})")
+        logger.debug(f"Saved distance log: {tracked_device_id} to {scanner_id}: {distance}m")
+        return True
+    else:
+        logger.error(f"Failed to save distance log for {tracked_device_id}")
+        return False
+
+def save_area_observation(tracked_device_id: str, predicted_area_id: Optional[str]) -> bool:
+    """Save an area prediction observation to the database."""
+    query = """
+    INSERT INTO area_observations (timestamp, tracked_device_id, predicted_area_id)
+    VALUES (?, ?, ?)
+    """
+    timestamp = datetime.now().isoformat()
+    params = (timestamp, tracked_device_id, predicted_area_id)
+    result = _execute_sqlite_write(query, params)
+    if result is not None:
+        logger.debug(f"Saved area observation for {tracked_device_id} in {predicted_area_id}")
         return True
     else:
         logger.error(f"Failed to save area observation for {tracked_device_id}")
         return False
 
-# --- NEW Helper for AI Processor ---
+def get_recent_distances(time_window_minutes: int = 10) -> List[Dict[str, Any]]:
+    """Fetches recent distance logs within specified time window."""
+    query = """
+    SELECT timestamp, tracked_device_id, scanner_id, distance
+    FROM distance_log
+    WHERE timestamp >= ?
+    ORDER BY timestamp DESC
+    """
+    cutoff_time = datetime.fromtimestamp(datetime.now().timestamp() - time_window_minutes * 60).isoformat()
+    params = (cutoff_time,)
+    results = _execute_sqlite_read(query, params)
+    return results if results is not None else []
+
+def get_recent_area_predictions(time_window_minutes: int = 5) -> Dict[str, Optional[str]]:
+    """Gets the most recent area prediction for each device within the window."""
+    query = """
+    SELECT tracked_device_id, predicted_area_id
+    FROM area_observations
+    WHERE timestamp >= ? AND id IN (
+        SELECT MAX(id)
+        FROM area_observations
+        WHERE timestamp >= ?
+        GROUP BY tracked_device_id
+    )
+    """
+    cutoff_time = datetime.fromtimestamp(datetime.now().timestamp() - time_window_minutes * 60).isoformat()
+    params = (cutoff_time, cutoff_time)
+    results = _execute_sqlite_read(query, params)
+    if results is None:
+        return {}
+    return {row['tracked_device_id']: row['predicted_area_id'] for row in results}
 
 def get_area_observations(
     limit: int = 5000,
-    only_transitions: bool = False,
     device_id: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """
-    Retrieves area observation records from the database.
-
-    Args:
-        limit: Maximum number of records to return.
-        only_transitions: If True, only return records where is_transition = 1.
-        device_id: If provided, only return records for this specific device.
-
-    Returns:
-        A list of observation dictionaries.
-    """
+    """Retrieves area observation records from the database."""
     query = """
-    SELECT timestamp, tracked_device_id, predicted_area_id, rssi_vector, is_transition
+    SELECT timestamp, tracked_device_id, predicted_area_id
     FROM area_observations
     """
     conditions = []
     params = []
-
-    if only_transitions:
-        conditions.append("is_transition = 1")
 
     if device_id:
         conditions.append("tracked_device_id = ?")
@@ -511,19 +420,4 @@ def get_area_observations(
     params.append(limit)
 
     results = _execute_sqlite_read(query, tuple(params))
-    if results is None: # Handle potential DB error
-        return []
-
-    # Parse the JSON rssi_vector
-    for row in results:
-        try:
-            row['rssi_vector'] = json.loads(row['rssi_vector'])
-        except (json.JSONDecodeError, TypeError):
-            logger.warning(f"Could not parse rssi_vector for observation id {row.get('id', 'N/A')}")
-            row['rssi_vector'] = {} # Provide empty dict on error
-    return results
-
-# For compatibility with existing code
-execute_sqlite_query = _execute_sqlite_read
-execute_query = _execute_sqlite_read
-execute_write_query = _execute_sqlite_write
+    return results if results is not None else []

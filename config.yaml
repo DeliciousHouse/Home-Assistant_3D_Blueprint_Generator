@@ -1,6 +1,6 @@
 # config.yaml
 name: 3D Blueprint Generator
-version: "1.92"
+version: "1.93"
 slug: blueprint_generator
 description: "Generate 3D home blueprints from Bluetooth sensor data"
 arch:
@@ -19,7 +19,6 @@ options:
   processing_interval: 300
   enable_ai_refinement: true
   use_room_areas: true
-  fixed_sensors: ""
 
 # Schema for configuration UI
 schema:
@@ -27,8 +26,6 @@ schema:
   processing_interval: int(60,3600)
   enable_ai_refinement: bool
   use_room_areas: bool
-  # Use a simple string type with JSON format
-  fixed_sensors: str?
 
 # Container configuration
 map:

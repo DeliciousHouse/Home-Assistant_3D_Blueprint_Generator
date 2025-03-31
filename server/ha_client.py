@@ -4,6 +4,7 @@ import json
 import websocket
 import logging
 import os
+import math  # Add import for math module
 from typing import Dict, List, Optional
 from threading import Event
 import time
@@ -917,7 +918,36 @@ class HomeAssistantClient:
             logger.error(f"Error fetching sensor entities: {e}", exc_info=True)
             return []
 
-    # New method for getting device area predictions
+    # New method for fetching distance sensors
+    def get_distance_sensors(self) -> List[Dict]:
+        """Gets entities likely representing distance measurements."""
+        sensors = []
+        try:
+            # Pattern for Bermuda distance sensors: sensor.<device>_distance_<scanner>
+            all_states = self.get_entities(domain='sensor') # Or broader search if needed
+            for state in all_states:
+                entity_id = state.get('entity_id', '')
+                if '_distance_' in entity_id and entity_id.startswith('sensor.'):
+                    try:
+                        distance = float(state.get('state', 'nan'))
+                        if not math.isnan(distance) and distance >= 0:
+                            parts = entity_id.split('_distance_')
+                            if len(parts) == 2:
+                                device_part = parts[0].split('sensor.')[1]
+                                scanner_id = parts[1]
+                                sensors.append({
+                                    'entity_id': entity_id,
+                                    'tracked_device_id': device_part,
+                                    'scanner_id': scanner_id,
+                                    'distance': distance
+                                })
+                    except (ValueError, TypeError):
+                        continue # Skip non-numeric states
+            logger.info(f"Found {len(sensors)} potential distance sensor entities.")
+        except Exception as e:
+            logger.error(f"Error fetching distance sensors: {e}", exc_info=True)
+        return sensors
+
     def get_device_area_predictions(self) -> Dict[str, Optional[str]]:
         """Gets the current predicted area for devices (e.g., from Bermuda's area sensor)."""
         predictions = {}

@@ -19,7 +19,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import DBSCAN, KMeans
-from scipy.spatial import Delaunay
+from scipy.spatial import Delaunay, procrustes, ConvexHull
+from sklearn.manifold import MDS  # Added for relative positioning
 import joblib
 import torch
 import torch.nn as nn
@@ -28,6 +29,7 @@ from torch.utils.data import DataLoader, Dataset
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+from shapely.geometry import Polygon, MultiPoint  # Added for room geometry generation
 
 # Import specific DB functions needed
 from .db import get_sqlite_connection, save_rssi_sample_to_sqlite, save_ai_model_sqlite, execute_query, execute_write_query, get_area_observations
@@ -1694,3 +1696,334 @@ class AIProcessor:
         # Phase 2: Implement ML model using transition_data (RSSI changes).
         logger.debug(f"Placeholder: Predicting NO wall between {area1_id} and {area2_id}")
         return 0.0 # Return 0 probability for now
+
+    # New methods for relative positioning and room geometry generation
+
+    def run_relative_positioning(self, distance_data: List[Tuple[str, str, str, float]], n_dimensions=3) -> Dict[str, Dict[str, float]]:
+        """Calculates relative positions using MDS."""
+        logger.info(f"Running relative positioning with {len(distance_data)} distance entries...")
+        if not distance_data:
+            return {}
+
+        # 1. Identify all unique entities (devices + scanners)
+        entities = set()
+        measurements = {} # {(id1, id2): [dist1, dist2, ...]}
+        for _, dev_id, scan_id, dist in distance_data:
+            entities.add(dev_id)
+            entities.add(scan_id)
+            pair = tuple(sorted((dev_id, scan_id)))
+            measurements.setdefault(pair, []).append(dist)
+
+        entity_list = sorted(list(entities))
+        entity_map = {name: i for i, name in enumerate(entity_list)}
+        n_entities = len(entity_list)
+        if n_entities < n_dimensions + 1:
+             logger.warning(f"Not enough entities ({n_entities}) for {n_dimensions}D positioning.")
+             return {}
+
+        # 2. Create Dissimilarity Matrix (use median distance)
+        dissimilarity_matrix = np.zeros((n_entities, n_entities))
+        for (id1, id2), dists in measurements.items():
+            if id1 in entity_map and id2 in entity_map:
+                 idx1, idx2 = entity_map[id1], entity_map[id2]
+                 median_dist = np.median(dists) if dists else 0
+                 dissimilarity_matrix[idx1, idx2] = median_dist
+                 dissimilarity_matrix[idx2, idx1] = median_dist
+
+        # Set maximum dissimilarity for missing measurements
+        # This helps MDS handle sparse matrices better
+        max_dist = np.max(dissimilarity_matrix[dissimilarity_matrix > 0])
+        if max_dist > 0:
+            # Use max_dist + 10% for missing values (but not on diagonal)
+            missing_value = max_dist * 1.1
+            for i in range(n_entities):
+                for j in range(n_entities):
+                    if i != j and dissimilarity_matrix[i, j] == 0:
+                        dissimilarity_matrix[i, j] = missing_value
+
+        # 3. Run MDS
+        try:
+            mds = MDS(n_components=n_dimensions, dissimilarity='precomputed',
+                     random_state=42, n_init=4, max_iter=300)
+            relative_pos_array = mds.fit_transform(dissimilarity_matrix)
+            logger.info(f"MDS stress: {mds.stress_:.4f}")
+        except Exception as e:
+             logger.error(f"MDS failed: {e}", exc_info=True)
+             return {}
+
+        # 4. Format output
+        relative_coords = {}
+        for i, name in enumerate(entity_list):
+            relative_coords[name] = {'x': float(relative_pos_array[i, 0]), 'y': float(relative_pos_array[i, 1])}
+            if n_dimensions > 2:
+                relative_coords[name]['z'] = float(relative_pos_array[i, 2])
+            else:
+                relative_coords[name]['z'] = 0.0 # Default Z if 2D
+
+        logger.info(f"Calculated relative positions for {len(relative_coords)} entities.")
+        return relative_coords
+
+    def calculate_anchoring_transform(self, relative_coords: Dict[str, Dict[str, float]],
+                                     device_area_map: Dict[str, str],
+                                     target_area_layout: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
+        """Finds the transformation to map relative coords to target layout via area centroids."""
+        logger.info("Calculating anchoring transformation...")
+        relative_centroids = {}
+        target_centroids = {}
+        points_per_area = {}
+
+        # 1. Group relative device points by area and calculate relative centroids
+        for dev_id, area_id in device_area_map.items():
+            if area_id and dev_id in relative_coords and area_id in target_area_layout:
+                 points_per_area.setdefault(area_id, []).append([
+                     relative_coords[dev_id]['x'],
+                     relative_coords[dev_id]['y']
+                     # Ignoring Z for 2D anchoring initially
+                 ])
+
+        if not points_per_area:
+             logger.warning("No devices with both relative coordinates and area predictions found.")
+             return None
+
+        # Calculate centroids only for areas with points
+        valid_area_ids = list(points_per_area.keys())
+        for area_id in valid_area_ids:
+            points = np.array(points_per_area[area_id])
+            if points.shape[0] > 0:
+                centroid = np.mean(points, axis=0)
+                relative_centroids[area_id] = centroid
+                # Ensure the target layout has this area
+                if area_id in target_area_layout:
+                     target_centroids[area_id] = [target_area_layout[area_id]['x'], target_area_layout[area_id]['y']]
+
+        # Ensure we have matching centroids in both sets
+        common_areas = sorted(list(set(relative_centroids.keys()) & set(target_centroids.keys())))
+        if len(common_areas) < 2: # Need at least 2 points for Procrustes (or 3 for non-degenerate)
+             logger.warning(f"Not enough common areas ({len(common_areas)}) with centroids for anchoring.")
+             return None
+
+        matrix_a = np.array([relative_centroids[aid] for aid in common_areas])
+        matrix_b = np.array([target_centroids[aid] for aid in common_areas])
+
+        # 2. Perform Procrustes Analysis
+        try:
+            mtx1, mtx2, disparity = procrustes(matrix_b, matrix_a)
+
+            # Estimate scale: ratio of distances between corresponding points
+            dist_a = np.linalg.norm(matrix_a[0] - matrix_a[1])
+            dist_b = np.linalg.norm(matrix_b[0] - matrix_b[1])
+            scale = dist_b / dist_a if dist_a > 1e-6 else 1.0
+
+            # Estimate translation: difference between centroids of centroids
+            centroid_a = np.mean(matrix_a, axis=0)
+            centroid_b = np.mean(matrix_b, axis=0)
+
+            # Estimate Rotation using SVD on covariance matrix
+            # Center the point sets around the origin
+            centered_a = matrix_a - centroid_a
+            centered_b = matrix_b - centroid_b
+
+            # Compute the covariance matrix
+            covariance = centered_a.T @ centered_b
+
+            # SVD decomposition
+            try:
+                U, S, Vt = np.linalg.svd(covariance)
+                # Ensure proper rotation (not reflection)
+                rotation = Vt.T @ U.T
+                if np.linalg.det(rotation) < 0:
+                    Vt[-1, :] *= -1
+                    rotation = Vt.T @ U.T
+            except np.linalg.LinAlgError:
+                # Fallback if SVD fails
+                logger.warning("SVD failed for rotation estimation, using identity matrix")
+                rotation = np.identity(2)
+
+            # Calculate translation based on scale and rotation
+            translation = centroid_b - scale * (centroid_a @ rotation)
+
+            transform_params = {
+                'scale': float(scale),
+                'rotation': rotation.tolist(),  # Convert to list for serialization
+                'translation': translation.tolist(),
+                'disparity': float(disparity)
+            }
+
+            logger.info(f"Anchoring transform calculated. Scale: {scale:.3f}, Disparity: {disparity:.4f}")
+            return transform_params
+
+        except Exception as e:
+            logger.error(f"Procrustes analysis failed: {e}", exc_info=True)
+            return None
+
+    def apply_transform(self, coords: Dict[str, Dict[str, float]], transform_params: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+        """Applies scale, rotation, translation to coordinates."""
+        if not transform_params:
+            return coords
+
+        anchored_coords = {}
+        s = transform_params['scale']
+        R = np.array(transform_params['rotation'])  # Convert from list
+        t = np.array(transform_params['translation'])  # Convert from list
+
+        for entity_id, pos in coords.items():
+            # Assuming 2D transform for now
+            point_relative = np.array([pos['x'], pos['y']])
+            point_anchored = s * (point_relative @ R) + t
+            anchored_coords[entity_id] = {
+                'x': float(point_anchored[0]),
+                'y': float(point_anchored[1]),
+                'z': float(pos.get('z', 0))  # Keep original Z or transform if 3D
+            }
+
+        logger.info(f"Applied anchoring transform to {len(anchored_coords)} entities.")
+        return anchored_coords
+
+    def generate_rooms_from_points(self, anchored_device_coords_by_area: Dict[str, List[Dict[str, float]]]) -> List[Dict]:
+        """Generates room polygons from point clouds using convex hulls."""
+        logger.info("Generating rooms from anchored points...")
+        rooms = []
+
+        for area_id, points_list in anchored_device_coords_by_area.items():
+            if len(points_list) < 3:
+                 logger.warning(f"Skipping room generation for area {area_id}, not enough points ({len(points_list)}).")
+                 continue
+
+            coords = [(p['x'], p['y']) for p in points_list]
+
+            try:
+                # Use Convex Hull as a simple approach
+                if len(coords) >= 3:
+                    hull = ConvexHull(coords)
+                    hull_points = [coords[i] for i in hull.vertices]
+                    poly = Polygon(hull_points)
+                else:
+                    continue  # Should not happen due to initial check
+
+                if poly.is_empty or not poly.is_valid:
+                    continue
+
+                min_x, min_y, max_x, max_y = poly.bounds
+                center_x, center_y = poly.centroid.x, poly.centroid.y
+
+                # Estimate height based on Z coords if available, else default
+                z_coords = [p.get('z', 0) for p in points_list]
+                min_z = min(z_coords) if z_coords else 0
+                max_z = max(z_coords) if z_coords else 2.4
+                height = max(0.1, max_z - min_z)  # Ensure non-zero height
+                center_z = min_z + height / 2
+
+                room = {
+                    'id': f"room_{area_id}",
+                    'name': f"Area {area_id}",  # Can be replaced with proper name if available
+                    'area_id': area_id,
+                    'center': {
+                        'x': float(center_x),
+                        'y': float(center_y),
+                        'z': float(center_z)
+                    },
+                    'dimensions': {
+                        'width': float(max_x - min_x),
+                        'length': float(max_y - min_y),
+                        'height': float(height)
+                    },
+                    'bounds': {
+                        'min': {'x': float(min_x), 'y': float(min_y), 'z': float(min_z)},
+                        'max': {'x': float(max_x), 'y': float(max_y), 'z': float(max_z)}
+                    },
+                    'polygon_coords': [(float(x), float(y)) for x, y in poly.exterior.coords]  # Store the actual shape
+                }
+                rooms.append(room)
+            except Exception as e:
+                logger.error(f"Failed to generate geometry for area {area_id}: {e}", exc_info=True)
+
+        logger.info(f"Generated {len(rooms)} room geometries.")
+        return rooms
+
+    def generate_walls_between_rooms(self, rooms: List[Dict]) -> List[Dict]:
+        """Infers walls based on proximity and alignment of room boundaries."""
+        logger.info("Generating walls between rooms...")
+        walls = []
+        wall_id = 0
+
+        # Skip if there are not enough rooms
+        if len(rooms) < 2:
+            logger.warning("Not enough rooms to generate walls.")
+            return []
+
+        try:
+            # Create polygons for each room
+            room_polygons = []
+            for room in rooms:
+                if 'polygon_coords' in room:
+                    poly = Polygon(room['polygon_coords'])
+                    room_polygons.append((room['id'], poly))
+
+            # Set distance threshold for detecting walls (in meters)
+            wall_distance_threshold = 1.5
+
+            # Compare each pair of rooms
+            for i in range(len(room_polygons)):
+                room1_id, poly1 = room_polygons[i]
+
+                for j in range(i+1, len(room_polygons)):
+                    room2_id, poly2 = room_polygons[j]
+
+                    # Check if rooms are close but not overlapping
+                    if poly1.distance(poly2) < wall_distance_threshold and not poly1.intersects(poly2):
+                        # Find points on boundaries that are closest
+                        # For simplicity, this example uses the closest points of the polygons
+                        # A more complex implementation would find the line segments
+
+                        # Get exterior lines of both polygons
+                        lines1 = list(zip(poly1.exterior.coords[:-1], poly1.exterior.coords[1:]))
+                        lines2 = list(zip(poly2.exterior.coords[:-1], poly2.exterior.coords[1:]))
+
+                        # Find closest pair of lines
+                        min_dist = float('inf')
+                        closest_pair = None
+
+                        for line1 in lines1:
+                            line1_poly = Polygon([line1[0], line1[1], line1[1], line1[0]])
+
+                            for line2 in lines2:
+                                line2_poly = Polygon([line2[0], line2[1], line2[1], line2[0]])
+                                dist = line1_poly.distance(line2_poly)
+
+                                if dist < min_dist:
+                                    min_dist = dist
+                                    closest_pair = (line1, line2)
+
+                        if closest_pair and min_dist < wall_distance_threshold:
+                            # Create wall from midpoints of closest lines
+                            line1, line2 = closest_pair
+
+                            mid1 = ((line1[0][0] + line1[1][0])/2, (line1[0][1] + line1[1][1])/2)
+                            mid2 = ((line2[0][0] + line2[1][0])/2, (line2[0][1] + line2[1][1])/2)
+
+                            # Calculate wall properties
+                            wall_id += 1
+                            thickness = 0.1  # Default wall thickness
+                            height = 2.4     # Default wall height
+
+                            # Calculate angle of the wall
+                            angle = math.atan2(mid2[1] - mid1[1], mid2[0] - mid1[0])
+
+                            wall = {
+                                'id': f"wall_{wall_id}",
+                                'start': {'x': float(mid1[0]), 'y': float(mid1[1]), 'z': 0},
+                                'end': {'x': float(mid2[0]), 'y': float(mid2[1]), 'z': 0},
+                                'thickness': thickness,
+                                'height': height,
+                                'angle': float(angle),
+                                'connects': [room1_id, room2_id]
+                            }
+
+                            walls.append(wall)
+
+            logger.info(f"Generated {len(walls)} walls between rooms.")
+            return walls
+
+        except Exception as e:
+            logger.error(f"Failed to generate walls: {e}", exc_info=True)
+            return []
