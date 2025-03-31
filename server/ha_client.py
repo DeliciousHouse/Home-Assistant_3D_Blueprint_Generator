@@ -15,7 +15,8 @@ def get_area_registry(base_url, token):
     """Get the area registry from Home Assistant using a WebSocket connection."""
     # Convert HTTP URL to WebSocket URL
     ws_url = base_url.replace('http://', 'ws://').replace('https://', 'wss://')
-    ws_url = f"{ws_url}/api/websocket"
+    ws_url = ws_url.replace('/api', '') # Remove /api if present
+    ws_url = f"{ws_url}/websocket"
 
     areas = []
     response_received = Event()
@@ -107,7 +108,7 @@ class HomeAssistantClient:
         """Get base URL from environment or use default."""
         # For Home Assistant add-on
         if os.environ.get('SUPERVISOR_TOKEN'):
-            return "http://supervisor/core"
+            return "http://supervisor/core/api"
 
         # Check for options file
         options_path = '/data/options.json'

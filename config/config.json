@@ -26,5 +26,9 @@
     "port": 8001,
     "debug": false,
     "cors_origins": ["*"]
+  },
+  "home_assistant": {
+    "api_url": "http://supervisor/core/api",
+    "use_supervisor_token": true
   }
 }
