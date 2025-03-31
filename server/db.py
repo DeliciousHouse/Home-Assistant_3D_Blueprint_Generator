@@ -472,6 +472,57 @@ def save_area_observation(tracked_device_id: str, predicted_area_id: Optional[st
         logger.error(f"Failed to save area observation for {tracked_device_id}")
         return False
 
+# --- NEW Helper for AI Processor ---
+
+def get_area_observations(
+    limit: int = 5000,
+    only_transitions: bool = False,
+    device_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Retrieves area observation records from the database.
+
+    Args:
+        limit: Maximum number of records to return.
+        only_transitions: If True, only return records where is_transition = 1.
+        device_id: If provided, only return records for this specific device.
+
+    Returns:
+        A list of observation dictionaries.
+    """
+    query = """
+    SELECT timestamp, tracked_device_id, predicted_area_id, rssi_vector, is_transition
+    FROM area_observations
+    """
+    conditions = []
+    params = []
+
+    if only_transitions:
+        conditions.append("is_transition = 1")
+
+    if device_id:
+        conditions.append("tracked_device_id = ?")
+        params.append(device_id)
+
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+
+    query += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+
+    results = _execute_sqlite_read(query, tuple(params))
+    if results is None: # Handle potential DB error
+        return []
+
+    # Parse the JSON rssi_vector
+    for row in results:
+        try:
+            row['rssi_vector'] = json.loads(row['rssi_vector'])
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(f"Could not parse rssi_vector for observation id {row.get('id', 'N/A')}")
+            row['rssi_vector'] = {} # Provide empty dict on error
+    return results
+
 # For compatibility with existing code
 execute_sqlite_query = _execute_sqlite_read
 execute_query = _execute_sqlite_read

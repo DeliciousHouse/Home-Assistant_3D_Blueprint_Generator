@@ -315,88 +315,80 @@ class BluetoothProcessor:
         if not positions:
             return []
 
-        try:
-            # Get Home Assistant areas
-            from .ha_client import HomeAssistantClient
-            ha_client = HomeAssistantClient()
-            ha_areas = ha_client.get_areas()
+        # Get Home Assistant areas
+        from .ha_client import HomeAssistantClient
+        ha_client = HomeAssistantClient()
+        ha_areas = ha_client.get_areas()
 
-            logger.info(f"Detecting rooms using {len(ha_areas)} Home Assistant areas")
+        logger.info(f"Detecting rooms using {len(ha_areas)} Home Assistant areas")
 
-            # Group device positions by area_id
-            positions_by_area = {}
-            for device_id, position in positions.items():
-                area_id = position.get('area_id')
-                if area_id:
-                    if area_id not in positions_by_area:
-                        positions_by_area[area_id] = []
-                    positions_by_area[area_id].append((device_id, position))
+        # Group device positions by area_id
+        positions_by_area = {}
+        for device_id, position in positions.items():
+            area_id = position.get('area_id')
+            if area_id:
+                if area_id not in positions_by_area:
+                    positions_by_area[area_id] = []
+                positions_by_area[area_id].append((device_id, position))
 
-            # Generate rooms from areas
-            rooms = []
+        # Generate rooms from areas
+        rooms = []
 
-            # Process areas with devices
-            for area in ha_areas:
-                area_id = area.get('area_id')
-                if area_id in positions_by_area and len(positions_by_area[area_id]) > 0:
-                    # Calculate room properties based on device positions
-                    devices_in_area = positions_by_area[area_id]
+        # Process areas with devices
+        for area in ha_areas:
+            area_id = area.get('area_id')
+            if area_id in positions_by_area and len(positions_by_area[area_id]) > 0:
+                # Calculate room properties based on device positions
+                devices_in_area = positions_by_area[area_id]
 
-                    # Extract coordinates
-                    x_coords = [pos['x'] for _, pos in devices_in_area]
-                    y_coords = [pos['y'] for _, pos in devices_in_area]
-                    z_coords = [pos['z'] for _, pos in devices_in_area]
+                # Extract coordinates
+                x_coords = [pos['x'] for _, pos in devices_in_area]
+                y_coords = [pos['y'] for _, pos in devices_in_area]
+                z_coords = [pos['z'] for _, pos in devices_in_area]
 
-                    # Calculate bounds
-                    min_x, max_x = min(x_coords), max(x_coords)
-                    min_y, max_y = min(y_coords), max(y_coords)
-                    min_z, max_z = min(z_coords), max(z_coords)
+                # Calculate bounds
+                min_x, max_x = min(x_coords), max(x_coords)
+                min_y, max_y = min(y_coords), max(y_coords)
+                min_z, max_z = min(z_coords), max(z_coords)
 
-                    # Add some padding
-                    padding = 0.5  # 0.5m padding
-                    min_x -= padding
-                    min_y -= padding
-                    max_x += padding
-                    max_y += padding
+                # Add some padding
+                padding = 0.5  # 0.5m padding
+                min_x -= padding
+                min_y -= padding
+                max_x += padding
+                max_y += padding
 
-                    # Calculate center
-                    center_x = (min_x + max_x) / 2
-                    center_y = (min_y + max_y) / 2
-                    center_z = (min_z + max_z) / 2
+                # Calculate center
+                center_x = (min_x + max_x) / 2
+                center_y = (min_y + max_y) / 2
+                center_z = (min_z + max_z) / 2
 
-                    # Create room object
-                    room = {
-                        'id': f"room_{area_id}",
-                        'name': area.get('name', f"Room {area_id}"),
-                        'center': {'x': center_x, 'y': center_y, 'z': center_z},
-                        'dimensions': {
-                            'width': max(max_x - min_x, 2.0),  # Minimum 2m width
-                            'length': max(max_y - min_y, 2.0),  # Minimum 2m length
-                            'height': max(max_z - min_z, 2.4)   # Minimum 2.4m height
-                        },
-                        'bounds': {
-                            'min': {'x': min_x, 'y': min_y, 'z': min_z},
-                            'max': {'x': max_x, 'y': max_y, 'z': max_z}
-                        },
-                        'devices': [device_id for device_id, _ in devices_in_area],
-                        'area_id': area_id
-                    }
+                # Create room object
+                room = {
+                    'id': f"room_{area_id}",
+                    'name': area.get('name', f"Room {area_id}"),
+                    'center': {'x': center_x, 'y': center_y, 'z': center_z},
+                    'dimensions': {
+                        'width': max(max_x - min_x, 2.0),  # Minimum 2m width
+                        'length': max(max_y - min_y, 2.0),  # Minimum 2m length
+                        'height': max(max_z - min_z, 2.4)   # Minimum 2.4m height
+                    },
+                    'bounds': {
+                        'min': {'x': min_x, 'y': min_y, 'z': min_z},
+                        'max': {'x': max_x, 'y': max_y, 'z': max_z}
+                    },
+                    'devices': [device_id for device_id, _ in devices_in_area],
+                    'area_id': area_id
+                }
 
-                    rooms.append(room)
+                rooms.append(room)
 
-            logger.info(f"Generated {len(rooms)} rooms from Home Assistant areas")
+        logger.info(f"Generated {len(rooms)} rooms from Home Assistant areas")
 
-            # If no rooms detected, just return empty list instead of using clustering fallback
-            if not rooms:
-                logger.warning("No rooms detected from Home Assistant areas")
-                # Removed call to self._detect_rooms_clustering(positions)
+        if not rooms:
+            logger.warning("No rooms detected from Home Assistant areas")
 
-            return rooms
-
-        except Exception as e:
-            logger.error(f"Error detecting rooms from HA areas: {e}")
-            # Removed call to self._detect_rooms_clustering(positions)
-            return []  # Return empty list on error
+        return rooms
 
     def calculate_device_position(self, device_id: str, rssi_readings: Dict[str, float]) -> Optional[Dict]:
         """
