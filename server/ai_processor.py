@@ -3,12 +3,14 @@ import logging
 import math
 import os
 import pickle
+import random # Added for layout jitter
 import uuid
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from statistics import median
 from typing import Dict, List, Optional, Tuple, Union, Any
+from collections import Counter # Added for adjacency counting
 
 import numpy as np
 import pandas as pd
@@ -27,7 +29,8 @@ import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-from .db import execute_query, execute_write_query, get_sqlite_connection, save_rssi_sample_to_sqlite
+# Import specific DB functions needed
+from .db import get_sqlite_connection, save_rssi_sample_to_sqlite, save_ai_model_sqlite, execute_query, execute_write_query, get_area_observations
 
 # Define model directory path
 MODEL_DIR = Path("/data/models")
@@ -1379,136 +1382,15 @@ class AIProcessor:
         return DummyVecEnv([lambda: env])
 
     def refine_blueprint(self, blueprint: Dict) -> Dict:
-        """Refine a blueprint using the trained reinforcement learning model."""
-        if not self.blueprint_refinement_model:
-            return blueprint
-
-        try:
-            # Create a copy of the blueprint to refine
-            refined_blueprint = json.loads(json.dumps(blueprint))
-
-            # Convert blueprint to observation
-            obs = self._blueprint_to_observation(refined_blueprint)
-
-            # Get action from model
-            action, _ = self.blueprint_refinement_model.predict(obs)
-
-            # Apply action to refine blueprint
-            refined_blueprint = self._apply_refinement_action(refined_blueprint, action)
-
-            # Save refinement for future training
-            self._save_blueprint_refinement(blueprint, refined_blueprint)
-
-            return refined_blueprint
-
-        except Exception as e:
-            logger.error(f"Error refining blueprint: {str(e)}")
-            return blueprint
-
-    def _blueprint_to_observation(self, blueprint: Dict) -> np.ndarray:
-        """Convert blueprint to observation vector for RL model."""
-        obs = np.zeros(20)
-
-        # Add room features
-        room_count = min(2, len(blueprint.get('rooms', [])))
-        for i in range(room_count):
-            room = blueprint['rooms'][i]
-            idx = i * 5
-            obs[idx] = room.get('center', {}).get('x', 0)
-            obs[idx+1] = room.get('center', {}).get('y', 0)
-            obs[idx+2] = room.get('dimensions', {}).get('width', 0)
-            obs[idx+3] = room.get('dimensions', {}).get('length', 0)
-            obs[idx+4] = room.get('dimensions', {}).get('height', 0)
-
-        # Add wall features
-        wall_count = min(2, len(blueprint.get('walls', [])))
-        for i in range(wall_count):
-            wall = blueprint['walls'][i]
-            idx = 10 + i * 5
-            obs[idx] = wall.get('start', {}).get('x', 0)
-            obs[idx+1] = wall.get('start', {}).get('y', 0)
-            obs[idx+2] = wall.get('end', {}).get('x', 0)
-            obs[idx+3] = wall.get('end', {}).get('y', 0)
-            obs[idx+4] = wall.get('thickness', 0)
-
-        return obs
-
-    def _apply_refinement_action(self, blueprint: Dict, action: np.ndarray) -> Dict:
-        """Apply refinement action to blueprint."""
-        # Modify rooms
-        if 'rooms' in blueprint and blueprint['rooms']:
-            room_count = min(2, len(blueprint['rooms']))
-            for i in range(room_count):
-                room = blueprint['rooms'][i]
-
-                # Modify room dimensions (with constraints)
-                if 'dimensions' in room:
-                    room['dimensions']['width'] = max(1.5, min(15, room['dimensions'].get('width', 3) + action[i*2]))
-                    room['dimensions']['length'] = max(1.5, min(15, room['dimensions'].get('length', 3) + action[i*2+1]))
-
-                # Update room bounds if present
-                if 'center' in room and 'bounds' in room:
-                    center_x = room['center'].get('x', 0)
-                    center_y = room['center'].get('y', 0)
-                    width = room['dimensions'].get('width', 3)
-                    length = room['dimensions'].get('length', 3)
-
-                    room['bounds']['min'] = {
-                        'x': center_x - width/2,
-                        'y': center_y - length/2,
-                        'z': room['bounds']['min'].get('z', 0)
-                    }
-
-                    room['bounds']['max'] = {
-                        'x': center_x + width/2,
-                        'y': center_y + length/2,
-                        'z': room['bounds']['max'].get('z', 2.4)
-                    }
-
-        # Align walls
-        if 'walls' in blueprint and blueprint['walls']:
-            for wall in blueprint['walls']:
-                # Check if wall is nearly horizontal or vertical
-                dx = wall['end'].get('x', 0) - wall['start'].get('x', 0)
-                dy = wall['end'].get('y', 0) - wall['start'].get('y', 0)
-
-                if abs(dx) > abs(dy):  # Horizontal wall
-                    # Make it perfectly horizontal
-                    wall['end']['y'] = wall['start'].get('y', 0)
-                else:  # Vertical wall
-                    # Make it perfectly vertical
-                    wall['end']['x'] = wall['start'].get('x', 0)
-
-        return blueprint
+         logger.warning("AI refine_blueprint not implemented, returning original.")
+         return blueprint # Placeholder
 
     def _save_blueprint_refinement(self, original: Dict, refined: Dict) -> None:
-        """Save blueprint refinement for future training."""
-        try:
-            # Generate a unique ID for this refinement
-            blueprint_id = original.get('id', str(uuid.uuid4()))
-
-            # Save to database using SQLite directly
-            from .db import get_sqlite_connection
-            conn = get_sqlite_connection()
-            cursor = conn.cursor()
-
-            cursor.execute("""
-            INSERT INTO ai_blueprint_feedback
-            (blueprint_id, original_blueprint, modified_blueprint, timestamp)
-            VALUES (?, ?, ?, datetime('now'))
-            """, (
-                blueprint_id,
-                json.dumps(original),
-                json.dumps(refined)
-            ))
-
-            conn.commit()
-            conn.close()
-
-            logger.debug(f"Saved blueprint refinement for future training: {blueprint_id}")
-
-        except Exception as e:
-            logger.error(f"Failed to save blueprint refinement: {str(e)}")
+         logger.warning("_save_blueprint_refinement called, but RL not fully implemented.")
+         # Call DB helper if feedback table exists
+         # from .db import save_ai_feedback_to_sqlite
+         # save_ai_feedback_to_sqlite(original.get('id','unknown'), {}, original, refined)
+         pass
 
     def detect_movement_patterns(self):
         """Detect device movement patterns to improve position accuracy."""
@@ -1661,3 +1543,154 @@ class AIProcessor:
         except Exception as e:
             logger.error(f"Failed to save model info to database: {str(e)}")
             return False
+
+    # --- NEW/PLACEHOLDER AI/HEURISTIC METHODS ---
+
+    def calculate_area_adjacency(self, min_transitions=2) -> Dict[str, List[str]]:
+        """Analyze transitions to determine likely adjacent areas."""
+        logger.info("Calculating area adjacency from observations...")
+        adjacency: Dict[str, Counter[str]] = {}
+        last_area: Dict[str, str] = {}
+
+        try:
+            # Use the new DB helper function
+            observations = get_area_observations(limit=10000) # Get recent observations
+            if not observations:
+                logger.warning("No area observations found in database to calculate adjacency.")
+                return {}
+
+            # Process chronologically
+            for obs in sorted(observations, key=lambda x: x['timestamp']):
+                dev = obs['tracked_device_id']
+                current_area = obs['predicted_area_id']
+
+                # Skip if area is None or empty
+                if not current_area:
+                    last_area[dev] = None # Reset last area if prediction lost
+                    continue
+
+                prev_area = last_area.get(dev)
+
+                # Check for a valid transition (must have a previous area different from current)
+                if prev_area and prev_area != current_area:
+                    # Ensure areas exist in adjacency dict
+                    adjacency.setdefault(prev_area, Counter())
+                    adjacency.setdefault(current_area, Counter())
+                    # Increment count for both directions
+                    adjacency[prev_area][current_area] += 1
+                    adjacency[current_area][prev_area] += 1
+                    logger.debug(f"Observed transition: {prev_area} <-> {current_area} for {dev}")
+
+                # Update last known area for the device
+                last_area[dev] = current_area
+
+            # Filter adjacencies by minimum transition count
+            final_adjacency: Dict[str, List[str]] = {}
+            for area1, neighbors in adjacency.items():
+                valid_neighbors = [area2 for area2, count in neighbors.items() if count >= min_transitions]
+                if valid_neighbors:
+                    final_adjacency[area1] = valid_neighbors
+
+            logger.info(f"Calculated adjacency for {len(final_adjacency)} areas (min transitions: {min_transitions}).")
+            logger.debug(f"Adjacency result: {final_adjacency}")
+            return final_adjacency
+
+        except Exception as e:
+            logger.error(f"Error calculating area adjacency: {e}", exc_info=True)
+            return {}
+
+    def generate_heuristic_layout(self, area_ids: List[str], adjacency: Dict[str, List[str]]) -> Dict[str, Dict[str, float]]:
+        """Generate a basic 2D layout using adjacency graph via BFS."""
+        logger.info("Generating heuristic layout for areas...")
+        layout = {}
+        if not area_ids:
+            logger.warning("No area IDs provided for layout generation.")
+            return {}
+
+        q = []
+        placed = set()
+
+        # Start BFS from the first area ID
+        start_node = area_ids[0]
+        layout[start_node] = {'x': 0.0, 'y': 0.0}
+        q.append(start_node)
+        placed.add(start_node)
+
+        head = 0
+        processed_neighbors = set() # To avoid placing based on the same neighbor twice
+
+        while head < len(q):
+            current_area = q[head]
+            head += 1
+            cx, cy = layout[current_area]['x'], layout[current_area]['y']
+
+            neighbors = adjacency.get(current_area, [])
+            unplaced_neighbors = [n for n in neighbors if n in area_ids and n not in placed]
+
+            # Simple angular placement (can be improved)
+            angle_step = (2 * math.pi) / max(1, len(unplaced_neighbors))
+            placement_distance = 5.0 # Default distance
+
+            for i, neighbor in enumerate(unplaced_neighbors):
+                # Check if this specific neighbor relationship has been processed
+                pair = tuple(sorted((current_area, neighbor)))
+                if pair in processed_neighbors:
+                    continue
+
+                angle = i * angle_step + (random.random() * 0.1 - 0.05) # Add slight jitter
+                nx = cx + placement_distance * math.cos(angle)
+                ny = cy + placement_distance * math.sin(angle)
+
+                layout[neighbor] = {'x': round(nx, 2), 'y': round(ny, 2)}
+                placed.add(neighbor)
+                q.append(neighbor)
+                processed_neighbors.add(pair) # Mark pair as processed
+
+        # Place any disconnected areas arbitrarily
+        current_x = (max(d['x'] for d in layout.values()) if layout else 0) + placement_distance * 2
+        current_y = 0
+        for area_id in area_ids:
+            if area_id not in placed:
+                 logger.warning(f"Area {area_id} seems disconnected, placing arbitrarily.")
+                 layout[area_id] = {'x': current_x, 'y': current_y}
+                 placed.add(area_id)
+                 current_x += placement_distance
+
+
+        logger.info(f"Generated heuristic layout for {len(layout)} areas.")
+        logger.debug(f"Layout result: {layout}")
+        return layout
+
+    def estimate_room_dimensions(self, area_id: str, devices_in_area: List[str]) -> Dict[str, float]:
+        """Placeholder: Estimate room size based on device count."""
+        # Get defaults/constraints from config
+        validation_config = self.config.get('blueprint_validation', {})
+        min_dim = validation_config.get('min_room_dimension', 1.5)
+        max_dim = validation_config.get('max_room_dimension', 15.0)
+        min_height = validation_config.get('min_ceiling_height', 2.2)
+        max_height = validation_config.get('max_ceiling_height', 4.0)
+
+        # Simple heuristic: base size + increment per device
+        num_devices = len(devices_in_area)
+        base_size = 3.0 # meters
+        # Size increases slower after the first few devices
+        size_factor = base_size + math.log1p(max(0, num_devices)) * 0.75
+
+        width = round(size_factor, 1)
+        length = round(size_factor * 1.2, 1) # Slightly rectangular default
+        height = min_height # Default height
+
+        # Apply constraints
+        width = max(min_dim, min(max_dim, width))
+        length = max(min_dim, min(max_dim, length))
+        height = max(min_height, min(max_height, height))
+
+        logger.debug(f"Estimated dimensions for {area_id} ({num_devices} devices): W={width}, L={length}, H={height}")
+        return {'width': width, 'length': length, 'height': height}
+
+    def predict_walls_between_areas(self, area1_id, area2_id, transition_data) -> float:
+        """Placeholder: Predict wall probability. Returns 0.0 (no wall)."""
+        # Phase 1: No wall prediction yet.
+        # Phase 2: Implement ML model using transition_data (RSSI changes).
+        logger.debug(f"Placeholder: Predicting NO wall between {area1_id} and {area2_id}")
+        return 0.0 # Return 0 probability for now
