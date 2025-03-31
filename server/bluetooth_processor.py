@@ -108,10 +108,11 @@ class BluetoothProcessor:
         """Process Bluetooth sensor data from Home Assistant."""
         try:
             logger.debug("Processing Bluetooth sensors data")
-            # Log distance data from sensors
-            self.log_distance_data()
-            # Process area predictions if enabled
-            self.log_area_predictions()
+            # Use the existing method that already handles everything
+            result = self.log_sensor_data()
+            # Check if there was a critical error
+            if "error" in result and result["error"]:
+                return False
             return True
         except Exception as e:
             logger.error(f"Error processing Bluetooth sensors: {e}", exc_info=True)
