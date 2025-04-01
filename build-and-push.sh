@@ -46,9 +46,9 @@ fi
 VERSION=$NEW_VERSION
 echo "Building version $VERSION"
 
-# Build the image
-echo "Building Docker image..."
-docker build --platform linux/amd64 -t blueprint-generator:$VERSION .
+# Build the image with no cache
+echo "Building Docker image (clean build)..."
+docker build --no-cache --platform linux/amd64 -t blueprint-generator:$VERSION .
 
 # Tag for GitHub
 docker tag blueprint-generator:$VERSION ghcr.io/delicioushouse/blueprint-generator-amd64:$VERSION
@@ -69,4 +69,30 @@ git add -A
 git commit -m "Update Blueprint Generator to version $VERSION"
 git push origin main
 
+echo "Successfully built, pushed and updated version $VERSION"
+# Wait for GitHub to process the push
+echo "Waiting 10 seconds for GitHub to process the changes..."
+sleep 10
+
+# SSH into Home Assistant and update the addon
+echo "SSHing into Home Assistant to update the addons..."
+HASS_PASSWORD="Xenia1031"
+
+sshpass -p "$HASS_PASSWORD" ssh bkam@192.168.86.91 << 'EOF'
+  echo "Connected to Home Assistant, updating addons..."
+  cd addons/Home_Assistant_3D_Blueprint_Generator
+  git pull
+
+  # Run addon update check - assuming you have the Home Assistant CLI available
+  # If using a standard Home Assistant instance with CLI:
+  ha addons check-update
+
+  # If using a different setup, you might need:
+  # ha addons rebuild local_blueprint_generator
+
+  echo "Addon update complete!"
+EOF
+
+# End of SSH session
+echo "Home Assistant addon updated successfully!"
 echo "Successfully built, pushed and updated version $VERSION"

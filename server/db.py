@@ -61,20 +61,18 @@ def init_sqlite_db():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_blueprints_created ON blueprints (created_at DESC);')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_blueprints_status ON blueprints (status);')
 
-        # --- Area Observations Table (NEW) ---
+        # --- Area Observations Table (UPDATED) ---
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS area_observations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Store as ISO format string
                 tracked_device_id TEXT NOT NULL,
-                predicted_area_id TEXT, -- Area ID predicted by Bermuda/Classifier
-                rssi_vector TEXT NOT NULL, -- JSON blob: {"scanner_id1": rssi1, "scanner_id2": rssi2, ...}
-                is_transition INTEGER DEFAULT 0 -- Flag: 1 if this marks a transition *into* predicted_area_id
+                predicted_area_id TEXT -- Can be NULL if prediction is unavailable
             )
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_obs_time ON area_observations (timestamp DESC);')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_obs_device_area ON area_observations (tracked_device_id, predicted_area_id);')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_obs_transition ON area_observations (is_transition, timestamp DESC);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_area_obs_device_time ON area_observations (tracked_device_id, timestamp DESC);')
 
         # --- RSSI Distance Samples Table (for Training) ---
         cursor.execute('''
@@ -141,6 +139,20 @@ def init_sqlite_db():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_device ON device_positions (device_id);')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_timestamp ON device_positions (timestamp DESC);')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_source ON device_positions (source);')
+
+        # --- Distance Log Table ---
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS distance_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                tracked_device_id TEXT NOT NULL,
+                scanner_id TEXT NOT NULL,
+                distance REAL NOT NULL
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_distance_log_timestamp ON distance_log (timestamp DESC);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_distance_log_device ON distance_log (tracked_device_id);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_distance_log_scanner ON distance_log (scanner_id);')
 
         conn.commit()
         logger.info("SQLite database schema initialized/verified successfully.")
@@ -428,45 +440,52 @@ def get_latest_blueprint_from_sqlite() -> Optional[Dict[str, Any]]:
 
 def save_ai_model_sqlite(model_name: str, model_type: str, model_path: str, metrics: Dict) -> bool:
     """Save or update AI model metadata in SQLite."""
-    query = """
-    INSERT INTO ai_models (model_name, model_type, model_path, metrics, last_trained_at, version)
-    VALUES (?, ?, ?, ?, ?, 1)
-    ON CONFLICT(model_name) DO UPDATE SET
-        model_type=excluded.model_type,
-        model_path=excluded.model_path,
-        metrics=excluded.metrics,
-        last_trained_at=excluded.last_trained_at,
-        version=version + 1
-    """
-    # Ensure model_path is a string
-    model_path_str = str(model_path)
-    metrics_json = json.dumps(metrics)
-    timestamp = datetime.now().isoformat()
-    params = (model_name, model_type, model_path_str, metrics_json, timestamp)
+    if not model_name or not model_path:
+        logger.error("Cannot save AI model: missing required fields (model_name or model_path)")
+        return False
 
-    result = _execute_sqlite_write(query, params)
-    if result is not None:
-        logger.info(f"Saved/Updated AI model info for '{model_name}'")
-        return True
-    else:
-        logger.error(f"Failed to save AI model info for '{model_name}'")
+    try:
+        # Ensure model_path is a string
+        model_path_str = str(model_path)
+        metrics_json = json.dumps(metrics)
+        timestamp = datetime.now().isoformat()
+
+        query = """
+        INSERT INTO ai_models (model_name, model_type, model_path, metrics, last_trained_at, version)
+        VALUES (?, ?, ?, ?, ?, 1)
+        ON CONFLICT(model_name) DO UPDATE SET
+            model_type=excluded.model_type,
+            model_path=excluded.model_path,
+            metrics=excluded.metrics,
+            last_trained_at=excluded.last_trained_at,
+            version=version + 1
+        """
+        params = (model_name, model_type, model_path_str, metrics_json, timestamp)
+
+        result = _execute_sqlite_write(query, params)
+        if result is not None:
+            logger.info(f"Saved/Updated AI model info for '{model_name}'")
+            return True
+        else:
+            logger.error(f"Failed to save AI model info for '{model_name}'")
+            return False
+    except (TypeError, ValueError, json.JSONDecodeError) as e:
+        logger.error(f"Failed to save AI model '{model_name}': Invalid data format: {e}")
         return False
 
 # --- NEW Helper for Area Observations ---
-def save_area_observation(tracked_device_id: str, predicted_area_id: Optional[str], rssi_vector: Dict[str, float], is_transition: bool) -> bool:
-    """Saves a snapshot of RSSI readings and predicted area."""
+def save_area_observation(tracked_device_id: str, predicted_area_id: Optional[str]) -> bool:
+    """Saves a snapshot of a device's predicted area."""
     query = """
-    INSERT INTO area_observations (timestamp, tracked_device_id, predicted_area_id, rssi_vector, is_transition)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO area_observations (timestamp, tracked_device_id, predicted_area_id)
+    VALUES (?, ?, ?)
     """
     timestamp = datetime.now().isoformat()
-    rssi_json = json.dumps(rssi_vector)
-    transition_flag = 1 if is_transition else 0
-    params = (timestamp, tracked_device_id, predicted_area_id, rssi_json, transition_flag)
+    params = (timestamp, tracked_device_id, predicted_area_id)
 
     result = _execute_sqlite_write(query, params)
     if result is not None:
-        logger.debug(f"Saved area observation for {tracked_device_id} -> {predicted_area_id} (Transition: {is_transition})")
+        logger.debug(f"Saved area observation for {tracked_device_id} -> {predicted_area_id}")
         return True
     else:
         logger.error(f"Failed to save area observation for {tracked_device_id}")
@@ -544,6 +563,23 @@ def get_recent_area_predictions(time_window_minutes: int = 10) -> Dict[str, Opti
     logger.debug(f"Found {len(predictions)} recent area predictions.")
     return predictions
 
+# Add this function
+def save_distance_log(tracked_device_id: str, scanner_id: str, distance: float) -> bool:
+    """Save a distance measurement to the log."""
+    query = """
+    INSERT INTO distance_log (timestamp, tracked_device_id, scanner_id, distance)
+    VALUES (?, ?, ?, ?)
+    """
+    timestamp = datetime.now().isoformat()
+    params = (timestamp, tracked_device_id, scanner_id, distance)
+
+    result = _execute_sqlite_write(query, params)
+    if result is not None:
+        logger.debug(f"Saved distance log: {tracked_device_id} to {scanner_id} = {distance}m")
+        return True
+    else:
+        logger.error(f"Failed to save distance log for {tracked_device_id}")
+        return False
 
 # For compatibility with existing code
 execute_sqlite_query = _execute_sqlite_read

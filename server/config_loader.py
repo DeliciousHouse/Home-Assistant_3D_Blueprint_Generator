@@ -19,7 +19,7 @@ def load_config(config_path: Optional[str] = None) -> Dict:
     ha_options_path = Path('/data/options.json')
 
     # 1. Load defaults from config/config.json
-    if default_config_path.exists():
+    if (default_config_path.exists()):
         try:
             with open(default_config_path, 'r') as f:
                 config = json.load(f)
@@ -28,7 +28,7 @@ def load_config(config_path: Optional[str] = None) -> Dict:
             logger.error(f"Failed to load default config: {str(e)}")
 
     # 2. Load user-provided options from /data/options.json
-    if ha_options_path.exists():
+    if (ha_options_path.exists()):
         try:
             with open(ha_options_path, 'r') as f:
                 ha_options = json.load(f)
@@ -54,47 +54,14 @@ def load_config(config_path: Optional[str] = None) -> Dict:
                 'use_areas': ha_options.get('use_room_areas', config.get('room_detection', {}).get('use_areas', True))
             }
 
-            # --- Handle fixed_sensors (Parse JSON string) ---
-            fixed_sensors_str = ha_options.get('fixed_sensors', "") # Get as string
-            parsed_sensors = {}
-            if fixed_sensors_str:
-                try:
-                    # Attempt to parse the string as JSON
-                    parsed_sensors = json.loads(fixed_sensors_str)
-                    if not isinstance(parsed_sensors, dict):
-                        logger.warning("Configured 'fixed_sensors' is not a valid JSON object (dictionary). Using empty.")
-                        parsed_sensors = {}
-                except json.JSONDecodeError as json_err:
-                    logger.error(f"Invalid JSON format for 'fixed_sensors' in configuration: {json_err}. Please check the add-on config. Using empty sensor list.")
-                    parsed_sensors = {}
-            else:
-                 logger.warning("No 'fixed_sensors' string found in HA options. Please configure scanner locations.")
-
-
-            # --- Validate Parsed fixed_sensors ---
-            validated_sensors = {}
-            for sensor_id, loc in parsed_sensors.items():
-                if isinstance(loc, dict) and all(k in loc for k in ['x', 'y', 'z']):
-                    try:
-                        validated_sensors[sensor_id] = {
-                            'x': float(loc['x']),
-                            'y': float(loc['y']),
-                            'z': float(loc['z'])
-                        }
-                    except (TypeError, ValueError):
-                        logger.warning(f"Invalid coordinate format for fixed_sensor '{sensor_id}'. Skipping.")
-                else:
-                    logger.warning(f"Invalid structure for fixed_sensor '{sensor_id}'. Expected {{'x': float, 'y': float, 'z': float}}. Skipping.")
-            config['fixed_sensors'] = validated_sensors # Assign validated dict
+            # Ensure fixed_sensors is an empty dict if not present
+            if 'fixed_sensors' not in config:
+                config['fixed_sensors'] = {}
 
         except Exception as e:
             logger.error(f"Failed to process HA options: {str(e)}")
     else:
         logger.warning(f"{ha_options_path} not found. Using default configuration only.")
-        # Ensure fixed_sensors is an empty dict if options.json doesn't exist
-        if 'fixed_sensors' not in config:
-             config['fixed_sensors'] = {}
-
 
     # Debug output
     safe_config = {k: v for k, v in config.items()} # Shallow copy
