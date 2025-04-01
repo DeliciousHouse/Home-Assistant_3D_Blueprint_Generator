@@ -54,10 +54,47 @@ def load_config(config_path: Optional[str] = None) -> Dict:
                 'use_areas': ha_options.get('use_room_areas', config.get('room_detection', {}).get('use_areas', True))
             }
 
+            # --- Handle fixed_sensors (Parse JSON string) ---
+            fixed_sensors_str = ha_options.get('fixed_sensors', "") # Get as string
+            parsed_sensors = {}
+            if fixed_sensors_str:
+                try:
+                    # Attempt to parse the string as JSON
+                    parsed_sensors = json.loads(fixed_sensors_str)
+                    if not isinstance(parsed_sensors, dict):
+                        logger.warning("Configured 'fixed_sensors' is not a valid JSON object (dictionary). Using empty.")
+                        parsed_sensors = {}
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"Invalid JSON format for 'fixed_sensors' in configuration: {json_err}. Please check the add-on config. Using empty sensor list.")
+                    parsed_sensors = {}
+            else:
+                 logger.warning("No 'fixed_sensors' string found in HA options. Please configure scanner locations.")
+
+
+            # --- Validate Parsed fixed_sensors ---
+            validated_sensors = {}
+            for sensor_id, loc in parsed_sensors.items():
+                if isinstance(loc, dict) and all(k in loc for k in ['x', 'y', 'z']):
+                    try:
+                        validated_sensors[sensor_id] = {
+                            'x': float(loc['x']),
+                            'y': float(loc['y']),
+                            'z': float(loc['z'])
+                        }
+                    except (TypeError, ValueError):
+                        logger.warning(f"Invalid coordinate format for fixed_sensor '{sensor_id}'. Skipping.")
+                else:
+                    logger.warning(f"Invalid structure for fixed_sensor '{sensor_id}'. Expected {{'x': float, 'y': float, 'z': float}}. Skipping.")
+            config['fixed_sensors'] = validated_sensors # Assign validated dict
+
         except Exception as e:
             logger.error(f"Failed to process HA options: {str(e)}")
     else:
         logger.warning(f"{ha_options_path} not found. Using default configuration only.")
+        # Ensure fixed_sensors is an empty dict if options.json doesn't exist
+        if 'fixed_sensors' not in config:
+             config['fixed_sensors'] = {}
+
 
     # Debug output
     safe_config = {k: v for k, v in config.items()} # Shallow copy
@@ -66,13 +103,3 @@ def load_config(config_path: Optional[str] = None) -> Dict:
     return config
 
 # Removed _merge_configs as direct update/get is used now
-
-def get_api_config():
-    config = load_config()
-    # Try port 8001, fall back to 8002 if busy
-    port = config.get('api', {}).get('port', 8001)
-    return {
-        'host': config.get('api', {}).get('host', '0.0.0.0'),
-        'port': port,
-        'debug': config.get('api', {}).get('debug', False)
-    }
