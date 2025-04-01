@@ -226,79 +226,79 @@ def save_blueprint_to_sqlite(blueprint_data: Dict) -> bool:
         return False
 
 
-# def save_device_position_to_sqlite(
-#     device_id: str,
-#     position_data: Dict,
-#     source: str = 'calculated',
-#     accuracy: Optional[float] = None,
-#     area_id: Optional[str] = None
-# ) -> bool:
-#     """Save a device position to the SQLite database.
-#
-#     Args:
-#         device_id: Unique identifier for the device
-#         position_data: Dictionary containing x, y, z coordinates
-#         source: Source of the position data ('fixed_reference', 'calculated', 'manual')
-#         accuracy: Estimated accuracy in meters (optional)
-#         area_id: Optional area/room identifier
-#
-#     Returns:
-#         bool: True if saved successfully, False otherwise
-#     """
-#     # Ensure we have the minimum position data
-#     if not all(k in position_data for k in ['x', 'y', 'z']):
-#         logger.error(f"Invalid position data for device {device_id}: missing x/y/z coordinate")
-#         return False
-#
-#     query = """
-#     INSERT INTO device_positions (device_id, position_data, source, accuracy, area_id, timestamp)
-#     VALUES (?, ?, ?, ?, ?, ?)
-#     """
-#
-#     position_json = json.dumps(position_data)
-#     timestamp = datetime.now().isoformat()
-#     params = (device_id, position_json, source, accuracy, area_id, timestamp)
-#
-#     result = _execute_sqlite_write(query, params)
-#     if result is not None:
-#         logger.info(f"Saved position for device {device_id} (source: {source})")
-#         return True
-#     else:
-#         logger.error(f"Failed to save position for device {device_id}")
-#         return False
+def save_device_position_to_sqlite(
+    device_id: str,
+    position_data: Dict,
+    source: str = 'calculated',
+    accuracy: Optional[float] = None,
+    area_id: Optional[str] = None
+) -> bool:
+    """Save a device position to the SQLite database.
 
-# def get_reference_positions_from_sqlite() -> Dict[str, Dict]:
-#     """Get the latest positions of all fixed reference devices.
-#
-#     Returns:
-#         Dict mapping device_id to position {x, y, z} dict
-#     """
-#     query = """
-#     SELECT d1.device_id, d1.position_data
-#     FROM device_positions d1
-#     JOIN (
-#         SELECT device_id, MAX(timestamp) as max_time
-#         FROM device_positions
-#         WHERE source = 'fixed_reference'
-#         GROUP BY device_id
-#     ) d2 ON d1.device_id = d2.device_id AND d1.timestamp = d2.max_time
-#     WHERE d1.source = 'fixed_reference'
-#     """
-#
-#     results = _execute_sqlite_read(query)
-#     reference_positions = {}
-#
-#     if results:
-#         for row in results:
-#             try:
-#                 device_id = row['device_id']
-#                 position = json.loads(row['position_data'])
-#                 reference_positions[device_id] = position
-#             except (json.JSONDecodeError, KeyError) as e:
-#                 logger.error(f"Error parsing reference position for {row.get('device_id', 'unknown')}: {e}")
-#
-#     logger.debug(f"Retrieved {len(reference_positions)} reference positions from database")
-#     return reference_positions
+    Args:
+        device_id: Unique identifier for the device
+        position_data: Dictionary containing x, y, z coordinates
+        source: Source of the position data ('fixed_reference', 'calculated', 'manual')
+        accuracy: Estimated accuracy in meters (optional)
+        area_id: Optional area/room identifier
+
+    Returns:
+        bool: True if saved successfully, False otherwise
+    """
+    # Ensure we have the minimum position data
+    if not all(k in position_data for k in ['x', 'y', 'z']):
+        logger.error(f"Invalid position data for device {device_id}: missing x/y/z coordinate")
+        return False
+
+    query = """
+    INSERT INTO device_positions (device_id, position_data, source, accuracy, area_id, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """
+
+    position_json = json.dumps(position_data)
+    timestamp = datetime.now().isoformat()
+    params = (device_id, position_json, source, accuracy, area_id, timestamp)
+
+    result = _execute_sqlite_write(query, params)
+    if result is not None:
+        logger.info(f"Saved position for device {device_id} (source: {source})")
+        return True
+    else:
+        logger.error(f"Failed to save position for device {device_id}")
+        return False
+
+def get_reference_positions_from_sqlite() -> Dict[str, Dict]:
+    """Get the latest positions of all fixed reference devices.
+
+    Returns:
+        Dict mapping device_id to position {x, y, z} dict
+    """
+    query = """
+    SELECT d1.device_id, d1.position_data
+    FROM device_positions d1
+    JOIN (
+        SELECT device_id, MAX(timestamp) as max_time
+        FROM device_positions
+        WHERE source = 'fixed_reference'
+        GROUP BY device_id
+    ) d2 ON d1.device_id = d2.device_id AND d1.timestamp = d2.max_time
+    WHERE d1.source = 'fixed_reference'
+    """
+
+    results = _execute_sqlite_read(query)
+    reference_positions = {}
+
+    if results:
+        for row in results:
+            try:
+                device_id = row['device_id']
+                position = json.loads(row['position_data'])
+                reference_positions[device_id] = position
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.error(f"Error parsing reference position for {row.get('device_id', 'unknown')}: {e}")
+
+    logger.debug(f"Retrieved {len(reference_positions)} reference positions from database")
+    return reference_positions
 
 def get_device_positions_from_sqlite() -> Dict[str, Dict]:
     """Get the latest positions of all tracked devices.
