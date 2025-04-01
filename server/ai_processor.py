@@ -32,7 +32,17 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from shapely.geometry import Polygon, MultiPoint  # Added for room geometry generation
 
 # Import specific DB functions needed
-from .db import get_sqlite_connection, save_rssi_sample_to_sqlite, save_ai_model_sqlite, execute_query, execute_write_query, get_area_observations
+from .db import (
+    get_area_observations,  # Needed for calculate_area_adjacency
+    save_ai_model_sqlite,   # Needed by _save_model_info_to_sqlite (if used)
+    execute_query,          # Needed if train_wall_prediction/refinement uses it
+    execute_write_query,     # Potentially needed if saving intermediate AI data
+    get_sqlite_connection, # Generally not needed directly, use helpers
+    save_rssi_sample_to_sqlite, # Only if actively training RSSI model
+    save_ai_model_sqlite
+)
+
+from .config_loader import load_config
 
 # Define model directory path
 MODEL_DIR = Path("/data/models")

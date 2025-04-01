@@ -10,8 +10,19 @@ from scipy.spatial import Delaunay
 
 from .bluetooth_processor import BluetoothProcessor
 from .ai_processor import AIProcessor
-from .db import save_blueprint_to_sqlite, execute_sqlite_query, execute_write_query, get_latest_blueprint_from_sqlite, get_device_positions_from_sqlite
+from .db import (
+    get_recent_distances,          # ESSENTIAL: To get data for relative positioning
+    get_recent_area_predictions,   # ESSENTIAL: To get data for anchoring
+    save_blueprint_to_sqlite,      # ESSENTIAL: To save the final result
+    get_latest_blueprint_from_sqlite, # ESSENTIAL: To retrieve the last blueprint for API/UI
+    execute_sqlite_query # Only if needed for other direct queries
+)
 
+# --- Imports from other project files ---
+from .bluetooth_processor import BluetoothProcessor # Still needed to instantiate it for the scheduler
+from .ai_processor import AIProcessor
+from .ha_client import HomeAssistantClient
+from .config_loader import load_config
 logger = logging.getLogger(__name__)
 
 class BlueprintGenerator:
