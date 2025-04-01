@@ -3,7 +3,7 @@ import logging
 import sqlite3
 import os
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Union
 
 # Use the standardized config loader
@@ -226,79 +226,79 @@ def save_blueprint_to_sqlite(blueprint_data: Dict) -> bool:
         return False
 
 
-def save_device_position_to_sqlite(
-    device_id: str,
-    position_data: Dict,
-    source: str = 'calculated',
-    accuracy: Optional[float] = None,
-    area_id: Optional[str] = None
-) -> bool:
-    """Save a device position to the SQLite database.
+# def save_device_position_to_sqlite(
+#     device_id: str,
+#     position_data: Dict,
+#     source: str = 'calculated',
+#     accuracy: Optional[float] = None,
+#     area_id: Optional[str] = None
+# ) -> bool:
+#     """Save a device position to the SQLite database.
+#
+#     Args:
+#         device_id: Unique identifier for the device
+#         position_data: Dictionary containing x, y, z coordinates
+#         source: Source of the position data ('fixed_reference', 'calculated', 'manual')
+#         accuracy: Estimated accuracy in meters (optional)
+#         area_id: Optional area/room identifier
+#
+#     Returns:
+#         bool: True if saved successfully, False otherwise
+#     """
+#     # Ensure we have the minimum position data
+#     if not all(k in position_data for k in ['x', 'y', 'z']):
+#         logger.error(f"Invalid position data for device {device_id}: missing x/y/z coordinate")
+#         return False
+#
+#     query = """
+#     INSERT INTO device_positions (device_id, position_data, source, accuracy, area_id, timestamp)
+#     VALUES (?, ?, ?, ?, ?, ?)
+#     """
+#
+#     position_json = json.dumps(position_data)
+#     timestamp = datetime.now().isoformat()
+#     params = (device_id, position_json, source, accuracy, area_id, timestamp)
+#
+#     result = _execute_sqlite_write(query, params)
+#     if result is not None:
+#         logger.info(f"Saved position for device {device_id} (source: {source})")
+#         return True
+#     else:
+#         logger.error(f"Failed to save position for device {device_id}")
+#         return False
 
-    Args:
-        device_id: Unique identifier for the device
-        position_data: Dictionary containing x, y, z coordinates
-        source: Source of the position data ('fixed_reference', 'calculated', 'manual')
-        accuracy: Estimated accuracy in meters (optional)
-        area_id: Optional area/room identifier
-
-    Returns:
-        bool: True if saved successfully, False otherwise
-    """
-    # Ensure we have the minimum position data
-    if not all(k in position_data for k in ['x', 'y', 'z']):
-        logger.error(f"Invalid position data for device {device_id}: missing x/y/z coordinate")
-        return False
-
-    query = """
-    INSERT INTO device_positions (device_id, position_data, source, accuracy, area_id, timestamp)
-    VALUES (?, ?, ?, ?, ?, ?)
-    """
-
-    position_json = json.dumps(position_data)
-    timestamp = datetime.now().isoformat()
-    params = (device_id, position_json, source, accuracy, area_id, timestamp)
-
-    result = _execute_sqlite_write(query, params)
-    if result is not None:
-        logger.info(f"Saved position for device {device_id} (source: {source})")
-        return True
-    else:
-        logger.error(f"Failed to save position for device {device_id}")
-        return False
-
-def get_reference_positions_from_sqlite() -> Dict[str, Dict]:
-    """Get the latest positions of all fixed reference devices.
-
-    Returns:
-        Dict mapping device_id to position {x, y, z} dict
-    """
-    query = """
-    SELECT d1.device_id, d1.position_data
-    FROM device_positions d1
-    JOIN (
-        SELECT device_id, MAX(timestamp) as max_time
-        FROM device_positions
-        WHERE source = 'fixed_reference'
-        GROUP BY device_id
-    ) d2 ON d1.device_id = d2.device_id AND d1.timestamp = d2.max_time
-    WHERE d1.source = 'fixed_reference'
-    """
-
-    results = _execute_sqlite_read(query)
-    reference_positions = {}
-
-    if results:
-        for row in results:
-            try:
-                device_id = row['device_id']
-                position = json.loads(row['position_data'])
-                reference_positions[device_id] = position
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.error(f"Error parsing reference position for {row.get('device_id', 'unknown')}: {e}")
-
-    logger.debug(f"Retrieved {len(reference_positions)} reference positions from database")
-    return reference_positions
+# def get_reference_positions_from_sqlite() -> Dict[str, Dict]:
+#     """Get the latest positions of all fixed reference devices.
+#
+#     Returns:
+#         Dict mapping device_id to position {x, y, z} dict
+#     """
+#     query = """
+#     SELECT d1.device_id, d1.position_data
+#     FROM device_positions d1
+#     JOIN (
+#         SELECT device_id, MAX(timestamp) as max_time
+#         FROM device_positions
+#         WHERE source = 'fixed_reference'
+#         GROUP BY device_id
+#     ) d2 ON d1.device_id = d2.device_id AND d1.timestamp = d2.max_time
+#     WHERE d1.source = 'fixed_reference'
+#     """
+#
+#     results = _execute_sqlite_read(query)
+#     reference_positions = {}
+#
+#     if results:
+#         for row in results:
+#             try:
+#                 device_id = row['device_id']
+#                 position = json.loads(row['position_data'])
+#                 reference_positions[device_id] = position
+#             except (json.JSONDecodeError, KeyError) as e:
+#                 logger.error(f"Error parsing reference position for {row.get('device_id', 'unknown')}: {e}")
+#
+#     logger.debug(f"Retrieved {len(reference_positions)} reference positions from database")
+#     return reference_positions
 
 def get_device_positions_from_sqlite() -> Dict[str, Dict]:
     """Get the latest positions of all tracked devices.
@@ -471,6 +471,79 @@ def save_area_observation(tracked_device_id: str, predicted_area_id: Optional[st
     else:
         logger.error(f"Failed to save area observation for {tracked_device_id}")
         return False
+
+def get_area_observations(
+    limit: int = 10000, # Increased default limit for adjacency calculation
+    device_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Retrieves area observation records from the database."""
+    # NOTE: Adjusted SELECT based on your save_area_observation function
+    # (removed rssi_vector, is_transition)
+    query = """
+    SELECT timestamp, tracked_device_id, predicted_area_id
+    FROM area_observations
+    """
+    conditions = []
+    params = []
+
+    if device_id:
+        conditions.append("tracked_device_id = ?")
+        params.append(device_id)
+
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+
+    query += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+
+    # Use the internal helper function
+    results = _execute_sqlite_read(query, tuple(params))
+    # _execute_sqlite_read already converts rows to dicts
+    return results if results is not None else []
+
+def get_recent_distances(time_window_minutes: int = 15) -> List[Dict[str, Any]]:
+    """Fetches recent distance logs within specified time window."""
+    query = """
+    SELECT timestamp, tracked_device_id, scanner_id, distance
+    FROM distance_log
+    WHERE timestamp >= ?
+    ORDER BY timestamp DESC
+    """
+    # Calculate cutoff time based on current time
+    cutoff_dt = datetime.now() - timedelta(minutes=time_window_minutes)
+    cutoff_time_iso = cutoff_dt.isoformat()
+
+    params = (cutoff_time_iso,)
+    logger.debug(f"Querying distances since {cutoff_time_iso}")
+    results = _execute_sqlite_read(query, params) # Use the enhanced reader
+    return results if results is not None else []
+
+def get_recent_area_predictions(time_window_minutes: int = 10) -> Dict[str, Optional[str]]:
+    """Gets the most recent area prediction for each device within the window."""
+    query = """
+    SELECT tracked_device_id, predicted_area_id
+    FROM area_observations
+    WHERE timestamp >= ? AND id IN (
+        SELECT MAX(id)
+        FROM area_observations
+        WHERE timestamp >= ?
+        GROUP BY tracked_device_id
+    )
+    """
+    # Calculate cutoff time based on current time
+    cutoff_dt = datetime.now() - timedelta(minutes=time_window_minutes)
+    cutoff_time_iso = cutoff_dt.isoformat()
+
+    params = (cutoff_time_iso, cutoff_time_iso)
+    logger.debug(f"Querying most recent area predictions since {cutoff_time_iso}")
+    results = _execute_sqlite_read(query, params) # Use the enhanced reader
+    if results is None:
+        return {}
+    # Create a dictionary mapping device_id to the predicted_area_id
+    predictions = {row['tracked_device_id']: row['predicted_area_id'] for row in results}
+    logger.debug(f"Found {len(predictions)} recent area predictions.")
+    return predictions
+
 
 # For compatibility with existing code
 execute_sqlite_query = _execute_sqlite_read
