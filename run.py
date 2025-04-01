@@ -65,19 +65,23 @@ def start_processing_scheduler(config):
     def process_loop():
         while True:
             try:
-                logger.info("Running scheduled Bluetooth data processing")
-                # The processor instance should now have access to the correct config
-                result = bluetooth_processor.process_bluetooth_sensors()
+                logger.info("Running scheduled sensor data logging...")
+                # Call the specific logging method
+                log_result = bluetooth_processor.log_sensor_data()
 
-                if result:
-                    logger.info("Attempting to generate blueprint...")
-                    # Simplified call to generate_blueprint() without arguments
-                    blueprint = blueprint_generator.generate_blueprint()
+                # Check if logging had critical errors (optional, but good practice)
+                if log_result.get("error"):
+                    logger.error(f"Data logging failed: {log_result['error']}")
+                    # Decide if you want to skip blueprint generation on logging errors
 
-                    if blueprint and blueprint.get('rooms'):
-                        logger.info(f"Blueprint generated with {len(blueprint.get('rooms', []))} rooms.")
-                    else:
-                        logger.warning("Blueprint generation resulted in an empty or invalid blueprint.")
+                # Always attempt generation after logging (generator fetches its own data)
+                logger.info("Attempting to generate blueprint...")
+                blueprint = blueprint_generator.generate_blueprint() # Generator fetches from DB
+
+                if blueprint and blueprint.get('rooms'):
+                    logger.info(f"Blueprint generated with {len(blueprint.get('rooms', []))} rooms.")
+                else:
+                    logger.warning("Blueprint generation resulted in an empty or invalid blueprint.")
 
             except Exception as e:
                 logger.error(f"Error in processing loop: {str(e)}", exc_info=True) # Add exc_info
