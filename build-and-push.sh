@@ -80,7 +80,7 @@ HASS_PASSWORD="Xenia1031"
 
 sshpass -p "$HASS_PASSWORD" ssh bkam@192.168.86.91 << 'EOF'
   echo "Connected to Home Assistant, updating addons..."
-  cd addons/Home_Assistant_3D_Blueprint_Generator
+  cd /addons/Home_Assistant_3D_Blueprint_Generator
   git pull
 
   # Run addon update check - assuming you have the Home Assistant CLI available

@@ -1,133 +1,76 @@
-import json
 import logging
 import math
-import numpy as np
-from scipy.optimize import minimize
-from sklearn.cluster import DBSCAN
-import uuid
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime
-
-from .ai_processor import AIProcessor
-from .db import get_sqlite_connection, get_reference_positions_from_sqlite, save_device_position_to_sqlite
+from typing import Dict
+from .ha_client import HomeAssistantClient
+from .db import save_distance_log, save_area_observation
 
 logger = logging.getLogger(__name__)
 
 class BluetoothProcessor:
     """Process Bluetooth signals for position estimation."""
 
-    def log_sensor_data(self, ha_client, entity_data=None):
-        """Log sensor data to the database for analysis.
+    def __init__(self):
+        """Initialize the processor, primarily setting up the HA client."""
+        self.ha_client = HomeAssistantClient()
+        logger.info("BluetoothProcessor initialized (Mode: Data Logging).")
 
-        Args:
-            ha_client: HomeAssistantClient instance
-            entity_data: Optional entity data, if None it will be fetched from HA
+    def log_sensor_data(self) -> Dict[str, int]:
+        """Fetches distance and area data from HA and logs it to the database."""
+        logged_distances = 0
+        logged_areas = 0
+        errors = []
 
-        Returns:
-            Dict with summary of processed data
-        """
         try:
-            logger.info("Logging sensor data from Home Assistant")
-
-            # Get data if not provided
-            if entity_data is None:
-                entity_data = ha_client.get_sensor_entities()
-
-            logger.info(f"Processing {len(entity_data)} entities")
-
-            # Connect to database
-            conn = get_sqlite_connection()
-            cursor = conn.cursor()
-
-            # Process entities
-            timestamp = datetime.now().isoformat()
-            bluetooth_count = 0
-            rssi_count = 0
-            bermuda_count = 0
-
-            # Process each entity
-            for entity in entity_data:
-                entity_id = entity.get('entity_id', '')
-                if not entity_id:
-                    continue
-
-                state = entity.get('state')
-                attributes = entity.get('attributes', {})
-                device_id = entity.get('device_id')
-                area_id = entity.get('area_id')
-
-                # Skip unavailable or unknown states
-                if not state or state in ('unavailable', 'unknown'):
-                    continue
-
-                # Extract device name
-                device_name = attributes.get('friendly_name', device_id)
-
-                # Check for RSSI attribute (common in BLE sensors)
-                rssi = attributes.get('rssi')
-                if rssi is not None:
-                    rssi_count += 1
-                    cursor.execute(
-                        """INSERT INTO sensor_logs
-                        (timestamp, entity_id, device_id, sensor_type, value, attributes, area_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                        (timestamp, entity_id, device_id, 'rssi', rssi,
-                         json.dumps(attributes), area_id)
-                    )
-
-                # Check for Bermuda distance readings
-                is_bermuda = False
-                if 'bermuda' in entity_id and '_distance' in entity_id:
-                    is_bermuda = True
-                    bermuda_count += 1
-                elif '_distance_' in entity_id:
-                    is_bermuda = True
-                    bermuda_count += 1
-
-                if is_bermuda:
+            # 1. Log Distance Data using ha_client.get_distance_sensors()
+            logger.debug("Fetching distance sensors...")
+            distance_sensors = self.ha_client.get_distance_sensors()
+            if distance_sensors is None:
+                errors.append("Failed to fetch distance sensors from HA.")
+            else:
+                logger.debug(f"Processing {len(distance_sensors)} distance sensors.")
+                for sensor in distance_sensors:
                     try:
-                        distance = float(state)
-                        scanner_id = attributes.get('scanner_id')
-                        if not scanner_id and '_distance_' in entity_id:
-                            parts = entity_id.split('_distance_')
-                            if len(parts) == 2:
-                                scanner_id = parts[1]
+                        dev_id = sensor.get('tracked_device_id')
+                        scan_id = sensor.get('scanner_id')
+                        dist = sensor.get('distance')
 
-                        cursor.execute(
-                            """INSERT INTO sensor_logs
-                            (timestamp, entity_id, device_id, sensor_type, value, attributes,
-                             scanner_id, area_id)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (timestamp, entity_id, device_id, 'bermuda_distance', distance,
-                             json.dumps(attributes), scanner_id, area_id)
-                        )
-                    except (ValueError, TypeError):
-                        pass
+                        # Validate data before saving
+                        if dev_id and scan_id and isinstance(dist, (int, float)) and not math.isnan(dist) and dist >= 0:
+                            if save_distance_log(dev_id, scan_id, dist):
+                                logged_distances += 1
+                            else:
+                                errors.append(f"Failed DB write for distance: {sensor.get('entity_id', 'N/A')}")
+                        else:
+                             # Log only if data is actually invalid, not just missing keys sometimes
+                             if not (dev_id and scan_id and dist is not None):
+                                 errors.append(f"Incomplete/Invalid distance data: {sensor.get('entity_id', 'N/A')} - Data: {sensor}")
 
-                # Generic sensor logging for all BLE sensors
-                if device_id:  # Only log if we have a device_id
-                    bluetooth_count += 1
-                    cursor.execute(
-                        """INSERT INTO sensor_logs
-                        (timestamp, entity_id, device_id, sensor_type, value, attributes, area_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                        (timestamp, entity_id, device_id, 'bluetooth_state', state,
-                         json.dumps(attributes), area_id)
-                    )
+                    except Exception as e:
+                         errors.append(f"Error logging distance {sensor.get('entity_id', 'N/A')}: {e}")
 
-            conn.commit()
-            conn.close()
+            # 2. Log Area Predictions using ha_client.get_device_area_predictions()
+            logger.debug("Fetching area predictions...")
+            area_predictions = self.ha_client.get_device_area_predictions()
+            if area_predictions is None:
+                 errors.append("Failed to fetch area predictions from HA.")
+            else:
+                logger.debug(f"Processing {len(area_predictions)} area predictions.")
+                for device_id, area_id in area_predictions.items():
+                    try:
+                        if save_area_observation(device_id, area_id):
+                            logged_areas += 1
+                        else:
+                             errors.append(f"Failed DB write for area: {device_id}")
+                    except Exception as e:
+                         errors.append(f"Error logging area {device_id}: {e}")
 
-            logger.info(f"Logged {bluetooth_count} Bluetooth entities, {rssi_count} RSSI readings, {bermuda_count} Bermuda distances")
+            if errors:
+                error_summary = '; '.join(errors[:min(len(errors), 5)]) + ('...' if len(errors) > 5 else '')
+                logger.warning(f"Completed data logging with {len(errors)} errors: {error_summary}")
 
-            return {
-                "timestamp": timestamp,
-                "bluetooth_count": bluetooth_count,
-                "rssi_count": rssi_count,
-                "bermuda_count": bermuda_count,
-                "total_processed": len(entity_data)
-            }
+            logger.info(f"Logged {logged_distances} distance readings and {logged_areas} area observations.")
+            return {"distances_logged": logged_distances, "areas_logged": logged_areas, "errors": len(errors)}
 
         except Exception as e:
-            logger.error(f"Error logging sensor data: {e}", exc_info=True)
-            return {"error": str(e)}
+            logger.error(f"Critical error during sensor data logging: {e}", exc_info=True)
+            return {"distances_logged": logged_distances, "areas_logged": logged_areas, "error": str(e), "errors": len(errors)+1}
