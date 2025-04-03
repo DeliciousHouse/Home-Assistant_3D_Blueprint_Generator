@@ -50,8 +50,11 @@ class BlueprintGenerator:
         self.config = load_config(config_path)
 
         # Initialize components with config path for consistency
-        self.bluetooth_processor = BluetoothProcessor(config_path)
+        self.bluetooth_processor = BluetoothProcessor()
         self.ai_processor = AIProcessor(config_path)
+
+        # Initialize Home Assistant client
+        self.ha_client = HomeAssistantClient()
 
         # Get validation settings
         self.validation = self.config.get('blueprint_validation', {
@@ -65,6 +68,15 @@ class BlueprintGenerator:
             'max_ceiling_height': 4.0
         })
 
+        # Get generation configuration
+        self.generation_config = self.config.get('generation', {
+            'distance_window_minutes': 15,
+            'area_window_minutes': 10,
+            'mds_dimensions': 2,
+            'min_points_per_room': 3,
+            'use_adjacency': True
+        })
+
         self.status = {"state": "idle", "progress": 0}
         self.latest_job_id = None
         self.latest_generated_blueprint = None
@@ -72,89 +84,223 @@ class BlueprintGenerator:
         self._initialized = True
 
     def generate_blueprint(self):
-        """Generate a 3D blueprint by processing sensor data and detecting rooms/walls."""
+        """Generate blueprint using relative positioning and area anchoring."""
+        logger.info("Starting blueprint generation (Relative Positioning Method)...")
+        self.status = {"state": "processing", "progress": 0.0}
+        job_start_time = datetime.now()
+
         try:
-            logger.info("Starting blueprint generation process...")
+            # --- Parameters from Config ---
+            distance_window_min = self.generation_config.get('distance_window_minutes', 15)
+            area_window_min = self.generation_config.get('area_window_minutes', 10)
+            mds_dimensions = self.generation_config.get('mds_dimensions', 2)
+            min_points_per_room = self.generation_config.get('min_points_per_room', 3)
+            use_adjacency_layout = self.generation_config.get('use_adjacency', True)
 
-            # 1. Process sensors to get positions and detect rooms
-            #    This implicitly saves positions to DB via the processor
-            logger.info("Processing Bluetooth sensors for latest data...")
-            processing_result = self.bluetooth_processor.process_bluetooth_sensors()
+            # --- Stage 1: Data Fetching from DB ---
+            logger.info("Fetching recent distance and area data from database...")
+            self.status["progress"] = 0.1
+            # Use DB functions directly
+            distance_data = get_recent_distances(distance_window_min)
+            device_area_map = get_recent_area_predictions(area_window_min)
 
-            if not processing_result or "error" in processing_result:
-                logger.error(f"Bluetooth processing failed: {processing_result.get('error', 'Unknown error')}")
-                return None # Cannot proceed
+            if not distance_data:
+                logger.warning("No recent distance data found in database. Cannot generate blueprint.")
+                self.status = {"state": "complete", "progress": 1.0, "error": "No distance data"} # Mark as complete but with error
+                return None
 
-            # Extract the results needed
-            # Use .get() with defaults to avoid KeyErrors if processing partially fails
-            device_positions = processing_result.get("device_positions", {})
-            rooms = processing_result.get("rooms", [])
-            logger.info(f"Processing complete. Found {len(device_positions)} positions, detected {len(rooms)} rooms.")
+            if not device_area_map:
+                logger.warning("No recent area prediction data found in database. Proceeding without area info for anchoring.")
+                # Anchoring will likely fail or be very basic
 
-            # Check if we have enough data
+            # --- Stage 2: Relative Positioning (AI Processor) ---
+            logger.info(f"Running {mds_dimensions}D relative positioning with {len(distance_data)} distance records...")
+            self.status["progress"] = 0.25
+            relative_coords = self.ai_processor.run_relative_positioning(distance_data, n_dimensions=mds_dimensions)
+            if not relative_coords:
+                logger.error("Relative positioning failed.")
+                self.status = {"state": "complete", "progress": 1.0, "error": "Relative positioning failed"}
+                return None
+
+            # --- Stage 3: Anchoring Setup ---
+            logger.info("Setting up for anchoring...")
+            self.status["progress"] = 0.4
+            # Get HA Areas
+            ha_areas_list = self.ha_client.get_areas() # Requires self.ha_client in __init__
+            ha_areas_map = {a['area_id']: a for a in ha_areas_list if 'area_id' in a}
+
+            # Get unique active area IDs from device predictions found in the DB
+            active_area_ids = list(set(area_id for area_id in device_area_map.values() if area_id))
+            logger.info(f"Found {len(active_area_ids)} active areas with devices from DB.")
+
+            # Get adjacency for better layout if configured (AI Processor)
+            adjacency = {}
+            if use_adjacency_layout:
+                # calculate_area_adjacency needs transition data (which needs logging adjustments)
+                # For now, it might return empty if the DB doesn't support transitions yet.
+                adjacency = self.ai_processor.calculate_area_adjacency()
+                logger.info(f"Calculated adjacency for {len(adjacency)} areas.")
+
+            # Generate target layout (AI Processor)
+            target_layout = self.ai_processor.generate_heuristic_layout(active_area_ids, adjacency)
+            logger.info(f"Generated target layout with {len(target_layout)} positioned areas.")
+
+            # --- Stage 4: Calculate Anchoring Transform (AI Processor) ---
+            logger.info("Calculating anchoring transformation...")
+            self.status["progress"] = 0.55
+            transform_params = self.ai_processor.calculate_anchoring_transform(
+                relative_coords, device_area_map, target_layout
+            )
+
+            # --- Stage 5: Apply Transformation (AI Processor) ---
+            anchored_coords = {}
+            if not transform_params:
+                logger.warning("Anchoring transformation calculation failed. Blueprint will use relative coordinates.")
+                anchored_coords = relative_coords # Use relative if anchor fails
+            else:
+                logger.info("Applying anchoring transformation...")
+                self.status["progress"] = 0.7
+                anchored_coords = self.ai_processor.apply_transform(relative_coords, transform_params)
+                logger.info(f"Applied transform to {len(anchored_coords)} entities.")
+
+            # --- Stage 6: Room Generation (AI Processor) ---
+            logger.info("Generating room geometry...")
+            self.status["progress"] = 0.8
+            # Group anchored device points by area
+            anchored_device_coords_by_area = {}
+            scanner_keywords = ['scanner', 'esp', 'beacon_fix', 'gateway'] # Keywords to identify non-user devices
+            for dev_id, area_id in device_area_map.items():
+                if area_id and dev_id in anchored_coords:
+                     # Filter out scanners/infrastructure devices
+                     if not any(kw in dev_id.lower() for kw in scanner_keywords):
+                          point = anchored_coords[dev_id]
+                          anchored_device_coords_by_area.setdefault(area_id, []).append(point)
+
+            # Log areas with points for debugging
+            valid_areas_for_rooms = []
+            for area_id, points in anchored_device_coords_by_area.items():
+                logger.debug(f"Area {area_id}: {len(points)} device points for room generation.")
+                if len(points) >= min_points_per_room:
+                     valid_areas_for_rooms.append(area_id)
+                else:
+                    logger.warning(f"Area {area_id} has only {len(points)} points (min: {min_points_per_room}), will estimate room dimensions.")
+
+            # Generate rooms from point clouds (AI Processor)
+            rooms = self.ai_processor.generate_rooms_from_points({
+                aid: pts for aid, pts in anchored_device_coords_by_area.items() if aid in valid_areas_for_rooms
+            })
+            logger.info(f"Generated {len(rooms)} rooms from device positions.")
+
+            # Add area names back to rooms generated from points
+            for room in rooms:
+                area_id = room.get('area_id')
+                if area_id and area_id in ha_areas_map:
+                    room['name'] = ha_areas_map[area_id].get('name', room['name'])
+
+            # Add estimated rooms for areas with too few points
+            estimated_room_added = False
+            areas_with_generated_rooms = {room.get('area_id') for room in rooms}
+            missing_areas = set(active_area_ids) - areas_with_generated_rooms
+            if missing_areas:
+                logger.info(f"Estimating dimensions for {len(missing_areas)} areas with insufficient points.")
+                for area_id in missing_areas:
+                    if area_id in target_layout: # Only if we have a target position
+                        devices_in_area = [d for d, a in device_area_map.items() if a == area_id]
+                        dims = self.ai_processor.estimate_room_dimensions(area_id, devices_in_area)
+                        center = target_layout[area_id]
+                        center_z = 1.5 # Default mid-floor height
+
+                        min_x, max_x = center['x'] - dims['width'] / 2, center['x'] + dims['width'] / 2
+                        min_y, max_y = center['y'] - dims['length'] / 2, center['y'] + dims['length'] / 2
+                        min_z, max_z = center_z - dims['height'] / 2, center_z + dims['height'] / 2
+
+                        room = {
+                            'id': f"room_{area_id}",
+                            'name': ha_areas_map.get(area_id, {}).get('name', f"Area {area_id}"),
+                            'area_id': area_id,
+                            'center': {'x': round(center['x'], 2), 'y': round(center['y'], 2), 'z': round(center_z, 2)},
+                            'dimensions': dims,
+                            'bounds': {
+                                'min': {'x': round(min_x, 2), 'y': round(min_y, 2), 'z': round(min_z, 2)},
+                                'max': {'x': round(max_x, 2), 'y': round(max_y, 2), 'z': round(max_z, 2)}
+                            },
+                            'polygon_coords': [ # Create rectangular polygon for estimated rooms
+                                (round(min_x, 2), round(min_y, 2)),
+                                (round(max_x, 2), round(min_y, 2)),
+                                (round(max_x, 2), round(max_y, 2)),
+                                (round(min_x, 2), round(max_y, 2)),
+                                (round(min_x, 2), round(min_y, 2)) # Close loop
+                            ],
+                            'estimated': True
+                        }
+                        rooms.append(room)
+                        estimated_room_added = True
+                        logger.info(f"Added estimated room for area {area_id}")
+
             if not rooms:
-                logger.warning("No rooms were detected. Cannot generate a blueprint.")
-                return None # Stop if still no rooms
+                 logger.error("No rooms could be generated or estimated. Cannot create blueprint.")
+                 self.status = {"state": "complete", "progress": 1.0, "error": "No rooms generated"}
+                 return None
 
-            # 2. Generate Walls
-            logger.info(f"Generating walls for {len(rooms)} rooms...")
-            walls = self._generate_walls_geometric(rooms) # Use the geometric method
-            logger.info(f"Generated {len(walls)} wall segments.")
+            # --- Stage 7: Wall Generation (AI Processor) ---
+            logger.info("Generating walls...")
+            self.status["progress"] = 0.85
+            walls = self.ai_processor.generate_walls_between_rooms(rooms)
+            logger.info(f"Generated {len(walls)} walls between rooms.")
 
-            # 3. Assemble Blueprint
+            # --- Stage 8: Assemble Blueprint ---
+            logger.info("Assembling final blueprint...")
+            self.status["progress"] = 0.9
             blueprint = {
-                'version': '1.0',
-                'generated_at': datetime.now().isoformat(),
+                'version': '2.0-MDS-Anchor',
+                'generated_at': job_start_time.isoformat(),
                 'rooms': rooms,
                 'walls': walls,
-                'floors': self._group_rooms_into_floors(rooms), # Ensure this uses the final 'rooms' list
+                'floors': self._group_rooms_into_floors(rooms),
                 'metadata': {
-                    'device_count': len(device_positions), # Count from processed data
-                    'room_count': len(rooms),
-                    'wall_count': len(walls),
-                    'source': 'auto_generator_v2' # Indicate source
+                    'generation_method': 'relative_positioning_mds',
+                    'anchoring_success': transform_params is not None,
+                    'anchoring_disparity': transform_params.get('disparity') if transform_params else None,
+                    'source_distance_records': len(distance_data),
+                    'source_area_records': len(device_area_map),
+                    'entities_positioned': len(relative_coords),
+                    'rooms_generated': len(rooms),
+                    'walls_generated': len(walls),
+                    'estimated_rooms_added': estimated_room_added,
                 }
             }
 
-            # 4. (Optional) AI Refinement
-            if self.config.get('ai_settings', {}).get('use_ml_blueprint_refinement', False): # Check config
-                try:
-                    logger.info("Applying AI blueprint refinement...")
-                    refined_blueprint = self.ai_processor.refine_blueprint(blueprint)
-                    if refined_blueprint:
-                        # Important: Validate the *refined* blueprint
-                        if self._validate_blueprint(refined_blueprint):
-                            logger.info("AI refinement successful and validated.")
-                            blueprint = refined_blueprint
-                        else:
-                            logger.warning("AI refined blueprint failed validation. Using original.")
-                    else:
-                         logger.warning("AI refinement returned None. Using original.")
-                except Exception as e:
-                    logger.warning(f"AI refinement failed with exception: {e}")
-
-            # 5. Validate Final Blueprint
-            logger.info("Validating final blueprint...")
+            # --- Stage 9: Validation & Saving ---
+            # Validate the blueprint
             if not self._validate_blueprint(blueprint):
-                logger.warning("Generated blueprint failed validation. Attempting minimal.")
-                # Use the original 'rooms' list before potential refinement issues
+                logger.warning("Generated blueprint failed validation, attempting minimal.")
+                # Fallback to minimal blueprint using the rooms list we have
                 blueprint = self._create_minimal_valid_blueprint(rooms)
-                if not self._validate_blueprint(blueprint): # Validate minimal too
-                     logger.error("Minimal blueprint also failed validation. Cannot proceed.")
-                     return None
+                # Optionally re-validate minimal blueprint
+                # if not self._validate_blueprint(blueprint):
+                #      logger.error("Minimal blueprint also failed validation. Cannot proceed.")
+                #      self.status = {"state": "error", "error": "Validation failed"}
+                #      return None
 
-            # 6. Save and Cache
+            # Save the blueprint
             logger.info(f"Saving final blueprint with {len(blueprint.get('rooms',[]))} rooms and {len(blueprint.get('walls',[]))} walls.")
-            saved = self._save_blueprint(blueprint) # Uses SQLite helper
+            saved = self._save_blueprint(blueprint)
             if saved:
-                self.latest_generated_blueprint = blueprint # Update cache
+                self.latest_generated_blueprint = blueprint
+                logger.info("Blueprint saved successfully.")
             else:
                 logger.error("Failed to save the generated blueprint to the database.")
+                # Decide if this is a critical failure
+                # self.status = {"state": "error", "error": "Failed to save blueprint"}
+                # return None # Optionally fail here
 
+            self.status = {"state": "complete", "progress": 1.0, "last_run": datetime.now().isoformat()}
+            logger.info("Blueprint generation complete.")
             return blueprint
 
         except Exception as e:
             logger.error(f"Critical error during blueprint generation: {e}", exc_info=True)
+            self.status = {"state": "error", "progress": 0, "error": str(e)}
             return None
 
     def _create_minimal_valid_blueprint(self, rooms):
@@ -243,249 +389,6 @@ class BlueprintGenerator:
             })
 
         return walls
-
-    def _generate_walls_geometric(self, rooms: List[Dict]) -> List[Dict]:
-        """Generate walls between rooms using geometric analysis."""
-        if not rooms:
-            return []
-
-        walls = []
-        logger.info(f"Generating walls for {len(rooms)} rooms using geometric method")
-
-        # Threshold for considering rooms adjacent (in meters)
-        adjacency_threshold = 0.5
-
-        # Function to check if two rooms are adjacent
-        def are_adjacent(room1, room2):
-            # Get bounding boxes
-            bounds1 = room1['bounds']
-            bounds2 = room2['bounds']
-
-            # Check if bounds overlap or are very close
-            x_overlap = (
-                bounds1['min']['x'] <= bounds2['max']['x'] + adjacency_threshold and
-                bounds2['min']['x'] <= bounds1['max']['x'] + adjacency_threshold
-            )
-
-            y_overlap = (
-                bounds1['min']['y'] <= bounds2['max']['y'] + adjacency_threshold and
-                bounds2['min']['y'] <= bounds1['max']['y'] + adjacency_threshold
-            )
-
-            z_overlap = (
-                bounds1['min']['z'] <= bounds2['max']['z'] + adjacency_threshold and
-                bounds2['min']['z'] <= bounds1['max']['z'] + adjacency_threshold
-            )
-
-            # Rooms must overlap in at least 2 dimensions to be adjacent
-            overlap_count = sum([x_overlap, y_overlap, z_overlap])
-            return overlap_count >= 2
-
-        # Function to find the overlapping segment between two rooms
-        def find_overlapping_segment(room1, room2):
-            bounds1 = room1['bounds']
-            bounds2 = room2['bounds']
-
-            # Determine which dimension has the smallest overlap or is closest
-            x_distance = min(
-                abs(bounds1['min']['x'] - bounds2['max']['x']),
-                abs(bounds2['min']['x'] - bounds1['max']['x'])
-            )
-
-            y_distance = min(
-                abs(bounds1['min']['y'] - bounds2['max']['y']),
-                abs(bounds2['min']['y'] - bounds1['max']['y'])
-            )
-
-            # Default to vertical wall (along x-axis)
-            is_vertical = x_distance <= y_distance
-
-            # Find the overlapping segment
-            if is_vertical:
-                # Wall runs north-south
-                if bounds1['min']['x'] <= bounds2['min']['x']:
-                    # Room1 is west of Room2
-                    wall_x = (bounds1['max']['x'] + bounds2['min']['x']) / 2
-                else:
-                    # Room1 is east of Room2
-                    wall_x = (bounds1['min']['x'] + bounds2['max']['x']) / 2
-
-                # Find y range of overlap
-                start_y = max(bounds1['min']['y'], bounds2['min']['y'])
-                end_y = min(bounds1['max']['y'], bounds2['max']['y'])
-
-                # Ensure proper ordering
-                if start_y > end_y:
-                    start_y, end_y = end_y, start_y
-
-                return {
-                    'start': {'x': wall_x, 'y': start_y},
-                    'end': {'x': wall_x, 'y': end_y},
-                    'is_vertical': True
-                }
-            else:
-                # Wall runs east-west
-                if bounds1['min']['y'] <= bounds2['min']['y']:
-                    # Room1 is south of Room2
-                    wall_y = (bounds1['max']['y'] + bounds2['min']['y']) / 2
-                else:
-                    # Room1 is north of Room2
-                    wall_y = (bounds1['min']['y'] + bounds2['max']['y']) / 2
-
-                # Find x range of overlap
-                start_x = max(bounds1['min']['x'], bounds2['min']['x'])
-                end_x = min(bounds1['max']['x'], bounds2['max']['x'])
-
-                # Ensure proper ordering
-                if start_x > end_x:
-                    start_x, end_x = end_x, start_x
-
-                return {
-                    'start': {'x': start_x, 'y': wall_y},
-                    'end': {'x': end_x, 'y': wall_y},
-                    'is_vertical': False
-                }
-
-        # Function to snap point to grid
-        def snap_to_grid(x, grid_size=0.1):
-            return round(x / grid_size) * grid_size
-
-        # Function to check if two wall segments are collinear and can be merged
-        def can_merge_walls(wall1, wall2):
-            # Must have same orientation
-            if wall1.get('is_vertical') != wall2.get('is_vertical'):
-                return False
-
-            if wall1.get('is_vertical'):
-                # Vertical walls - must have same x coordinate and overlapping y range
-                if abs(wall1['start']['x'] - wall2['start']['x']) > 0.1:
-                    return False
-
-                # Check if y ranges overlap
-                y_min1, y_max1 = min(wall1['start']['y'], wall1['end']['y']), max(wall1['start']['y'], wall1['end']['y'])
-                y_min2, y_max2 = min(wall2['start']['y'], wall2['end']['y']), max(wall2['start']['y'], wall2['end']['y'])
-
-                return (y_min1 <= y_max2 + 0.1) and (y_min2 <= y_max1 + 0.1)
-            else:
-                # Horizontal walls - must have same y coordinate and overlapping x range
-                if abs(wall1['start']['y'] - wall2['start']['y']) > 0.1:
-                    return False
-
-                # Check if x ranges overlap
-                x_min1, x_max1 = min(wall1['start']['x'], wall1['end']['x']), max(wall1['start']['x'], wall1['end']['x'])
-                x_min2, x_max2 = min(wall2['start']['x'], wall2['end']['x']), max(wall2['start']['x'], wall2['end']['x'])
-
-                return (x_min1 <= x_max2 + 0.1) and (x_min2 <= x_max1 + 0.1)
-
-        # Function to merge two collinear wall segments
-        def merge_walls(wall1, wall2):
-            if wall1.get('is_vertical'):
-                # Merge vertical walls
-                x = (wall1['start']['x'] + wall2['start']['x']) / 2  # Average x value
-                y_min = min(wall1['start']['y'], wall1['end']['y'], wall2['start']['y'], wall2['end']['y'])
-                y_max = max(wall1['start']['y'], wall1['end']['y'], wall2['start']['y'], wall2['end']['y'])
-
-                merged = {
-                    'start': {'x': x, 'y': y_min},
-                    'end': {'x': x, 'y': y_max},
-                    'is_vertical': True,
-                    'thickness': max(wall1.get('thickness', 0.2), wall2.get('thickness', 0.2)),
-                    'height': max(wall1.get('height', 2.5), wall2.get('height', 2.5))
-                }
-            else:
-                # Merge horizontal walls
-                y = (wall1['start']['y'] + wall2['start']['y']) / 2  # Average y value
-                x_min = min(wall1['start']['x'], wall1['end']['x'], wall2['start']['x'], wall2['end']['x'])
-                x_max = max(wall1['start']['x'], wall1['end']['x'], wall2['start']['x'], wall2['end']['x'])
-
-                merged = {
-                    'start': {'x': x_min, 'y': y},
-                    'end': {'x': x_max, 'y': y},
-                    'is_vertical': False,
-                    'thickness': max(wall1.get('thickness', 0.2), wall2.get('thickness', 0.2)),
-                    'height': max(wall1.get('height', 2.5), wall2.get('height', 2.5))
-                }
-
-            return merged
-
-        # Create a list of adjacent room pairs
-        adjacent_pairs = []
-        for i in range(len(rooms)):
-            for j in range(i+1, len(rooms)):
-                if are_adjacent(rooms[i], rooms[j]):
-                    adjacent_pairs.append((rooms[i], rooms[j]))
-
-        logger.info(f"Found {len(adjacent_pairs)} adjacent room pairs")
-
-        # Generate raw wall segments for each adjacent pair
-        raw_walls = []
-        for room1, room2 in adjacent_pairs:
-            segment = find_overlapping_segment(room1, room2)
-            if segment:
-                # Snap to grid
-                segment['start']['x'] = snap_to_grid(segment['start']['x'])
-                segment['start']['y'] = snap_to_grid(segment['start']['y'])
-                segment['end']['x'] = snap_to_grid(segment['end']['x'])
-                segment['end']['y'] = snap_to_grid(segment['end']['y'])
-
-                # Add wall properties
-                thickness = self.validation['min_wall_thickness']
-
-                # Get height based on rooms
-                height = min(
-                    room1['dimensions']['height'],
-                    room2['dimensions']['height'],
-                    self.validation['max_ceiling_height']
-                )
-
-                # Create wall from segment
-                wall = {
-                    'start': segment['start'],
-                    'end': segment['end'],
-                    'is_vertical': segment['is_vertical'],
-                    'thickness': thickness,
-                    'height': height
-                }
-
-                # Calculate angle
-                dx = wall['end']['x'] - wall['start']['x']
-                dy = wall['end']['y'] - wall['start']['y']
-                angle = 0 if dx == 0 else math.atan2(dy, dx)
-                wall['angle'] = angle
-
-                # Only add walls with non-zero length
-                length = math.sqrt(dx**2 + dy**2)
-                if length > 0.1:
-                    raw_walls.append(wall)
-
-        # Merge collinear wall segments
-        processed_walls = []
-        raw_walls_copy = raw_walls.copy()
-
-        while raw_walls_copy:
-            current_wall = raw_walls_copy.pop(0)
-            merged = False
-
-            for i, other_wall in enumerate(raw_walls_copy):
-                if can_merge_walls(current_wall, other_wall):
-                    merged_wall = merge_walls(current_wall, other_wall)
-                    raw_walls_copy[i] = merged_wall
-                    merged = True
-                    break
-
-            if not merged:
-                # Convert to the final wall format expected by the system
-                final_wall = {
-                    'start': current_wall['start'],
-                    'end': current_wall['end'],
-                    'thickness': current_wall.get('thickness', self.validation['min_wall_thickness']),
-                    'height': current_wall.get('height', self.validation['min_ceiling_height']),
-                    'angle': current_wall.get('angle', 0)
-                }
-                processed_walls.append(final_wall)
-
-        logger.info(f"Generated {len(processed_walls)} walls after merging")
-        return processed_walls
 
     def _generate_walls_between_rooms(self, rooms):
         """Generate walls between rooms using more realistic algorithms (fallback)."""
@@ -652,24 +555,6 @@ class BlueprintGenerator:
     def get_status(self):
         """Get the current status of blueprint generation."""
         return self.status
-
-    def _refine_blueprint(self, blueprint: Dict) -> Dict:
-        """Refine the blueprint using AI techniques."""
-        try:
-            logger.debug("Applying AI-based blueprint refinement")
-            refined_blueprint = self.ai_processor.refine_blueprint(blueprint) if self.ai_processor else blueprint
-
-            # Validate the refined blueprint
-            if self._validate_blueprint(refined_blueprint):
-                logger.debug("AI refinement successful")
-                return refined_blueprint
-            else:
-                logger.warning("AI-refined blueprint failed validation, using original")
-                return blueprint
-
-        except Exception as e:
-            logger.warning(f"Blueprint refinement failed: {str(e)}")
-            return blueprint
 
     def _save_blueprint(self, blueprint):
         """Save blueprint to database."""
