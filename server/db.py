@@ -20,15 +20,17 @@ except ImportError:
 logger = logging.getLogger(__name__)
 app_config = load_config()
 
-SQLITE_DB_PATH = '/data/blueprint_data.db'
+SQLITE_DB_PATH = '/config/home_generative_agent_db'
 
 # --- SQLite Connection ---
 
 def get_sqlite_connection():
     """Get connection to the add-on's local SQLite database."""
     try:
-        # Ensure the /data directory exists
-        os.makedirs('/data', exist_ok=True)
+        # Ensure the PARENT directory exists
+        db_dir = os.path.dirname(SQLITE_DB_PATH)
+        os.makedirs(db_dir, exist_ok=True) # Ensures /config exists
+
         conn = sqlite3.connect(SQLITE_DB_PATH, timeout=10)
         conn.row_factory = sqlite3.Row # Use Row factory for dict-like access
         # Enable WAL mode for better concurrency
@@ -183,7 +185,8 @@ def _execute_sqlite_write(query: str, params: Optional[Tuple] = None, fetch_last
         logger.debug(f"SQLite write successful: {query[:60]}...")
         return last_id
     except sqlite3.Error as e:
-        logger.error(f"SQLite write query failed: {query[:60]}... Error: {str(e)}", exc_info=True)
+        # Log the specific error code and message
+        logger.error(f"SQLite write query failed: {query[:60]}... Error Code: {e.sqlite_errorcode} Error Name: {e.sqlite_errorname} Message: {str(e)}", exc_info=True)
         if conn:
             conn.rollback()
         return None # Indicate failure explicitly
@@ -237,7 +240,8 @@ def save_blueprint_to_sqlite(blueprint_data: Dict) -> bool:
         logger.error(f"Failed to save blueprint created at {created_at} to SQLite.")
         return False
 
-
+"""
+# DEPRECATED: Not needed for MDS/Anchoring approach
 def save_device_position_to_sqlite(
     device_id: str,
     position_data: Dict,
@@ -245,27 +249,15 @@ def save_device_position_to_sqlite(
     accuracy: Optional[float] = None,
     area_id: Optional[str] = None
 ) -> bool:
-    """Save a device position to the SQLite database.
-
-    Args:
-        device_id: Unique identifier for the device
-        position_data: Dictionary containing x, y, z coordinates
-        source: Source of the position data ('fixed_reference', 'calculated', 'manual')
-        accuracy: Estimated accuracy in meters (optional)
-        area_id: Optional area/room identifier
-
-    Returns:
-        bool: True if saved successfully, False otherwise
-    """
     # Ensure we have the minimum position data
     if not all(k in position_data for k in ['x', 'y', 'z']):
         logger.error(f"Invalid position data for device {device_id}: missing x/y/z coordinate")
         return False
 
-    query = """
+    query = '''
     INSERT INTO device_positions (device_id, position_data, source, accuracy, area_id, timestamp)
     VALUES (?, ?, ?, ?, ?, ?)
-    """
+    '''
 
     position_json = json.dumps(position_data)
     timestamp = datetime.now().isoformat()
@@ -279,13 +271,11 @@ def save_device_position_to_sqlite(
         logger.error(f"Failed to save position for device {device_id}")
         return False
 
+# DEPRECATED: Not needed for MDS/Anchoring approach
 def get_reference_positions_from_sqlite() -> Dict[str, Dict]:
-    """Get the latest positions of all fixed reference devices.
+    # Get the latest positions of all fixed reference devices.
 
-    Returns:
-        Dict mapping device_id to position {x, y, z} dict
-    """
-    query = """
+    query = '''
     SELECT d1.device_id, d1.position_data
     FROM device_positions d1
     JOIN (
@@ -295,7 +285,7 @@ def get_reference_positions_from_sqlite() -> Dict[str, Dict]:
         GROUP BY device_id
     ) d2 ON d1.device_id = d2.device_id AND d1.timestamp = d2.max_time
     WHERE d1.source = 'fixed_reference'
-    """
+    '''
 
     results = _execute_sqlite_read(query)
     reference_positions = {}
@@ -312,13 +302,11 @@ def get_reference_positions_from_sqlite() -> Dict[str, Dict]:
     logger.debug(f"Retrieved {len(reference_positions)} reference positions from database")
     return reference_positions
 
+# DEPRECATED: Not needed for MDS/Anchoring approach
 def get_device_positions_from_sqlite() -> Dict[str, Dict]:
-    """Get the latest positions of all tracked devices.
+    # Get the latest positions of all tracked devices.
 
-    Returns:
-        Dict mapping device_id to full position dict including source, accuracy, etc.
-    """
-    query = """
+    query = '''
     SELECT d1.device_id, d1.position_data, d1.source, d1.accuracy, d1.area_id, d1.timestamp
     FROM device_positions d1
     JOIN (
@@ -326,7 +314,7 @@ def get_device_positions_from_sqlite() -> Dict[str, Dict]:
         FROM device_positions
         GROUP BY device_id
     ) d2 ON d1.device_id = d2.device_id AND d1.timestamp = d2.max_time
-    """
+    '''
 
     results = _execute_sqlite_read(query)
     device_positions = {}
@@ -356,6 +344,7 @@ def get_device_positions_from_sqlite() -> Dict[str, Dict]:
 
     logger.debug(f"Retrieved {len(device_positions)} device positions from database")
     return device_positions
+"""
 
 def save_ai_feedback_to_sqlite(blueprint_id: str, feedback_data: Dict, original_blueprint: Optional[Dict] = None, modified_blueprint: Optional[Dict] = None) -> bool:
     """Save AI blueprint feedback to the SQLite database."""
@@ -417,7 +406,6 @@ def save_rssi_sample_to_sqlite(
         logger.error("Failed to save RSSI sample to SQLite.")
         return False
 
-
 def get_latest_blueprint_from_sqlite() -> Optional[Dict[str, Any]]:
     """Get the latest active blueprint from the SQLite database."""
     query = """
@@ -436,7 +424,6 @@ def get_latest_blueprint_from_sqlite() -> Optional[Dict[str, Any]]:
             return None
     logger.warning("No active blueprints found in SQLite database")
     return None
-
 
 def save_ai_model_sqlite(model_name: str, model_type: str, model_path: str, metrics: Dict) -> bool:
     """Save or update AI model metadata in SQLite."""

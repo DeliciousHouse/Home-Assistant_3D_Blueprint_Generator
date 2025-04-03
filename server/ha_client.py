@@ -962,6 +962,8 @@ class HomeAssistantClient:
                             if len(parts) == 2:
                                 device_part = parts[0].split('sensor.')[1]
                                 scanner_id = parts[1]
+                                # Add this log:
+                                logger.debug(f"Extracted from {entity_id}: device='{device_part}', scanner='{scanner_id}', dist={distance}")
                                 sensors.append({
                                     'entity_id': entity_id,
                                     'tracked_device_id': device_part,

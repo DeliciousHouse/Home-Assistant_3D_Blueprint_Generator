@@ -1725,6 +1725,7 @@ class AIProcessor:
             measurements.setdefault(pair, []).append(dist)
 
         entity_list = sorted(list(entities))
+        logger.debug(f"Entities identified for MDS ({len(entity_list)}): {entity_list}") # Add this log
         entity_map = {name: i for i, name in enumerate(entity_list)}
         n_entities = len(entity_list)
         if n_entities < n_dimensions + 1:
