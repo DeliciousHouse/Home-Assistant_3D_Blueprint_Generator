@@ -622,23 +622,26 @@ def ensure_reference_positions():
 
     conn = get_sqlite_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM device_positions")
+    cursor.execute("SELECT COUNT(*) FROM reference_positions")
     count = cursor.fetchone()[0]
     conn.close()
 
     if count == 0:
-        logger.info("No device positions in database, creating initial reference points")
+        logger.info("No reference positions in database, creating initial reference points")
         # Create at least 3 reference points for the system to work with
         default_positions = {
             "reference_point_1": {"x": 0, "y": 0, "z": 0},
             "reference_point_2": {"x": 5, "y": 0, "z": 0},
             "reference_point_3": {"x": 0, "y": 5, "z": 0}
         }
-        # Use SQLite functions directly
-        from .db import save_device_position_to_sqlite
+        # Use the new reference position function
+        from .db import save_reference_position
         for device_id, position in default_positions.items():
-            position['source'] = 'initial_setup'
-            position['accuracy'] = 1.0
-            save_device_position_to_sqlite(device_id, position)
+            save_reference_position(
+                device_id=device_id,
+                x=position['x'],
+                y=position['y'],
+                z=position['z']
+            )
         return default_positions
     return None

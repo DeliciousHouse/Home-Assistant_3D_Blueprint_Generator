@@ -63,6 +63,22 @@ def init_sqlite_db():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_blueprints_created ON blueprints (created_at DESC);')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_blueprints_status ON blueprints (status);')
 
+        # --- Reference Positions Table ---
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS reference_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL UNIQUE,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                z REAL NOT NULL,
+                area_id TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ref_pos_device ON reference_positions (device_id);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_ref_pos_area ON reference_positions (area_id);')
+
         # --- Area Observations Table (UPDATED) ---
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS area_observations (
@@ -270,81 +286,60 @@ def save_device_position_to_sqlite(
     else:
         logger.error(f"Failed to save position for device {device_id}")
         return False
+"""
 
-# DEPRECATED: Not needed for MDS/Anchoring approach
-def get_reference_positions_from_sqlite() -> Dict[str, Dict]:
-    # Get the latest positions of all fixed reference devices.
+def get_reference_positions_from_sqlite() -> Dict[str, Dict[str, Any]]:
+    """Retrieve reference positions from SQLite database.
+    Returns a dictionary mapping device_id to position data.
+    """
+    query = """
+    SELECT device_id, x, y, z, area_id
+    FROM reference_positions
+    """
+    results = _execute_sqlite_read(query) # Use the internal helper
 
-    query = '''
-    SELECT d1.device_id, d1.position_data
-    FROM device_positions d1
-    JOIN (
-        SELECT device_id, MAX(timestamp) as max_time
-        FROM device_positions
-        WHERE source = 'fixed_reference'
-        GROUP BY device_id
-    ) d2 ON d1.device_id = d2.device_id AND d1.timestamp = d2.max_time
-    WHERE d1.source = 'fixed_reference'
-    '''
+    if results is None: # Handle potential read error
+        logger.error("Failed to read reference positions from database.")
+        return {}
+    if not results:
+        logger.info("No reference positions found in database.")
+        return {}
 
-    results = _execute_sqlite_read(query)
     reference_positions = {}
-
-    if results:
-        for row in results:
-            try:
-                device_id = row['device_id']
-                position = json.loads(row['position_data'])
-                reference_positions[device_id] = position
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.error(f"Error parsing reference position for {row.get('device_id', 'unknown')}: {e}")
-
-    logger.debug(f"Retrieved {len(reference_positions)} reference positions from database")
+    for row in results:
+        device_id = row['device_id']
+        reference_positions[device_id] = {
+            'x': row['x'],
+            'y': row['y'],
+            'z': row['z'],
+            'area_id': row['area_id']
+            # Add other relevant fields if needed, e.g., created_at
+        }
+    logger.info(f"Retrieved {len(reference_positions)} reference positions.")
     return reference_positions
 
-# DEPRECATED: Not needed for MDS/Anchoring approach
-def get_device_positions_from_sqlite() -> Dict[str, Dict]:
-    # Get the latest positions of all tracked devices.
+def save_reference_position(device_id: str, x: float, y: float, z: float, area_id: Optional[str] = None) -> bool:
+    """Save or update a reference position in the database."""
+    query = """
+    INSERT INTO reference_positions (device_id, x, y, z, area_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(device_id) DO UPDATE SET
+        x = excluded.x,
+        y = excluded.y,
+        z = excluded.z,
+        area_id = excluded.area_id,
+        updated_at = excluded.updated_at
+    """
+    timestamp = datetime.now().isoformat()
+    params = (device_id, x, y, z, area_id, timestamp, timestamp)
 
-    query = '''
-    SELECT d1.device_id, d1.position_data, d1.source, d1.accuracy, d1.area_id, d1.timestamp
-    FROM device_positions d1
-    JOIN (
-        SELECT device_id, MAX(timestamp) as max_time
-        FROM device_positions
-        GROUP BY device_id
-    ) d2 ON d1.device_id = d2.device_id AND d1.timestamp = d2.max_time
-    '''
-
-    results = _execute_sqlite_read(query)
-    device_positions = {}
-
-    if results:
-        for row in results:
-            try:
-                device_id = row['device_id']
-                position_data = json.loads(row['position_data'])
-
-                # Create a complete position record
-                position_record = {
-                    **position_data,  # Unpack the x, y, z
-                    'source': row['source'],
-                    'timestamp': row['timestamp'],
-                }
-
-                # Add optional fields if present
-                if row['accuracy'] is not None:
-                    position_record['accuracy'] = float(row['accuracy'])
-                if row['area_id']:
-                    position_record['area_id'] = row['area_id']
-
-                device_positions[device_id] = position_record
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.error(f"Error parsing device position for {row.get('device_id', 'unknown')}: {e}")
-
-    logger.debug(f"Retrieved {len(device_positions)} device positions from database")
-    return device_positions
-"""
+    result = _execute_sqlite_write(query, params)
+    if result is not None:
+        logger.info(f"Saved reference position for device {device_id} at ({x}, {y}, {z})")
+        return True
+    else:
+        logger.error(f"Failed to save reference position for device {device_id}")
+        return False
 
 def save_ai_feedback_to_sqlite(blueprint_id: str, feedback_data: Dict, original_blueprint: Optional[Dict] = None, modified_blueprint: Optional[Dict] = None) -> bool:
     """Save AI blueprint feedback to the SQLite database."""
@@ -550,7 +545,6 @@ def get_recent_area_predictions(time_window_minutes: int = 10) -> Dict[str, Opti
     logger.debug(f"Found {len(predictions)} recent area predictions.")
     return predictions
 
-# Add this function
 def save_distance_log(tracked_device_id: str, scanner_id: str, distance: float) -> bool:
     """Save a distance measurement to the log."""
     query = """
