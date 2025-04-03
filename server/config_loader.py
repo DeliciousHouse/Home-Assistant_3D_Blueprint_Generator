@@ -54,9 +54,7 @@ def load_config(config_path: Optional[str] = None) -> Dict:
                 'use_areas': ha_options.get('use_room_areas', config.get('room_detection', {}).get('use_areas', True))
             }
 
-            # Ensure fixed_sensors is an empty dict if not present
-            if 'fixed_sensors' not in config:
-                config['fixed_sensors'] = {}
+            # Removed fixed_sensors initialization as it's no longer needed
 
         except Exception as e:
             logger.error(f"Failed to process HA options: {str(e)}")
