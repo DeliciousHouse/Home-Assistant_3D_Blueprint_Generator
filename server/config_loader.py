@@ -26,6 +26,7 @@ def load_config(config_path: Optional[str] = None) -> Dict:
             logger.info(f"Loaded default config from {default_config_path}")
         except Exception as e:
             logger.error(f"Failed to load default config: {str(e)}")
+            config = {}  # Start with empty config if default fails
 
     # 2. Load user-provided options from /data/options.json
     if (ha_options_path.exists()):
@@ -41,30 +42,49 @@ def load_config(config_path: Optional[str] = None) -> Dict:
 
             # Processing parameters
             if 'processing_params' not in config: config['processing_params'] = {}
-            config['processing_params']['update_interval'] = ha_options.get('processing_interval', config.get('processing_params', {}).get('update_interval', 300))
-            # Add other processing params here if needed in options.json
+            config['processing_params']['update_interval'] = ha_options.get(
+                'processing_interval',
+                config.get('processing_params', {}).get('update_interval', 300)
+            )
 
             # AI settings
             if 'ai_settings' not in config: config['ai_settings'] = {}
-            config['ai_settings']['enable_refinement'] = ha_options.get('enable_ai_refinement', config.get('ai_settings', {}).get('enable_refinement', True))
-            # Add other AI params here
+            config['ai_settings']['enable_refinement'] = ha_options.get(
+                'enable_ai_refinement',
+                config.get('ai_settings', {}).get('enable_refinement', False)  # Default refinement to False unless enabled
+            )
 
             # Room detection settings
-            config['room_detection'] = {
-                'use_areas': ha_options.get('use_room_areas', config.get('room_detection', {}).get('use_areas', True))
-            }
+            if 'room_detection' not in config: config['room_detection'] = {}
+            config['room_detection']['use_areas'] = ha_options.get(
+                'use_room_areas',
+                config.get('room_detection', {}).get('use_areas', True)  # Default to using areas
+            )
 
-            # Removed fixed_sensors initialization as it's no longer needed
+            # Generation settings specific to MDS/Anchoring
+            if 'generation_settings' not in config: config['generation_settings'] = {}
+            config['generation_settings']['distance_window_minutes'] = ha_options.get(
+                'distance_window_minutes',  # Add this option to schema/options if user-configurable
+                config.get('generation_settings', {}).get('distance_window_minutes', 15)
+            )
 
         except Exception as e:
             logger.error(f"Failed to process HA options: {str(e)}")
     else:
-        logger.warning(f"{ha_options_path} not found. Using default configuration only.")
+        # This is expected if user hasn't configured options
+        logger.info(f"{ha_options_path} not found. Using default configuration only.")
 
     # Debug output
-    safe_config = {k: v for k, v in config.items()} # Shallow copy
-    logger.debug(f"Final config loaded: {json.dumps(safe_config, default=str)}") # Log final structure
+    safe_config = {k: v for k, v in config.items()}  # Shallow copy
+    logger.debug(f"Final config loaded: {json.dumps(safe_config, default=str)}")  # Log final structure
 
     return config
 
-# Removed _merge_configs as direct update/get is used now
+# Helper function for API configuration
+def get_api_config():
+    config = load_config()
+    return {
+        'host': config.get('api', {}).get('host', '0.0.0.0'),
+        'port': config.get('api', {}).get('port', 8001),  # Default to 8001
+        'debug': config.get('api', {}).get('debug', False)
+    }
