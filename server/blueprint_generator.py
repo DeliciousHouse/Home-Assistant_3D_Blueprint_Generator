@@ -83,6 +83,12 @@ class BlueprintGenerator:
 
         self._initialized = True
 
+    def init_ai_processor(self) -> None:
+        """Initialize or reinitialize the AI processor instance."""
+        logger.info("Initializing AI processor...")
+        self.ai_processor = AIProcessor()
+        logger.info("AI processor initialized successfully")
+
     def generate_blueprint(self):
         """Generate blueprint using relative positioning and area anchoring."""
         logger.info("Starting blueprint generation (Relative Positioning Method)...")

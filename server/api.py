@@ -10,7 +10,7 @@ import random  # Added for random offsets in estimated scanner locations
 
 from .blueprint_generator import BlueprintGenerator
 from .bluetooth_processor import BluetoothProcessor
-from .db import get_sqlite_connection, execute_sqlite_query, get_reference_positions_from_sqlite, save_device_position_to_sqlite
+from .db import get_sqlite_connection, execute_sqlite_query
 from .ha_client import HomeAssistantClient
 import uuid
 from datetime import datetime
@@ -244,39 +244,7 @@ def visualize_blueprint():
         logger.error(f"Failed to visualize blueprint: {str(e)}")
         return render_template('error.html', error=str(e))
 
-@app.route('/api/sync/bermuda', methods=['POST'])
-def sync_bermuda():
-    """Sync positions from Bermuda Trilateration."""
-    try:
-        positions = ha_client.get_bermuda_positions()
-
-        if not positions:
-            return jsonify({'message': 'No Bermuda positions found'}), 404
-
-        # Store positions in database using direct SQLite
-        from .db import save_device_position_to_sqlite
-        success_count = 0
-
-        for position in positions:
-            device_id = position['device_id']
-            pos_data = position['position']
-            # Add source information
-            pos_data['source'] = 'bermuda'
-
-            # Call helper with device_id and full position dict
-            result = save_device_position_to_sqlite(device_id, pos_data)
-            if result:
-                success_count += 1
-
-        return jsonify({
-            'success': True,
-            'count': success_count,
-            'message': f'Synced {success_count} positions from Bermuda'
-        })
-
-    except Exception as e:
-        logger.error(f"Bermuda sync failed: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+# Removing /api/sync/bermuda endpoint - deprecated in new design
 
 # Removing /api/sync/esp32-ble endpoint
 
@@ -478,7 +446,10 @@ def add_rssi_distance_data():
         # Initialize AI processor
         ai_processor = blueprint_generator.ai_processor
 
-        # Save the training data
+        # Get current time information if not provided
+        current_time = datetime.now()
+
+        # Save the training data with all possible parameters
         result = ai_processor.save_rssi_distance_sample(
             device_id=data['device_id'],
             sensor_id=data['sensor_id'],
@@ -486,7 +457,10 @@ def add_rssi_distance_data():
             distance=data['distance'],
             tx_power=data.get('tx_power'),
             frequency=data.get('frequency'),
-            environment_type=data.get('environment_type')
+            environment_type=data.get('environment_type'),
+            device_type=data.get('device_type'),  # Added parameter
+            time_of_day=data.get('time_of_day', current_time.hour),  # Default to current hour
+            day_of_week=data.get('day_of_week', current_time.weekday())  # Default to current day (0-6, Monday is 0)
         )
 
         return jsonify({
@@ -763,8 +737,8 @@ def generate_default_blueprint():
 
         # Save device positions to database
         for device_id, position in device_positions.items():
-            from .bluetooth_processor import save_device_position
-            save_device_position(device_id, position)
+            # Use the initialized bluetooth_processor instance instead of importing the function
+            bluetooth_processor.save_device_position(device_id, position)
             logger.info(f"Created reference point {device_id} at position {position}")
 
         # Use blueprint generator to save the blueprint
@@ -790,173 +764,9 @@ def generate_default_blueprint():
         logger.error(f"Default blueprint generation failed: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/config/sensors', methods=['GET', 'POST'])
-def manage_sensor_locations():
-    """Configure the locations of fixed sensors/reference points used for positioning."""
-    try:
-        if request.method == 'GET':
-            # Use SQLite helper function
-            reference_positions = get_reference_positions_from_sqlite()
+# Removing /api/config/sensors endpoint - deprecated in new design
 
-            # Convert to the expected format
-            sensors = []
-            for device_id, position in reference_positions.items():
-                sensors.append({
-                    'id': device_id,
-                    'position': {
-                        'x': position.get('x', 0),
-                        'y': position.get('y', 0),
-                        'z': position.get('z', 0)
-                    },
-                    'accuracy': position.get('accuracy', 1.0),
-                    'timestamp': position.get('timestamp')
-                })
-
-            return jsonify({
-                'sensors': sensors,
-                'count': len(sensors)
-            })
-        else:  # POST request
-            # Get sensor data from request
-            sensors = request.json
-            if not sensors or not isinstance(sensors, list):
-                return jsonify({'error': 'Invalid data format. Expected list of sensors.'}), 400
-
-            # Validate sensor data
-            for sensor in sensors:
-                if not all(key in sensor for key in ['id', 'position']):
-                    return jsonify({'error': 'Each sensor must have id and position fields'}), 400
-
-                position = sensor['position']
-                if not all(key in position for key in ['x', 'y', 'z']):
-                    return jsonify({'error': 'Each position must have x, y, z coordinates'}), 400
-
-            # Store sensors in database using SQLite helper directly
-            success_count = 0
-
-            for sensor in sensors:
-                device_id = sensor['id']
-                position = sensor['position']
-                accuracy = sensor.get('accuracy', 1.0)
-
-                # Save to database using SQLite helper with source='fixed_reference'
-                result = save_device_position_to_sqlite(
-                    device_id,
-                    position,
-                    source='fixed_reference',
-                    accuracy=accuracy
-                )
-
-                if result:
-                    success_count += 1
-                    logger.info(f"Configured fixed sensor: {device_id} at position {position}")
-
-            # Update in-memory sensor locations in bluetooth processor
-            bluetooth_processor.load_reference_positions()
-
-            return jsonify({
-                'success': True,
-                'sensors_configured': success_count,
-                'message': f'Successfully configured {success_count} sensors'
-            })
-
-    except Exception as e:
-        logger.error(f"Sensor configuration failed: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/config/estimate_scanner_locations', methods=['GET'])
-def estimate_scanner_locations():
-    """Estimate scanner locations based on their assigned Home Assistant areas."""
-    try:
-        # Get all Home Assistant areas
-        areas = ha_client.get_areas()
-
-        # Find all potential scanner entities
-        scanner_entities = ha_client.find_entities_by_pattern(
-            ["bluetooth", "ble", "esp32"],
-            ["device_tracker", "sensor"]
-        )
-
-        logger.info(f"Found {len(areas)} areas and {len(scanner_entities)} potential scanner entities")
-
-        # Create a grid layout for areas (simple 2D grid)
-        area_coords = {}
-
-        # Assign sequential grid coordinates to areas
-        grid_size = 5.0  # 5 meters between area centers
-        cols = 3  # Default grid columns
-
-        for i, area in enumerate(areas):
-            row = i // cols
-            col = i % cols
-
-            area_coords[area['area_id']] = {
-                'x': col * grid_size,
-                'y': row * grid_size,
-                'z': 1.0,  # Default height
-                'name': area.get('name', f"Area {i}")
-            }
-
-        # Match scanners to areas and assign estimated coordinates
-        estimated_locations = {}
-
-        for entity in scanner_entities:
-            entity_id = entity.get('entity_id')
-            area_id = entity.get('area_id')
-
-            # Skip entities without area_id
-            if not area_id or area_id not in area_coords:
-                continue
-
-            # Use entity_id as scanner_id
-            scanner_id = entity_id.replace('sensor.', '').replace('device_tracker.', '')
-
-            # Get coordinates from area
-            coords = area_coords[area_id]
-
-            # Add some randomness to avoid exactly overlapping scanners in same area
-            x_offset = random.uniform(-0.5, 0.5)
-            y_offset = random.uniform(-0.5, 0.5)
-
-            estimated_locations[scanner_id] = {
-                'x': coords['x'] + x_offset,
-                'y': coords['y'] + y_offset,
-                'z': coords['z'],
-                'area_id': area_id,
-                'source': 'estimated',
-                'entity_id': entity_id
-            }
-
-        # Get existing scanner locations from database
-        existing_locations = get_reference_positions_from_sqlite()
-
-        # Merge existing with estimated (existing takes priority)
-        final_locations = estimated_locations.copy()
-
-        # Add existing locations that aren't in estimated
-        for scanner_id, position in existing_locations.items():
-            if scanner_id in final_locations:
-                # Mark existing scanners
-                final_locations[scanner_id]['source'] = 'database'
-                final_locations[scanner_id].update(position)
-            else:
-                position['source'] = 'database'
-                final_locations[scanner_id] = position
-
-        # Prepare output with additional metadata
-        result = {
-            'estimated_count': len(estimated_locations),
-            'database_count': len(existing_locations),
-            'final_count': len(final_locations),
-            'areas': {a['area_id']: a.get('name') for a in areas},
-            'scanner_locations': final_locations
-        }
-
-        return jsonify(result)
-
-    except Exception as e:
-        logger.error(f"Error estimating scanner locations: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+# Removing /api/config/estimate_scanner_locations endpoint - deprecated in new design
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
@@ -1008,9 +818,9 @@ def setup_environment():
         model_path = os.environ.get('MODEL_PATH', 'models')
         os.makedirs(model_path, exist_ok=True)
 
-        # Initialize the AI processor
-        global ai_processor
-        ai_processor = AIProcessor()
+        # Initialize the AI processor using blueprint_generator for consistency
+        # This ensures we're using the same instance throughout the application
+        blueprint_generator.init_ai_processor()
 
         return jsonify({
             'success': True,
