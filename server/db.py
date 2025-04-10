@@ -201,8 +201,29 @@ def _execute_sqlite_write(query: str, params: Optional[Tuple] = None, fetch_last
         logger.debug(f"SQLite write successful: {query[:60]}...")
         return last_id
     except sqlite3.Error as e:
-        # Log the specific error code and message
-        logger.error(f"SQLite write query failed: {query[:60]}... Error Code: {e.sqlite_errorcode} Error Name: {e.sqlite_errorname} Message: {str(e)}", exc_info=True)
+        # Enhanced error logging with detailed SQLite error information
+        error_code = getattr(e, 'sqlite_errorcode', 'Unknown')
+        error_name = getattr(e, 'sqlite_errorname', 'Unknown')
+
+        # Create a more detailed error message
+        error_msg = f"SQLite write query failed: {query[:60]}... "
+        error_msg += f"Error Code: {error_code} "
+        error_msg += f"Error Name: {error_name} "
+        error_msg += f"Message: {str(e)}"
+
+        # Log the formatted error message with full stack trace
+        logger.error(error_msg, exc_info=True)
+
+        # Additional debug information
+        if params:
+            try:
+                params_str = str(params)
+                if len(params_str) > 200:
+                    params_str = params_str[:200] + "..."
+                logger.debug(f"Query parameters: {params_str}")
+            except Exception as param_err:
+                logger.debug(f"Could not log parameters: {str(param_err)}")
+
         if conn:
             conn.rollback()
         return None # Indicate failure explicitly
