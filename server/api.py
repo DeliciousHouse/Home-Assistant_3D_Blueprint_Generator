@@ -195,12 +195,17 @@ def get_blueprint():
     """Get the latest blueprint from the database."""
     try:
         blueprint = blueprint_generator.get_latest_blueprint()
-        if blueprint:
-            return jsonify({"success": True, "blueprint": blueprint})
-        else:
-            return jsonify({"success": False, "error": "No blueprint found"}), 404
+
+        if not blueprint:
+            return jsonify({"success": False, "error": "No blueprint found."}), 404
+
+        # The get_latest_blueprint function now handles unit conversion to imperial
+        # automatically if configured to do so
+
+        # Return blueprint with success status
+        return jsonify({"success": True, "blueprint": blueprint})
     except Exception as e:
-        logger.error(f"Error getting blueprint: {str(e)}")
+        logger.error(f"Error getting blueprint: {str(e)}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/blueprint/status', methods=['GET'])

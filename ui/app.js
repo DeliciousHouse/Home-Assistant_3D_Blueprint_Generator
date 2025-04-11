@@ -132,6 +132,7 @@ function fetchBlueprint() {
 
     fetch('/api/blueprint')
         .then(response => {
+            console.log("API Response status:", response.status);
             if (response.status === 404) {
                 console.log("API returned 404 - No blueprint found.");
                 hideLoading();
@@ -146,9 +147,12 @@ function fetchBlueprint() {
             return response.json();
         })
         .then(data => {
+            console.log("Blueprint data received:", data);
             // --- FIX: Access the nested blueprint object ---
             if (data && data.success && data.blueprint) {
                 console.log("Successfully fetched blueprint data:", data.blueprint);
+                console.log("Blueprint rooms:", data.blueprint.rooms?.length || 0);
+                console.log("Blueprint floors:", data.blueprint.floors);
                 blueprint = data.blueprint; // Assign ONLY the blueprint object
                 renderBlueprint(blueprint); // Pass the correct object
             } else if (data && !data.success) {
@@ -198,6 +202,7 @@ function updateScene(blueprintData) { // Renamed parameter for clarity
     }
 
     console.log(`Updating scene for floor ${currentFloor}`); // Log floor being rendered
+    console.log(`All available floor levels:`, blueprintData.floors.map(f => f.level));
 
     // Clear canvas
     ctx.fillStyle = '#f8f9fa';
@@ -208,22 +213,40 @@ function updateScene(blueprintData) { // Renamed parameter for clarity
 
     // Get rooms for current floor
     const floorData = blueprintData.floors.find(f => f.level === currentFloor);
+    console.log(`Floor data for level ${currentFloor}:`, floorData);
+
     if (!floorData) {
         console.warn(`No floor data found for level ${currentFloor}`); // Changed to warning
+        console.log(`Available floors:`, blueprintData.floors);
+
+        // Fallback to first floor if current floor doesn't exist
+        if (blueprintData.floors.length > 0) {
+            currentFloor = blueprintData.floors[0].level;
+            console.log(`Falling back to first available floor: ${currentFloor}`);
+            // Try again with the new floor level
+            updateScene(blueprintData);
+            return;
+        }
+
         ctx.fillStyle = '#6c757d';
         ctx.font = '16px Arial';
         ctx.textAlign = 'center';
         ctx.fillText(`No data for floor ${currentFloor}`, canvas.width / 2, canvas.height / 2);
         return;
     }
+
     if (!floorData.rooms || !Array.isArray(floorData.rooms)) {
         console.error(`Floor data for level ${currentFloor} is missing 'rooms' array:`, floorData);
         renderEmptyCanvas();
         return;
     }
 
+    console.log(`Room IDs on floor ${currentFloor}:`, floorData.rooms);
+    console.log(`All rooms in blueprint:`, blueprintData.rooms.map(r => r.id));
+
     const floorRooms = blueprintData.rooms.filter(r => floorData.rooms.includes(r.id));
     console.log(`Found ${floorRooms.length} rooms for floor ${currentFloor}`); // Log room count
+    console.log(`Rooms to render:`, floorRooms);
 
     // Center the blueprint (only if rooms exist)
     if (floorRooms.length > 0) {
@@ -237,6 +260,12 @@ function updateScene(blueprintData) { // Renamed parameter for clarity
     // Draw rooms
     floorRooms.forEach((room, index) => {
         console.log(`Drawing room: ${room.name} (ID: ${room.id})`); // Log room being drawn
+
+        if (!room.bounds || !room.bounds.min || !room.bounds.max) {
+            console.error(`Room is missing proper bounds:`, room);
+            return; // Skip this room
+        }
+
         drawRoom(room, index);
     });
 
@@ -248,6 +277,12 @@ function updateScene(blueprintData) { // Renamed parameter for clarity
             // If walls don't have a floor property, this logic needs adjustment
             if (wall.floor === undefined || wall.floor === currentFloor) {
                 console.log("Drawing wall:", wall); // Log wall being drawn
+
+                if (!wall.start || !wall.end) {
+                    console.error(`Wall is missing start or end points:`, wall);
+                    return; // Skip this wall
+                }
+
                 drawWall(wall);
             }
         });
