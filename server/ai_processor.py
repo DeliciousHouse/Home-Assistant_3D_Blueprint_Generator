@@ -1890,8 +1890,10 @@ class AIProcessor:
         logger.info(f"Applied anchoring transform to {len(anchored_coords)} entities.")
         return anchored_coords
 
-    def generate_rooms_from_points(self, anchored_device_coords_by_area: Dict[str, List[Dict[str, float]]]) -> List[Dict]:
-        """Generate rooms from device coordinates grouped by area using AI/ML techniques."""
+    def generate_rooms_from_points(self, anchored_device_coords_by_area: Dict[str, List[Dict[str, float]]], *args) -> List[Dict]:
+        """Generate rooms from device coordinates grouped by area using AI/ML techniques.
+        Note: Added *args to handle any extra arguments from legacy code.
+        """
         logger.info(f"Generating rooms from {len(anchored_device_coords_by_area)} areas with device coordinates.")
         rooms = []
         room_id = 0

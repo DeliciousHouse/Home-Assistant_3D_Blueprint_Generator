@@ -79,7 +79,7 @@ def initialize_databases():
 def start_processing_scheduler(config):
     """Start a background thread that periodically processes Bluetooth data."""
     from server.bluetooth_processor import BluetoothProcessor
-    from server.blueprint_generator import BlueprintGenerator
+    from server.blueprint_generator import BlueprintGenerator, ensure_reference_positions
     import random
 
     # Initialize components
@@ -90,6 +90,11 @@ def start_processing_scheduler(config):
         counter = 0
         # First log data for a while
         logger.info("Starting initial data collection phase...")
+
+        # Ensure we have reference positions before collecting data
+        reference_positions = ensure_reference_positions()
+        logger.info(f"Reference positions confirmed: {len(reference_positions)} positions available")
+
         while counter < 5:  # Change this to adjust how many test data points to collect
             try:
                 # Log Bluetooth data
@@ -105,6 +110,11 @@ def start_processing_scheduler(config):
         # After collecting data, generate the blueprint
         logger.info("Initial data collection complete, generating blueprint...")
         try:
+            # Double check reference positions before blueprint generation
+            if len(ensure_reference_positions()) < 3:
+                logger.warning("Still insufficient reference positions, adding more...")
+                reference_positions = ensure_reference_positions()
+
             success = blueprint_generator.generate_blueprint()
             if success:
                 logger.info("Blueprint generation SUCCESSFUL!")
@@ -122,6 +132,8 @@ def start_processing_scheduler(config):
                 # Generate updated blueprint every hour
                 if counter % 360 == 0:  # Assuming 10s between cycles, this is ~1 hour
                     logger.info("Generating updated blueprint...")
+                    # Ensure reference positions are still available
+                    ensure_reference_positions()
                     blueprint_generator.generate_blueprint()
 
                 counter += 1

@@ -479,30 +479,35 @@ class BlueprintGenerator:
 
 def ensure_reference_positions():
     """Make sure we have at least some reference positions in the SQLite database"""
-    from .db import get_sqlite_connection
+    from .db import get_reference_positions_from_sqlite, save_reference_position
 
-    conn = get_sqlite_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM reference_positions")
-    count = cursor.fetchone()[0]
-    conn.close()
+    # Check if we already have reference positions
+    existing_refs = get_reference_positions_from_sqlite()
+    if len(existing_refs) >= 3:
+        logger.info(f"Found {len(existing_refs)} existing reference positions, no need to create more")
+        return existing_refs
 
-    if count == 0:
-        logger.info("No reference positions in database, creating initial reference points")
-        # Create at least 3 reference points for the system to work with
-        default_positions = {
-            "reference_point_1": {"x": 0, "y": 0, "z": 0},
-            "reference_point_2": {"x": 5, "y": 0, "z": 0},
-            "reference_point_3": {"x": 0, "y": 5, "z": 0}
-        }
-        # Use the new reference position function
-        from .db import save_reference_position
-        for device_id, position in default_positions.items():
+    logger.info("Insufficient reference positions found, creating initial reference points")
+
+    # Create at least 3 reference points for the system to work with
+    default_positions = {
+        "reference_point_1": {"x": 0, "y": 0, "z": 0, "area_id": "lounge"},
+        "reference_point_2": {"x": 5, "y": 0, "z": 0, "area_id": "kitchen"},
+        "reference_point_3": {"x": 0, "y": 5, "z": 0, "area_id": "master_bedroom"},
+        "reference_point_4": {"x": 5, "y": 5, "z": 0, "area_id": "office"}
+    }
+
+    # Save only the additional reference points we need
+    for device_id, position in default_positions.items():
+        if device_id not in existing_refs:
             save_reference_position(
                 device_id=device_id,
                 x=position['x'],
                 y=position['y'],
-                z=position['z']
+                z=position['z'],
+                area_id=position.get('area_id')
             )
-        return default_positions
-    return None
+            logger.info(f"Created reference position: {device_id} at ({position['x']}, {position['y']}, {position['z']})")
+
+    # Return the updated reference positions
+    return get_reference_positions_from_sqlite()

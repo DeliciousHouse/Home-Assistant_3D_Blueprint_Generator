@@ -21,6 +21,9 @@ fi
 REPO_PATH=$(pwd)
 REMOTE_NAME=${1:-origin}
 BRANCH_NAME=${2:-main}
+HA_HOST=${HA_HOST:-"192.168.86.91"}  # Default HA host - change or set env var
+HA_USER=${HA_USER:-"bkam"}           # Default HA user - change or set env var
+HA_ADDON_PATH=${HA_ADDON_PATH:-"/addon/Home-Assistant_3D_Blueprint_Generator"}  # Default addon path on HA
 
 echo -e "${YELLOW}Starting development push workflow...${NC}"
 
@@ -103,12 +106,57 @@ git push $REMOTE_NAME $BRANCH_NAME
 git config --local --unset credential.helper
 
 echo -e "${GREEN}Push complete.${NC}"
-echo -e "${YELLOW}Changes will be available in the repository but won't update the running container.${NC}"
-echo -e "${YELLOW}To apply changes without a full rebuild:${NC}"
-echo -e "  1. SSH into Home Assistant"
-echo -e "  2. Run: ${GREEN}docker exec -it addon_blueprint_generator bash${NC}"
-echo -e "  3. Run: ${GREEN}cd /opt/blueprint_generator && git pull${NC}"
-echo -e "  4. Run: ${GREEN}exit${NC}"
-echo -e "  5. Restart the add-on from Home Assistant"
+
+# Ask if the user wants to deploy to Home Assistant
+read -p "Do you want to deploy these changes to Home Assistant? (y/n): " DEPLOY_CHOICE
+
+if [[ $DEPLOY_CHOICE == "y" || $DEPLOY_CHOICE == "Y" ]]; then
+    echo -e "${YELLOW}Deploying to Home Assistant at $HA_HOST...${NC}"
+
+    # Ask for password or use SSH key authentication
+    read -s -p "Enter SSH password for $HA_USER@$HA_HOST (leave empty for key auth): " HA_PASSWORD
+    echo ""
+
+    if [ -n "$HA_PASSWORD" ]; then
+        # Using password authentication
+        if ! command -v sshpass &> /dev/null; then
+            echo -e "${RED}Error: sshpass not installed. Please install it or use SSH key authentication.${NC}"
+            exit 1
+        fi
+        SSH_CMD="sshpass -p '$HA_PASSWORD' ssh -o StrictHostKeyChecking=no $HA_USER@$HA_HOST"
+    else
+        # Using key authentication
+        SSH_CMD="ssh -o StrictHostKeyChecking=no $HA_USER@$HA_HOST"
+    fi
+
+    # Execute commands on Home Assistant
+    $SSH_CMD << EOF
+        echo "Connected to Home Assistant, updating add-on..."
+        cd $HA_ADDON_PATH
+        git pull
+
+        # Check if ha CLI is available (Supervised installation)
+        if command -v ha &> /dev/null; then
+            echo "Restarting add-on using 'ha' command..."
+            ha addons restart blueprint_generator
+        else
+            echo "Home Assistant CLI not found. To apply changes, restart the add-on manually from the Home Assistant interface."
+        fi
+
+        echo "Deployment complete!"
+EOF
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Successfully deployed to Home Assistant!${NC}"
+    else
+        echo -e "${RED}Failed to deploy to Home Assistant. Check SSH connection and try again.${NC}"
+    fi
+else
+    echo -e "${YELLOW}Skipping deployment to Home Assistant.${NC}"
+    echo -e "${YELLOW}To apply changes without a full rebuild:${NC}"
+    echo -e "  1. SSH into Home Assistant"
+    echo -e "  2. Run: ${GREEN}cd $HA_ADDON_PATH && git pull${NC}"
+    echo -e "  3. Restart the add-on from Home Assistant"
+fi
 
 exit 0
