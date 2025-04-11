@@ -45,6 +45,26 @@ def initialize_databases():
             logger.error("Failed to initialize SQLite database")
             return False
         logger.info("SQLite database initialized successfully")
+
+        # Test direct DB write after schema initialization
+        try:
+            logger.info("Attempting direct DB write test...")
+            from server.db import get_sqlite_connection
+            from datetime import datetime
+            conn_test = get_sqlite_connection()
+            cursor_test = conn_test.cursor()
+            cursor_test.execute("INSERT INTO distance_log (timestamp, tracked_device_id, scanner_id, distance) VALUES (?, ?, ?, ?)",
+                               (datetime.now().isoformat(), 'test_device', 'test_scanner', 1.23))
+            conn_test.commit()
+            logger.info("Direct DB write test SUCCESSFUL.")
+            # Optionally query it back to be sure
+            cursor_test.execute("SELECT COUNT(*) FROM distance_log WHERE tracked_device_id='test_device'")
+            count = cursor_test.fetchone()[0]
+            logger.info(f"Direct DB read test: Found {count} test records.")
+            conn_test.close()
+        except Exception as test_e:
+            logger.error(f"Direct DB write test FAILED: {test_e}", exc_info=True)
+
         return True
     except Exception as e:
         logger.error(f"Database initialization failed: {str(e)}")
