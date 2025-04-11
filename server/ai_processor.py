@@ -1722,11 +1722,24 @@ class AIProcessor:
         # Add debug logging to see sample of the raw data
         logger.debug("--- Raw distance data sample & Entity Extraction ---")
         for idx, (timestamp, dev_id, scan_id, dist) in enumerate(distance_data[:20]):  # Show first 20 records
-            logger.debug(f"  Record: dev='{dev_id}', scan='{scan_id}', dist={dist:.2f}")
+            # Ensure dist is a float - handle the case where it's a string
+            try:
+                dist_value = float(dist) if isinstance(dist, str) else dist
+                dist_display = f"{dist_value:.2f}"
+            except (ValueError, TypeError):
+                dist_value = dist  # Keep original if conversion fails
+                dist_display = str(dist)  # Just convert to string without formatting
+
+            logger.debug(f"  Record: dev='{dev_id}', scan='{scan_id}', dist={dist_display}")
             entities.add(dev_id)
             entities.add(scan_id)
             pair = tuple(sorted((dev_id, scan_id)))
-            measurements.setdefault(pair, []).append(dist)
+
+            # Only add numerical distances to measurements
+            if isinstance(dist_value, (int, float)):
+                measurements.setdefault(pair, []).append(dist_value)
+            else:
+                logger.warning(f"Skipping non-numerical distance value: {dist} (type: {type(dist)})")
 
         # Continue with remaining records without detailed logging
         for idx in range(20, len(distance_data)):
@@ -1734,7 +1747,15 @@ class AIProcessor:
             entities.add(dev_id)
             entities.add(scan_id)
             pair = tuple(sorted((dev_id, scan_id)))
-            measurements.setdefault(pair, []).append(dist)
+
+            # Ensure we only add numerical values
+            try:
+                dist_value = float(dist) if isinstance(dist, str) else dist
+                if isinstance(dist_value, (int, float)):
+                    measurements.setdefault(pair, []).append(dist_value)
+            except (ValueError, TypeError):
+                # Skip this record silently (we already logged examples in the first 20)
+                pass
 
         # Diagnostic logging about entities found
         entity_list = sorted(list(entities))
