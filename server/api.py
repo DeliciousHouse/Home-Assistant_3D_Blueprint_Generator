@@ -194,18 +194,25 @@ def generate_blueprint():
 def get_blueprint():
     """Get the latest blueprint from the database."""
     try:
+        logger.info("API: Received request for /api/blueprint")
         blueprint = blueprint_generator.get_latest_blueprint()
 
         if not blueprint:
+            logger.warning("API: No blueprint found in database")
             return jsonify({"success": False, "error": "No blueprint found."}), 404
+
+        # Log the blueprint details
+        logger.info(f"API: Retrieved blueprint with {len(blueprint.get('rooms', []))} rooms and {len(blueprint.get('floors', []))} floors")
+        logger.info(f"API: Blueprint floors: {blueprint.get('floors', [])}")
 
         # The get_latest_blueprint function now handles unit conversion to imperial
         # automatically if configured to do so
 
         # Return blueprint with success status
-        return jsonify({"success": True, "blueprint": blueprint})
+        response = {"success": True, "blueprint": blueprint}
+        return jsonify(response)
     except Exception as e:
-        logger.error(f"Error getting blueprint: {str(e)}", exc_info=True)
+        logger.error(f"API: Error getting blueprint: {str(e)}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/blueprint/status', methods=['GET'])
@@ -580,6 +587,74 @@ def debug_blueprint():
         })
     except Exception as e:
         logger.error(f"Debug blueprint error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/debug/blueprint-verbose', methods=['GET'])
+def debug_blueprint_verbose():
+    """Debug endpoint with detailed blueprint information."""
+    try:
+        # Get the latest blueprint from the generator
+        blueprint = blueprint_generator.get_latest_blueprint()
+
+        if not blueprint:
+            return jsonify({
+                "error": "No blueprint found in database",
+                "status": "not_found"
+            }), 404
+
+        # Analyze blueprint structure
+        analysis = {
+            "metadata": {
+                "timestamp": blueprint.get("timestamp", "unknown"),
+                "source": blueprint.get("source", "unknown"),
+                "units": blueprint.get("units", "metric"),
+                "has_floors": "floors" in blueprint and isinstance(blueprint["floors"], list),
+                "has_rooms": "rooms" in blueprint and isinstance(blueprint["rooms"], list),
+                "has_walls": "walls" in blueprint and isinstance(blueprint["walls"], list)
+            },
+            "counts": {
+                "floors": len(blueprint.get("floors", [])),
+                "rooms": len(blueprint.get("rooms", [])),
+                "walls": len(blueprint.get("walls", []))
+            },
+            "sample_data": {}
+        }
+
+        # Add sample of first floor
+        if blueprint.get("floors") and len(blueprint["floors"]) > 0:
+            analysis["sample_data"]["first_floor"] = blueprint["floors"][0]
+
+        # Add sample of first room
+        if blueprint.get("rooms") and len(blueprint["rooms"]) > 0:
+            analysis["sample_data"]["first_room"] = blueprint["rooms"][0]
+
+            # Check if first room has all required fields
+            first_room = blueprint["rooms"][0]
+            room_fields = ["id", "name", "floor", "center", "dimensions", "bounds"]
+            missing_fields = [field for field in room_fields if field not in first_room]
+            analysis["metadata"]["room_missing_fields"] = missing_fields
+
+            # Check for null values in room coordinates
+            if "bounds" in first_room:
+                null_in_bounds = False
+                for pos_type in ["min", "max"]:
+                    if pos_type in first_room["bounds"]:
+                        for coord in ["x", "y", "z"]:
+                            if coord in first_room["bounds"][pos_type] and first_room["bounds"][pos_type][coord] is None:
+                                null_in_bounds = True
+                analysis["metadata"]["null_in_bounds"] = null_in_bounds
+
+        # Add sample of first wall
+        if blueprint.get("walls") and len(blueprint["walls"]) > 0:
+            analysis["sample_data"]["first_wall"] = blueprint["walls"][0]
+
+        # Return raw blueprint and analysis
+        return jsonify({
+            "blueprint": blueprint,
+            "analysis": analysis
+        })
+    except Exception as e:
+        logger.exception(f"Debug blueprint verbose error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/blueprint/generate-default', methods=['POST'])

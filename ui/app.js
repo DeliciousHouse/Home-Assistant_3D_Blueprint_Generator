@@ -147,41 +147,65 @@ function fetchBlueprint() {
             return response.json();
         })
         .then(data => {
-            console.log("Blueprint data received:", data);
-            // --- FIX: Access the nested blueprint object ---
-            if (data && data.success && data.blueprint) {
-                console.log("Successfully fetched blueprint data:", data.blueprint);
-                console.log("Blueprint rooms:", data.blueprint.rooms?.length || 0);
-                console.log("Blueprint floors:", data.blueprint.floors);
-                blueprint = data.blueprint; // Assign ONLY the blueprint object
-                renderBlueprint(blueprint); // Pass the correct object
-            } else if (data && !data.success) {
-                console.error("API call successful but returned error:", data.error);
-                displayErrorMessage(data.error || "API returned an error.");
+            console.log("Blueprint API response:", data);
+
+            if (!data) {
+                console.log("No data returned from API");
+                blueprint = null;
+                renderEmptyCanvas();
+                hideLoading();
+                return;
+            }
+
+            // Extract the actual blueprint object from the response
+            if (data.success && data.blueprint) {
+                console.log("Successfully fetched blueprint data");
+                blueprint = data.blueprint; // Store the blueprint object
+
+                // Verify the blueprint has rooms
+                if (blueprint.rooms && blueprint.rooms.length > 0) {
+                    console.log(`Blueprint has ${blueprint.rooms.length} rooms`);
+                    renderBlueprint(); // Render the blueprint
+                } else {
+                    console.warn("Blueprint has no rooms array or it's empty");
+                    displayErrorMessage("Blueprint contains no rooms to display");
+                    renderEmptyCanvas();
+                }
+            } else if (data.success === false) {
+                console.error("API returned error:", data.error);
+                displayErrorMessage(data.error || "Error loading blueprint");
                 blueprint = null;
                 renderEmptyCanvas();
             } else {
-                // Handle cases where data is null (e.g., from 404) or malformed
-                console.log("No valid blueprint data received or data format incorrect.");
+                console.warn("Unexpected API response format");
+                displayErrorMessage("Invalid blueprint data format received");
                 blueprint = null;
                 renderEmptyCanvas();
             }
-            // --- END FIX ---
+
             hideLoading();
         })
         .catch(error => {
             console.error('Error fetching blueprint:', error);
-            displayErrorMessage('Failed to load blueprint. Check console for details.');
-            blueprint = null; // Reset blueprint on error
-            renderEmptyCanvas(); // Render empty state on error
+            displayErrorMessage('Failed to load blueprint. See console for details.');
+            blueprint = null;
+            renderEmptyCanvas();
             hideLoading();
         });
 }
 
-function renderBlueprint(blueprintData) { // Renamed parameter for clarity
+function renderBlueprint() {
     // This function should update the visual representation.
-    console.log("Calling updateScene with blueprint data:", blueprintData); // Log data being passed
-    updateScene(blueprintData); // Pass the correct blueprint object
+    console.log("Rendering blueprint with data:", blueprint); // Log data being used
+
+    // Add error handling for missing blueprint
+    if (!blueprint) {
+        console.error("No blueprint data available to render");
+        renderEmptyCanvas();
+        return;
+    }
+
+    updateScene(blueprint); // Pass the global blueprint object
 }
 
 function updateScene(blueprintData) { // Renamed parameter for clarity
