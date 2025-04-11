@@ -111,11 +111,27 @@ class BlueprintGenerator:
             relative_positions = self.ai_processor.run_relative_positioning(distance_data, dimensions)
             logger.info(f"Generated relative positions for {len(relative_positions)} devices")
 
-            # Step 4: Group devices by area/room
+            # Step 4: Group TRACKED devices by area/room
             device_coords_by_area = {}
+            logger.debug(f"Grouping {len(relative_positions)} relative positions by area...")
+            logger.debug(f"Area predictions available for devices: {list(area_predictions.keys())}")
+
+            tracked_device_count = 0
+            scanner_or_ref_count = 0
+
             for device_id, coords in relative_positions.items():
+                # --- FILTER: Only include actual tracked devices, not scanners/reference points ---
+                if device_id.startswith('scanner_') or device_id.startswith('reference_point_'):
+                    scanner_or_ref_count += 1
+                    continue # Skip scanners and reference points for room generation
+                # --- END FILTER ---
+
+                tracked_device_count += 1
                 area_id = area_predictions.get(device_id)
+
+                # Log which area (if any) is predicted for this tracked device
                 if area_id:
+                    logger.debug(f"  Device '{device_id}' predicted area: '{area_id}'")
                     if area_id not in device_coords_by_area:
                         device_coords_by_area[area_id] = []
                     device_coords_by_area[area_id].append({
@@ -124,6 +140,14 @@ class BlueprintGenerator:
                         'y': coords.get('y', 0),
                         'z': coords.get('z', 0)
                     })
+                else:
+                    logger.debug(f"  Device '{device_id}' has no area prediction.")
+
+            logger.info(f"Filtered positions: {tracked_device_count} tracked devices, {scanner_or_ref_count} scanners/refs skipped.")
+            logger.info(f"Grouped tracked devices into {len(device_coords_by_area)} areas with coordinates.")
+            # Log the areas and counts for debugging
+            for area, devices in device_coords_by_area.items():
+                 logger.debug(f"  Area '{area}': {len(devices)} devices")
 
             # Step 5: Generate rooms from points
             rooms = self.ai_processor.generate_rooms_from_points(device_coords_by_area)
