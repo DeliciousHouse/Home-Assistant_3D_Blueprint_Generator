@@ -7,6 +7,8 @@ import threading
 import time
 from pathlib import Path
 from flask import Flask
+import random
+from server.db import save_distance_log
 
 from server.config_loader import load_config
 
@@ -30,6 +32,10 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 # Load config first
 config = load_config()
+
+# Set log level based on config
+log_level = config.get('log_level', 'info').upper()
+logger.setLevel(getattr(logging, log_level, logging.INFO))
 
 logger.info("Configuration loaded and processed successfully")
 
@@ -74,6 +80,8 @@ def start_processing_scheduler(config):
     """Start a background thread that periodically processes Bluetooth data."""
     from server.bluetooth_processor import BluetoothProcessor
     from server.blueprint_generator import BlueprintGenerator
+    from server.db import save_distance_log # Import directly for test
+    import random
 
     # Components can load config themselves using load_config(), or you can pass parts
     # Passing relevant parts can be cleaner:
@@ -83,33 +91,27 @@ def start_processing_scheduler(config):
     blueprint_generator = BlueprintGenerator() # Assumes it calls load_config() internally
 
     def process_loop():
+        counter = 0
         while True:
             try:
-                logger.info("Running scheduled sensor data logging...")
-                # Call the specific logging method
-                log_result = bluetooth_processor.log_sensor_data()
-
-                # Check if logging had critical errors (optional, but good practice)
-                if log_result.get("error"):
-                    logger.error(f"Data logging failed: {log_result['error']}")
-                    # Decide if you want to skip blueprint generation on logging errors
-
-                # Always attempt generation after logging (generator fetches its own data)
-                logger.info("Attempting to generate blueprint...")
-                blueprint = blueprint_generator.generate_blueprint() # Generator fetches from DB
-
-                if blueprint and blueprint.get('rooms'):
-                    logger.info(f"Blueprint generated with {len(blueprint.get('rooms', []))} rooms.")
+                logger.info(f"Running simplified DB write test in background thread (Attempt {counter})...")
+                # Attempt a simple write directly using the DB function
+                success = save_distance_log(
+                    tracked_device_id=f'bg_test_{counter}',
+                    scanner_id='test_scanner',
+                    distance=random.uniform(1.0, 10.0)
+                )
+                if success:
+                    logger.info("Simplified background DB write SUCCESSFUL.")
                 else:
-                    logger.warning("Blueprint generation resulted in an empty or invalid blueprint.")
+                    logger.error("Simplified background DB write FAILED.") # Check db.py logs for details
+                counter += 1
 
             except Exception as e:
-                logger.error(f"Error in processing loop: {str(e)}", exc_info=True) # Add exc_info
+                logger.error(f"Error in simplified processing loop: {str(e)}", exc_info=True)
 
-            # Use update interval from config if available, else default
-            update_interval_sec = config.get('processing_params', {}).get('update_interval', 300)
-            logger.debug(f"Sleeping for {update_interval_sec} seconds.")
-            time.sleep(update_interval_sec)
+            # Short sleep for testing
+            time.sleep(10) # Sleep only 10s for faster testing
 
     # Start the processing thread
     processing_thread = threading.Thread(target=process_loop, daemon=True)
@@ -141,7 +143,7 @@ def main():
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
-                start_api(host=host, port=port, debug=debug)
+                start_api(host=host, port=port, debug=debug, use_reloader=False)
                 break
             except OSError as e:
                 if "Address already in use" in str(e) and attempt < max_attempts - 1:

@@ -2,6 +2,7 @@ import json
 import logging
 import sqlite3
 import os
+import threading
 import time  # Added for retry delays
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
@@ -21,7 +22,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 app_config = load_config()
 
-SQLITE_DB_PATH = '/config/home_generative_agent_db'
+SQLITE_DB_PATH = os.environ.get('DB_PATH', '/config/home_generative_agent_db')
 
 # --- SQLite Connection ---
 
