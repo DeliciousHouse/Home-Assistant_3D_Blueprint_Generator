@@ -23,6 +23,7 @@ from .bluetooth_processor import BluetoothProcessor # Still needed to instantiat
 from .ai_processor import AIProcessor
 from .ha_client import HomeAssistantClient
 from .config_loader import load_config
+from .unit_converter import convert_blueprint_to_imperial  # Import the converter
 logger = logging.getLogger(__name__)
 
 class BlueprintGenerator:
@@ -74,7 +75,8 @@ class BlueprintGenerator:
             'area_window_minutes': 10,
             'mds_dimensions': 2,
             'min_points_per_room': 3,
-            'use_adjacency': True
+            'use_adjacency': True,
+            'use_imperial': True  # Default to imperial units for US users
         })
 
         self.status = {"state": "idle", "progress": 0}
@@ -184,10 +186,11 @@ class BlueprintGenerator:
                     'room_count': len(rooms),
                     'device_count': len(relative_positions),
                     'generation_time_seconds': (datetime.now() - job_start_time).total_seconds()
-                }
+                },
+                'units': 'metric'  # Default is metric for internal storage
             }
 
-            # Save the blueprint
+            # Save the blueprint in metric (internal storage format)
             if self._save_blueprint(blueprint):
                 self.latest_generated_blueprint = blueprint
                 self.status = {"state": "completed", "progress": 1.0}
@@ -215,7 +218,8 @@ class BlueprintGenerator:
             'metadata': {
                 'room_count': len(rooms),
                 'is_minimal': True
-            }
+            },
+            'units': 'metric'  # Default is metric for internal storage
         }
 
     def _generate_walls(self, rooms: List[Dict], positions: Optional[Dict[str, Dict[str, float]]] = None) -> List[Dict]:
@@ -430,23 +434,32 @@ class BlueprintGenerator:
             return False
 
     def get_latest_blueprint(self):
-        """Get the latest blueprint from the database."""
+        """Get the latest blueprint from the database and convert to imperial if configured."""
         try:
             # First check in-memory cache
             if hasattr(self, 'latest_generated_blueprint') and self.latest_generated_blueprint:
-                return self.latest_generated_blueprint
+                blueprint = self.latest_generated_blueprint
+            else:
+                # Get from SQLite using helper function
+                blueprint = get_latest_blueprint_from_sqlite()
+                if blueprint:
+                    # Store in memory for later access
+                    self.latest_generated_blueprint = blueprint
+                    logger.info(f"Retrieved latest blueprint with {len(blueprint.get('rooms', []))} rooms")
+                else:
+                    logger.warning("No blueprint found in database")
+                    return None
 
-            # Get from SQLite using helper function
-            blueprint = get_latest_blueprint_from_sqlite()
+            # Check if we need to convert to imperial
+            use_imperial = self.generation_config.get('use_imperial', True)
 
-            if blueprint:
-                # Store in memory for later access
-                self.latest_generated_blueprint = blueprint
-                logger.info(f"Retrieved latest blueprint with {len(blueprint.get('rooms', []))} rooms")
-                return blueprint
+            # Only convert if not already in imperial units
+            if use_imperial and blueprint and blueprint.get('units') != 'imperial':
+                logger.info("Converting blueprint from metric to imperial units")
+                imperial_blueprint = convert_blueprint_to_imperial(blueprint)
+                return imperial_blueprint
 
-            logger.warning("No blueprint found in database")
-            return None
+            return blueprint
 
         except Exception as e:
             logger.error(f"Error retrieving latest blueprint: {e}")

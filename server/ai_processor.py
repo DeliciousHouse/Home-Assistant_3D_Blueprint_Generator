@@ -435,7 +435,7 @@ class AIProcessor:
                 "error": str(e)
             }
 
-    def estimate_distance(self, rssi, tx_power=None, device_type=None, environment_type=None):
+    def estimate_distance(self, rssi, tx_power=None, device_type=None, environment_type=None, use_imperial=True):
         """
         Estimate distance from RSSI using trained model or physics model with enhanced fallbacks.
 
@@ -444,9 +444,10 @@ class AIProcessor:
             tx_power: Transmission power in dBm (optional)
             device_type: Type of device ('smartphone', 'beacon', etc.) (optional)
             environment_type: Environment type ('indoor', 'outdoor') (optional)
+            use_imperial: Whether to return distance in feet (True) or meters (False)
 
         Returns:
-            Estimated distance in meters
+            Estimated distance in feet (if use_imperial=True) or meters (otherwise)
         """
         try:
             # First try ML model if available and has required features
@@ -484,14 +485,21 @@ class AIProcessor:
                     else:
                         X = [X]
 
-                    # Predict distance
-                    distance = model_data['model'].predict(X)[0]
+                    # Predict distance in meters
+                    distance_meters = model_data['model'].predict(X)[0]
 
-                    # Ensure reasonable result
-                    distance = max(min(distance, 30.0), 0.1)  # Clamp between 10cm and 30m
+                    # Ensure reasonable result (in meters)
+                    distance_meters = max(min(distance_meters, 30.0), 0.1)  # Clamp between 10cm and 30m
 
-                    logger.debug(f"ML model estimated distance: {distance:.2f}m from RSSI {rssi}")
-                    return distance
+                    # Convert to feet if requested
+                    if use_imperial:
+                        from .unit_converter import meters_to_feet
+                        distance_feet = meters_to_feet(distance_meters)
+                        logger.debug(f"ML model estimated distance: {distance_feet:.2f}ft from RSSI {rssi}")
+                        return distance_feet
+                    else:
+                        logger.debug(f"ML model estimated distance: {distance_meters:.2f}m from RSSI {rssi}")
+                        return distance_meters
 
                 except Exception as e:
                     logger.warning(f"ML distance estimation failed: {e}, falling back to physics model")
@@ -530,36 +538,48 @@ class AIProcessor:
 
             # Quick checks for extreme RSSI values
             if safe_rssi > -35:  # Very close
-                return 0.3  # 30cm
-            if safe_rssi < -95:  # Very far
-                return 25.0  # 25m
+                distance_meters = 0.3  # 30cm
+            elif safe_rssi < -95:  # Very far
+                distance_meters = 25.0  # 25m
+            else:
+                try:
+                    # Calculate with solid overflow protection
+                    exponent = (ref_power - safe_rssi) / (10 * path_loss)
 
-            try:
-                # Calculate with solid overflow protection
-                exponent = (ref_power - safe_rssi) / (10 * path_loss)
+                    # Safe calculation
+                    distance_meters = 10 ** exponent
 
-                # Safe calculation
-                distance = 10 ** exponent
+                    # Ensure reasonable result
+                    distance_meters = min(max(distance_meters, 0.1), 30.0)  # Between 10cm and 30m
+                except Exception as e:
+                    logger.warning(f"Physics-based distance calculation failed: {str(e)}")
 
-                # Ensure reasonable result
-                distance = min(max(distance, 0.1), 30.0)  # Between 10cm and 30m
+                    # Map RSSI to distance ranges as ultimate fallback (in meters)
+                    if safe_rssi > -50: distance_meters = 1.0
+                    elif safe_rssi > -65: distance_meters = 3.0
+                    elif safe_rssi > -75: distance_meters = 5.0
+                    elif safe_rssi > -85: distance_meters = 10.0
+                    else: distance_meters = 15.0
 
-                logger.debug(f"Physics model estimated distance: {distance:.2f}m from RSSI {rssi}")
-                return distance
-
-            except Exception as e:
-                logger.warning(f"Physics-based distance calculation failed: {str(e)}")
-
-                # Map RSSI to distance ranges as ultimate fallback
-                if safe_rssi > -50: return 1.0
-                if safe_rssi > -65: return 3.0
-                if safe_rssi > -75: return 5.0
-                if safe_rssi > -85: return 10.0
-                return 15.0
+            # Convert to feet if requested
+            if use_imperial:
+                from .unit_converter import meters_to_feet
+                distance_feet = meters_to_feet(distance_meters)
+                logger.debug(f"Physics model estimated distance: {distance_feet:.2f}ft from RSSI {rssi}")
+                return distance_feet
+            else:
+                logger.debug(f"Physics model estimated distance: {distance_meters:.2f}m from RSSI {rssi}")
+                return distance_meters
 
         except Exception as e:
             logger.error(f"Error in distance estimation: {e}", exc_info=True)
-            return 5.0  # Default reasonable distance
+            # Default reasonable distance - convert to feet if requested
+            default_meters = 5.0
+            if use_imperial:
+                from .unit_converter import meters_to_feet
+                return meters_to_feet(default_meters)  # ~16.4 feet
+            else:
+                return default_meters  # 5 meters
 
     def calibrate_rssi_reference_values(self):
         """Dynamically calibrate RSSI reference values based on collected data."""

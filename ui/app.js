@@ -114,11 +114,15 @@ function drawGrid() {
 
     ctx.stroke();
 
-    // Add scale indicator
+    // Add scale indicator - using feet for US users
     ctx.fillStyle = '#495057';
     ctx.font = '12px Arial';
     ctx.textAlign = 'left';
-    ctx.fillText(`Scale: 1m = ${camera.scale.toFixed(1)}px`, 10, canvas.height - 10);
+
+    // Check if we're using imperial units
+    const isImperial = blueprint && blueprint.units === 'imperial';
+    const unitLabel = isImperial ? 'ft' : 'm';
+    ctx.fillText(`Scale: 1${unitLabel} = ${camera.scale.toFixed(1)}px`, 10, canvas.height - 10);
 }
 
 // API Functions
@@ -313,6 +317,20 @@ function drawRoom(room, index) {
     ctx.font = '14px Arial';
     ctx.textAlign = 'center';
     ctx.fillText(room.name, (x1 + x2) / 2, (y1 + y2) / 2);
+
+    // Display room dimensions in feet or meters
+    const isImperial = blueprint && blueprint.units === 'imperial';
+    const unitLabel = isImperial ? 'ft' : 'm';
+
+    // Calculate dimensions
+    const width = Math.abs(bounds.max.x - bounds.min.x);
+    const length = Math.abs(bounds.max.y - bounds.min.y);
+
+    // Display dimensions below room name
+    ctx.font = '12px Arial';
+    ctx.fillText(`${width.toFixed(1)} × ${length.toFixed(1)} ${unitLabel}`,
+                (x1 + x2) / 2,
+                (y1 + y2) / 2 + 20);
 }
 
 function drawWall(wall) {
@@ -324,12 +342,32 @@ function drawWall(wall) {
 
     // Draw wall
     ctx.strokeStyle = '#212529';
-    ctx.lineWidth = wall.thickness * camera.scale;
+    ctx.lineWidth = Math.max(2, wall.thickness * camera.scale); // Ensure walls are visible
 
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
     ctx.stroke();
+
+    // Draw wall length if it's significant
+    const dx = wall.end.x - wall.start.x;
+    const dy = wall.end.y - wall.start.y;
+    const length = Math.sqrt(dx*dx + dy*dy);
+
+    if (length > 1.0) {  // Only label walls longer than 1 unit
+        const isImperial = blueprint && blueprint.units === 'imperial';
+        const unitLabel = isImperial ? 'ft' : 'm';
+
+        // Calculate midpoint for label
+        const midX = (x1 + x2) / 2;
+        const midY = (y1 + y2) / 2;
+
+        // Draw length label slightly offset from wall
+        ctx.fillStyle = '#343a40';
+        ctx.font = '10px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${length.toFixed(1)}${unitLabel}`, midX, midY - 5);
+    }
 }
 
 function updateFloorIndicator() {
