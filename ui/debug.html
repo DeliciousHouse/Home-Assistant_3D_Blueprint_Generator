@@ -70,15 +70,15 @@
 </head>
 <body>
     <h1>Blueprint Debug Tool</h1>
-    
+
     <div class="controls">
         <button id="fetchBlueprint">Fetch Blueprint</button>
         <button id="fetchVerbose">Fetch Detailed Analysis</button>
         <button id="generateDefault">Generate Default Blueprint</button>
     </div>
-    
+
     <div id="status" class="status info">Ready. Click a button to start.</div>
-    
+
     <div id="summaryContainer" style="display: none;">
         <h2>Blueprint Summary</h2>
         <table id="summaryTable">
@@ -88,10 +88,10 @@
             </tr>
         </table>
     </div>
-    
+
     <h2>Results</h2>
     <pre id="output">No data yet. Click a button above to fetch data.</pre>
-    
+
     <script>
         // Helper functions
         function showStatus(message, type = 'info') {
@@ -99,10 +99,10 @@
             statusElement.textContent = message;
             statusElement.className = `status ${type}`;
         }
-        
+
         function displayOutput(data) {
             const outputElement = document.getElementById('output');
-            
+
             // Format JSON nicely if it's an object
             if (typeof data === 'object') {
                 outputElement.textContent = JSON.stringify(data, null, 2);
@@ -110,24 +110,24 @@
                 outputElement.textContent = data;
             }
         }
-        
+
         function displaySummary(data) {
             const summaryContainer = document.getElementById('summaryContainer');
             const summaryTable = document.getElementById('summaryTable');
-            
+
             // Clear existing rows except header
             while (summaryTable.rows.length > 1) {
                 summaryTable.deleteRow(1);
             }
-            
+
             if (!data || !data.blueprint) {
                 summaryContainer.style.display = 'none';
                 return;
             }
-            
+
             summaryContainer.style.display = 'block';
             const blueprint = data.blueprint;
-            
+
             // Add basic info rows
             addSummaryRow('Has Rooms', blueprint.rooms ? 'Yes' : 'No');
             addSummaryRow('Room Count', blueprint.rooms ? blueprint.rooms.length : 0);
@@ -136,51 +136,51 @@
             addSummaryRow('Has Floors', blueprint.floors ? 'Yes' : 'No');
             addSummaryRow('Floor Count', blueprint.floors ? blueprint.floors.length : 0);
             addSummaryRow('Measurement Units', blueprint.units || 'Not specified');
-            
+
             // Add first room details if available
             if (blueprint.rooms && blueprint.rooms.length > 0) {
                 const firstRoom = blueprint.rooms[0];
                 addSummaryRow('First Room Name', firstRoom.name || 'Unnamed');
                 addSummaryRow('First Room ID', firstRoom.id || 'No ID');
-                
+
                 // Check for center coordinates
                 if (firstRoom.center) {
-                    addSummaryRow('First Room Center', 
+                    addSummaryRow('First Room Center',
                         `x: ${firstRoom.center.x}, y: ${firstRoom.center.y}, z: ${firstRoom.center.z || 0}`);
                 }
-                
+
                 // Check for dimensions
                 if (firstRoom.dimensions) {
-                    addSummaryRow('First Room Dimensions', 
+                    addSummaryRow('First Room Dimensions',
                         `width: ${firstRoom.dimensions.width}, length: ${firstRoom.dimensions.length}, height: ${firstRoom.dimensions.height || 'N/A'}`);
                 }
-                
+
                 // Check for bounds
                 if (firstRoom.bounds) {
                     if (firstRoom.bounds.min && firstRoom.bounds.max) {
-                        addSummaryRow('First Room Bounds', 
+                        addSummaryRow('First Room Bounds',
                             `min(${firstRoom.bounds.min.x}, ${firstRoom.bounds.min.y}, ${firstRoom.bounds.min.z || 0}) - ` +
                             `max(${firstRoom.bounds.max.x}, ${firstRoom.bounds.max.y}, ${firstRoom.bounds.max.z || 0})`);
                     }
                 }
             }
         }
-        
+
         function addSummaryRow(property, value) {
             const summaryTable = document.getElementById('summaryTable');
             const row = summaryTable.insertRow();
-            
+
             const propertyCell = row.insertCell(0);
             propertyCell.textContent = property;
-            
+
             const valueCell = row.insertCell(1);
             valueCell.textContent = value;
         }
-        
+
         // Button event handlers
         document.getElementById('fetchBlueprint').addEventListener('click', function() {
             showStatus('Fetching blueprint data...', 'info');
-            
+
             fetch('/api/blueprint')
                 .then(response => {
                     if (!response.ok) {
@@ -201,10 +201,10 @@
                     displayOutput(`Failed to fetch blueprint: ${error.message}`);
                 });
         });
-        
+
         document.getElementById('fetchVerbose').addEventListener('click', function() {
             showStatus('Fetching detailed blueprint analysis...', 'info');
-            
+
             fetch('/api/debug/blueprint-verbose')
                 .then(response => {
                     if (!response.ok) {
@@ -218,7 +218,7 @@
                 .then(data => {
                     showStatus('Blueprint analysis fetched successfully!', 'success');
                     displayOutput(data);
-                    
+
                     // If the data includes the blueprint, display summary
                     if (data.blueprint) {
                         displaySummary({blueprint: data.blueprint});
@@ -229,10 +229,10 @@
                     displayOutput(`Failed to fetch blueprint analysis: ${error.message}`);
                 });
         });
-        
+
         document.getElementById('generateDefault').addEventListener('click', function() {
             showStatus('Generating default blueprint...', 'info');
-            
+
             fetch('/api/blueprint/generate-default', {
                 method: 'POST',
                 headers: {
@@ -251,7 +251,7 @@
                 .then(data => {
                     showStatus('Default blueprint generated successfully!', 'success');
                     displayOutput(data);
-                    
+
                     // Auto-fetch the new blueprint after generating
                     setTimeout(() => {
                         document.getElementById('fetchBlueprint').click();
