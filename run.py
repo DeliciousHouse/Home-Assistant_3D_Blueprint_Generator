@@ -80,38 +80,56 @@ def start_processing_scheduler(config):
     """Start a background thread that periodically processes Bluetooth data."""
     from server.bluetooth_processor import BluetoothProcessor
     from server.blueprint_generator import BlueprintGenerator
-    from server.db import save_distance_log # Import directly for test
     import random
 
-    # Components can load config themselves using load_config(), or you can pass parts
-    # Passing relevant parts can be cleaner:
-    # bluetooth_processor = BluetoothProcessor(fixed_sensors=config.get('fixed_sensors', {}))
-    # Or let them load the full config internally:
-    bluetooth_processor = BluetoothProcessor() # Assumes it calls load_config() internally
-    blueprint_generator = BlueprintGenerator() # Assumes it calls load_config() internally
+    # Initialize components
+    bluetooth_processor = BluetoothProcessor()
+    blueprint_generator = BlueprintGenerator()
 
     def process_loop():
         counter = 0
+        # First log data for a while
+        logger.info("Starting initial data collection phase...")
+        while counter < 5:  # Change this to adjust how many test data points to collect
+            try:
+                # Log Bluetooth data
+                result = bluetooth_processor.log_sensor_data()
+                logger.info(f"Data collection cycle {counter}: Logged {result.get('distances_logged', 0)} distances and {result.get('areas_logged', 0)} area observations")
+                counter += 1
+            except Exception as e:
+                logger.error(f"Error collecting data: {str(e)}", exc_info=True)
+
+            # Short sleep for data collection
+            time.sleep(5)  # 5 seconds between data collection cycles
+
+        # After collecting data, generate the blueprint
+        logger.info("Initial data collection complete, generating blueprint...")
+        try:
+            success = blueprint_generator.generate_blueprint()
+            if success:
+                logger.info("Blueprint generation SUCCESSFUL!")
+            else:
+                logger.error("Blueprint generation FAILED.")
+        except Exception as e:
+            logger.error(f"Error generating blueprint: {str(e)}", exc_info=True)
+
+        # Continue with normal processing cycle after initial generation
         while True:
             try:
-                logger.info(f"Running simplified DB write test in background thread (Attempt {counter})...")
-                # Attempt a simple write directly using the DB function
-                success = save_distance_log(
-                    tracked_device_id=f'bg_test_{counter}',
-                    scanner_id='test_scanner',
-                    distance=random.uniform(1.0, 10.0)
-                )
-                if success:
-                    logger.info("Simplified background DB write SUCCESSFUL.")
-                else:
-                    logger.error("Simplified background DB write FAILED.") # Check db.py logs for details
+                # Log new data
+                bluetooth_processor.log_sensor_data()
+
+                # Generate updated blueprint every hour
+                if counter % 360 == 0:  # Assuming 10s between cycles, this is ~1 hour
+                    logger.info("Generating updated blueprint...")
+                    blueprint_generator.generate_blueprint()
+
                 counter += 1
-
             except Exception as e:
-                logger.error(f"Error in simplified processing loop: {str(e)}", exc_info=True)
+                logger.error(f"Error in processing loop: {str(e)}", exc_info=True)
 
-            # Short sleep for testing
-            time.sleep(10) # Sleep only 10s for faster testing
+            # Normal processing interval
+            time.sleep(10)  # 10 seconds between cycles
 
     # Start the processing thread
     processing_thread = threading.Thread(target=process_loop, daemon=True)
