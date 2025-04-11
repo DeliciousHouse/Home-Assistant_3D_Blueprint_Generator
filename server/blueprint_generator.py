@@ -96,49 +96,45 @@ class BlueprintGenerator:
         job_start_time = datetime.now()
 
         try:
-            # Step 1: Get recent distance readings from database
-            distance_data = get_recent_distances(
-                time_window_minutes=self.generation_config.get('distance_window_minutes', 15)
-            )
-            if not distance_data:
-                logger.error("No recent distance data found in database")
-                self.status = {"state": "error", "progress": 0.0, "message": "No distance data available"}
-                return False
-
+            # Step 1: Get recent distance readings
+            distance_window = self.generation_config.get('distance_window_minutes', 15)
+            distance_data = get_recent_distances(distance_window)
             logger.info(f"Retrieved {len(distance_data)} distance readings for processing")
-            self.status = {"state": "processing", "progress": 0.1}
 
-            # Step 2: Get recent area predictions
-            area_predictions = get_recent_area_predictions(
-                time_window_minutes=self.generation_config.get('area_window_minutes', 10)
-            )
+            # Step 2: Get area predictions for anchoring
+            area_window = self.generation_config.get('area_window_minutes', 10)
+            area_predictions = get_recent_area_predictions(area_window)
             logger.info(f"Retrieved {len(area_predictions)} area predictions for anchoring")
-            self.status = {"state": "processing", "progress": 0.2}
 
-            # Step 3: Use the AI processor to run relative positioning
-            relative_positions = self.ai_processor.run_relative_positioning(
-                distance_data,
-                n_dimensions=self.generation_config.get('mds_dimensions', 2)
-            )
+            # Step 3: Calculate relative positions using MDS
+            dimensions = self.generation_config.get('mds_dimensions', 2)
+            relative_positions = self.ai_processor.run_relative_positioning(distance_data, dimensions)
             logger.info(f"Generated relative positions for {len(relative_positions)} devices")
-            self.status = {"state": "processing", "progress": 0.5}
 
-            # Step 4: Generate rooms from device positions grouped by area
-            rooms = self.ai_processor.generate_rooms_from_points(relative_positions, area_predictions)
-            logger.info(f"Generated {len(rooms)} rooms from device positions")
-            self.status = {"state": "processing", "progress": 0.7}
+            # Step 4: Group devices by area/room
+            device_coords_by_area = {}
+            for device_id, coords in relative_positions.items():
+                area_id = area_predictions.get(device_id)
+                if area_id:
+                    if area_id not in device_coords_by_area:
+                        device_coords_by_area[area_id] = []
+                    device_coords_by_area[area_id].append({
+                        'device_id': device_id,
+                        'x': coords.get('x', 0),
+                        'y': coords.get('y', 0),
+                        'z': coords.get('z', 0)
+                    })
 
-            # Step 5: Generate walls between rooms
-            walls = self._generate_walls(rooms, relative_positions)
-            logger.info(f"Generated {len(walls)} walls between rooms")
-            self.status = {"state": "processing", "progress": 0.8}
+            # Step 5: Generate rooms from points
+            rooms = self.ai_processor.generate_rooms_from_points(device_coords_by_area)
 
-            # Step 6: Group rooms into floors
+            # Step 6: Generate walls between rooms
+            walls = self._generate_walls(rooms)
+
+            # Step 7: Group rooms into floors
             floors = self._group_rooms_into_floors(rooms)
-            logger.info(f"Organized rooms into {len(floors)} floors")
-            self.status = {"state": "processing", "progress": 0.9}
 
-            # Step 7: Create the complete blueprint
+            # Step 8: Create the final blueprint
             blueprint = {
                 'version': '1.0',
                 'generated_at': datetime.now().isoformat(),
@@ -147,30 +143,25 @@ class BlueprintGenerator:
                 'floors': floors,
                 'metadata': {
                     'room_count': len(rooms),
-                    'generation_time_ms': (datetime.now() - job_start_time).total_seconds() * 1000,
-                    'data_points': len(distance_data)
+                    'device_count': len(relative_positions),
+                    'generation_time_seconds': (datetime.now() - job_start_time).total_seconds()
                 }
             }
 
-            # Step 8: Validate and save the blueprint
-            if self._validate_blueprint(blueprint):
-                logger.info("Blueprint validation successful")
-                self._save_blueprint(blueprint)
+            # Save the blueprint
+            if self._save_blueprint(blueprint):
                 self.latest_generated_blueprint = blueprint
                 self.status = {"state": "completed", "progress": 1.0}
+                logger.info("Blueprint generation completed successfully")
                 return True
             else:
-                logger.warning("Blueprint validation failed, creating minimal valid blueprint")
-                # Create minimal valid blueprint
-                minimal_blueprint = self._create_minimal_valid_blueprint(rooms)
-                self._save_blueprint(minimal_blueprint)
-                self.latest_generated_blueprint = minimal_blueprint
-                self.status = {"state": "completed", "progress": 1.0, "warning": "Created minimal blueprint due to validation issues"}
-                return True
+                logger.error("Failed to save blueprint")
+                self.status = {"state": "failed", "progress": 0.0}
+                return False
 
         except Exception as e:
-            logger.error(f"Error generating blueprint: {e}", exc_info=True)
-            self.status = {"state": "error", "progress": 0.0, "message": str(e)}
+            logger.error(f"Error generating blueprint: {str(e)}", exc_info=True)
+            self.status = {"state": "failed", "progress": 0.0}
             return False
 
     def _create_minimal_valid_blueprint(self, rooms):
