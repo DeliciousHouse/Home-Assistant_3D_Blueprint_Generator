@@ -124,41 +124,76 @@ function drawGrid() {
 // API Functions
 function fetchBlueprint() {
     showLoading('Loading blueprint...');
+    console.log("Fetching blueprint from /api/blueprint..."); // Add log
 
     fetch('/api/blueprint')
         .then(response => {
             if (response.status === 404) {
-                // No blueprint available yet
+                console.log("API returned 404 - No blueprint found."); // Add log
                 hideLoading();
+                blueprint = null; // Ensure blueprint is null if not found
+                renderEmptyCanvas(); // Render the empty state
                 return null;
             }
-            if (!response.ok) throw new Error('Network response was not ok');
+            if (!response.ok) {
+                console.error(`Network response error: ${response.status} ${response.statusText}`); // Add log
+                throw new Error(`Network response was not ok: ${response.statusText}`);
+            }
             return response.json();
         })
         .then(data => {
-            if (data) {
-                blueprint = data;
-                renderBlueprint(blueprint);
+            // --- FIX: Access the nested blueprint object ---
+            if (data && data.success && data.blueprint) {
+                console.log("Successfully fetched blueprint data:", data.blueprint); // Log fetched data
+                blueprint = data.blueprint; // Assign ONLY the blueprint object
+                renderBlueprint(blueprint); // Pass the correct object
+            } else if (data && !data.success) {
+                console.error("API call successful but returned error:", data.error);
+                displayErrorMessage(data.error || "API returned an error.");
+                blueprint = null;
+                renderEmptyCanvas();
+            } else {
+                // Handle cases where data is null (e.g., from 404) or malformed
+                console.log("No valid blueprint data received or data format incorrect.");
+                blueprint = null;
+                renderEmptyCanvas();
             }
+            // --- END FIX ---
             hideLoading();
         })
         .catch(error => {
             console.error('Error fetching blueprint:', error);
             displayErrorMessage('Failed to load blueprint. Check console for details.');
+            blueprint = null; // Reset blueprint on error
+            renderEmptyCanvas(); // Render empty state on error
             hideLoading();
         });
 }
 
-function renderBlueprint(blueprint) {
+function renderBlueprint(blueprintData) { // Renamed parameter for clarity
     // This function should update the visual representation.
-    // For now, let's just call updateScene which uses the global blueprint variable.
-    console.log("Rendering blueprint data received from fetch...");
-    // Assuming updateScene uses the global 'blueprint' variable which was set in fetchBlueprint
-    updateScene(blueprint);
+    console.log("Calling updateScene with blueprint data:", blueprintData); // Log data being passed
+    updateScene(blueprintData); // Pass the correct blueprint object
 }
 
-function updateScene(blueprint) {
-    if (!ctx || !blueprint) return;
+function updateScene(blueprintData) { // Renamed parameter for clarity
+    // Add checks at the beginning
+    if (!ctx) {
+        console.error("Canvas context (ctx) is not available.");
+        return;
+    }
+    if (!blueprintData || typeof blueprintData !== 'object') {
+        console.error("updateScene called with invalid blueprint data:", blueprintData);
+        renderEmptyCanvas(); // Render empty state if data is bad
+        return;
+    }
+    if (!blueprintData.floors || !blueprintData.rooms) {
+        console.error("Blueprint data is missing 'floors' or 'rooms' array:", blueprintData);
+        renderEmptyCanvas();
+        return;
+    }
+
+    console.log(`Updating scene for floor ${currentFloor}`); // Log floor being rendered
 
     // Clear canvas
     ctx.fillStyle = '#f8f9fa';
@@ -168,33 +203,52 @@ function updateScene(blueprint) {
     drawGrid();
 
     // Get rooms for current floor
-    const floorData = blueprint.floors.find(f => f.level === currentFloor);
+    const floorData = blueprintData.floors.find(f => f.level === currentFloor);
     if (!floorData) {
+        console.warn(`No floor data found for level ${currentFloor}`); // Changed to warning
         ctx.fillStyle = '#6c757d';
         ctx.font = '16px Arial';
         ctx.textAlign = 'center';
         ctx.fillText(`No data for floor ${currentFloor}`, canvas.width / 2, canvas.height / 2);
         return;
     }
+    if (!floorData.rooms || !Array.isArray(floorData.rooms)) {
+        console.error(`Floor data for level ${currentFloor} is missing 'rooms' array:`, floorData);
+        renderEmptyCanvas();
+        return;
+    }
 
-    const floorRooms = blueprint.rooms.filter(r => floorData.rooms.includes(r.id));
+    const floorRooms = blueprintData.rooms.filter(r => floorData.rooms.includes(r.id));
+    console.log(`Found ${floorRooms.length} rooms for floor ${currentFloor}`); // Log room count
 
-    // Center the blueprint
-    centerBlueprint(floorRooms);
+    // Center the blueprint (only if rooms exist)
+    if (floorRooms.length > 0) {
+        centerBlueprint(floorRooms);
+    } else {
+        console.log("No rooms to draw for this floor.");
+        // Optionally reset camera if no rooms?
+        // camera = { x: canvas.width / 2, y: canvas.height / 2, scale: 1 };
+    }
 
     // Draw rooms
     floorRooms.forEach((room, index) => {
+        console.log(`Drawing room: ${room.name} (ID: ${room.id})`); // Log room being drawn
         drawRoom(room, index);
     });
 
     // Draw walls
-    if (blueprint.walls) {
-        blueprint.walls.forEach(wall => {
-            // Only draw walls for current floor
+    if (blueprintData.walls && Array.isArray(blueprintData.walls)) {
+        console.log(`Drawing ${blueprintData.walls.length} walls...`); // Log wall count
+        blueprintData.walls.forEach(wall => {
+            // Only draw walls for current floor (assuming walls have a floor property or are global)
+            // If walls don't have a floor property, this logic needs adjustment
             if (wall.floor === undefined || wall.floor === currentFloor) {
+                console.log("Drawing wall:", wall); // Log wall being drawn
                 drawWall(wall);
             }
         });
+    } else {
+        console.log("No walls array found in blueprint data or it's not an array.");
     }
 
     // Update floor indicator

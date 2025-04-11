@@ -118,20 +118,25 @@ class BlueprintGenerator:
 
             tracked_device_count = 0
             scanner_or_ref_count = 0
+            devices_without_area = 0
+            devices_added_to_area = 0
 
             for device_id, coords in relative_positions.items():
+                logger.debug(f"Processing entity: '{device_id}'") # Log entity being processed
                 # --- FILTER: Only include actual tracked devices, not scanners/reference points ---
                 if device_id.startswith('scanner_') or device_id.startswith('reference_point_'):
+                    logger.debug(f"  Skipping '{device_id}' (scanner/reference point).")
                     scanner_or_ref_count += 1
                     continue # Skip scanners and reference points for room generation
                 # --- END FILTER ---
 
+                # If it wasn't skipped, it's considered a tracked device for this step
                 tracked_device_count += 1
                 area_id = area_predictions.get(device_id)
 
                 # Log which area (if any) is predicted for this tracked device
                 if area_id:
-                    logger.debug(f"  Device '{device_id}' predicted area: '{area_id}'")
+                    logger.debug(f"  Device '{device_id}' kept. Predicted area: '{area_id}'")
                     if area_id not in device_coords_by_area:
                         device_coords_by_area[area_id] = []
                     device_coords_by_area[area_id].append({
@@ -140,14 +145,24 @@ class BlueprintGenerator:
                         'y': coords.get('y', 0),
                         'z': coords.get('z', 0)
                     })
+                    devices_added_to_area += 1
                 else:
-                    logger.debug(f"  Device '{device_id}' has no area prediction.")
+                    logger.debug(f"  Device '{device_id}' kept, but has no area prediction.")
+                    devices_without_area += 1
 
-            logger.info(f"Filtered positions: {tracked_device_count} tracked devices, {scanner_or_ref_count} scanners/refs skipped.")
-            logger.info(f"Grouped tracked devices into {len(device_coords_by_area)} areas with coordinates.")
-            # Log the areas and counts for debugging
+            # Corrected summary logging
+            logger.info(f"Processed {len(relative_positions)} total entities from MDS.")
+            logger.info(f"  Skipped {scanner_or_ref_count} scanners/reference points.")
+            logger.info(f"  Considered {tracked_device_count} as potential tracked devices.")
+            logger.info(f"  {devices_without_area} tracked devices had no area prediction.")
+            logger.info(f"  {devices_added_to_area} tracked devices were added to {len(device_coords_by_area)} areas.")
+
+            # Log the final areas and counts for debugging
+            logger.debug("--- Final device counts per area for room generation --- ")
             for area, devices in device_coords_by_area.items():
                  logger.debug(f"  Area '{area}': {len(devices)} devices")
+            if not device_coords_by_area:
+                 logger.warning("No devices were successfully grouped into areas with coordinates.")
 
             # Step 5: Generate rooms from points
             rooms = self.ai_processor.generate_rooms_from_points(device_coords_by_area)
