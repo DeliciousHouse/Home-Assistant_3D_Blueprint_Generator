@@ -138,7 +138,7 @@ if [[ $DEPLOY_CHOICE == "y" || $DEPLOY_CHOICE == "Y" ]]; then
         # Check if ha CLI is available (Supervised installation)
         if command -v ha &> /dev/null; then
             echo "Restarting add-on using 'ha' command..."
-            ha addons restart blueprint_generator
+            ha addons restart Home-Assistant_3D_Blueprint_Generator
         else
             echo "Home Assistant CLI not found. To apply changes, restart the add-on manually from the Home Assistant interface."
         fi
