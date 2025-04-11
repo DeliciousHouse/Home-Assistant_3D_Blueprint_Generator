@@ -1,6 +1,6 @@
 # config.yaml
 name: 3D Blueprint Generator
-version: "2.46"
+version: "2.47"
 slug: blueprint_generator
 description: "Generate 3D home blueprints from Bluetooth sensor data"
 arch:
@@ -30,11 +30,11 @@ schema:
 # Container configuration
 map:
   - data:rw
-# Expose the API port
+# Expose the correct API port
 ports:
-  '8000/tcp': 8000
+  '8001/tcp': 8001
 ports_description:
-  '8000/tcp': 'Web interface'
+  '8001/tcp': 'API and Web Interface'
 
 # Give the add-on access to Home Assistant API
 auth_api: true
@@ -42,7 +42,7 @@ homeassistant_api: true
 
 # UI Configuration
 ingress: true
-ingress_port: 8000
+ingress_port: 8001
 panel_icon: mdi:floor-plan
 panel_title: "3D Blueprint Generator"
-webui: "http://[HOST]:[PORT:8000]/"
+webui: "http://[HOST]:[PORT:8001]/"

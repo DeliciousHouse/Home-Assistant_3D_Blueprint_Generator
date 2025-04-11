@@ -124,19 +124,19 @@ function drawGrid() {
 // API Functions
 function fetchBlueprint() {
     showLoading('Loading blueprint...');
-    console.log("Fetching blueprint from /api/blueprint..."); // Add log
+    console.log("Fetching blueprint from /api/blueprint...");
 
     fetch('/api/blueprint')
         .then(response => {
             if (response.status === 404) {
-                console.log("API returned 404 - No blueprint found."); // Add log
+                console.log("API returned 404 - No blueprint found.");
                 hideLoading();
                 blueprint = null; // Ensure blueprint is null if not found
                 renderEmptyCanvas(); // Render the empty state
                 return null;
             }
             if (!response.ok) {
-                console.error(`Network response error: ${response.status} ${response.statusText}`); // Add log
+                console.error(`Network response error: ${response.status} ${response.statusText}`);
                 throw new Error(`Network response was not ok: ${response.statusText}`);
             }
             return response.json();
@@ -144,7 +144,7 @@ function fetchBlueprint() {
         .then(data => {
             // --- FIX: Access the nested blueprint object ---
             if (data && data.success && data.blueprint) {
-                console.log("Successfully fetched blueprint data:", data.blueprint); // Log fetched data
+                console.log("Successfully fetched blueprint data:", data.blueprint);
                 blueprint = data.blueprint; // Assign ONLY the blueprint object
                 renderBlueprint(blueprint); // Pass the correct object
             } else if (data && !data.success) {
