@@ -96,218 +96,82 @@ class BlueprintGenerator:
         job_start_time = datetime.now()
 
         try:
-            # --- Parameters from Config ---
-            distance_window_min = self.generation_config.get('distance_window_minutes', 15)
-            area_window_min = self.generation_config.get('area_window_minutes', 10)
-            mds_dimensions = self.generation_config.get('mds_dimensions', 2)
-            min_points_per_room = self.generation_config.get('min_points_per_room', 3)
-            use_adjacency_layout = self.generation_config.get('use_adjacency', True)
-
-            # --- Stage 1: Data Fetching from DB ---
-            logger.info("Fetching recent distance and area data from database...")
-            self.status["progress"] = 0.1
-            # Use DB functions directly
-            distance_data = get_recent_distances(distance_window_min)
-            device_area_map = get_recent_area_predictions(area_window_min)
-
-            if not distance_data:
-                logger.warning("No recent distance data found in database. Cannot generate blueprint.")
-                self.status = {"state": "complete", "progress": 1.0, "error": "No distance data"} # Mark as complete but with error
-                return None
-
-            if not device_area_map:
-                logger.warning("No recent area prediction data found in database. Proceeding without area info for anchoring.")
-                # Anchoring will likely fail or be very basic
-
-            # --- Stage 2: Relative Positioning (AI Processor) ---
-            logger.info(f"Running {mds_dimensions}D relative positioning with {len(distance_data)} distance records...")
-            self.status["progress"] = 0.25
-            relative_coords = self.ai_processor.run_relative_positioning(distance_data, n_dimensions=mds_dimensions)
-            if not relative_coords:
-                logger.error("Relative positioning failed.")
-                self.status = {"state": "complete", "progress": 1.0, "error": "Relative positioning failed"}
-                return None
-
-            # --- Stage 3: Anchoring Setup ---
-            logger.info("Setting up for anchoring...")
-            self.status["progress"] = 0.4
-            # Get HA Areas
-            ha_areas_list = self.ha_client.get_areas() # Requires self.ha_client in __init__
-            ha_areas_map = {a['area_id']: a for a in ha_areas_list if 'area_id' in a}
-
-            # Get unique active area IDs from device predictions found in the DB
-            active_area_ids = list(set(area_id for area_id in device_area_map.values() if area_id))
-            logger.info(f"Found {len(active_area_ids)} active areas with devices from DB.")
-
-            # Get adjacency for better layout if configured (AI Processor)
-            adjacency = {}
-            if use_adjacency_layout:
-                # calculate_area_adjacency needs transition data (which needs logging adjustments)
-                # For now, it might return empty if the DB doesn't support transitions yet.
-                adjacency = self.ai_processor.calculate_area_adjacency()
-                logger.info(f"Calculated adjacency for {len(adjacency)} areas.")
-
-            # Generate target layout (AI Processor)
-            target_layout = self.ai_processor.generate_heuristic_layout(active_area_ids, adjacency)
-            logger.info(f"Generated target layout with {len(target_layout)} positioned areas.")
-
-            # --- Stage 4: Calculate Anchoring Transform (AI Processor) ---
-            logger.info("Calculating anchoring transformation...")
-            self.status["progress"] = 0.55
-            transform_params = self.ai_processor.calculate_anchoring_transform(
-                relative_coords, device_area_map, target_layout
+            # Step 1: Get recent distance readings from database
+            distance_data = get_recent_distances(
+                time_window_minutes=self.generation_config.get('distance_window_minutes', 15)
             )
+            if not distance_data:
+                logger.error("No recent distance data found in database")
+                self.status = {"state": "error", "progress": 0.0, "message": "No distance data available"}
+                return False
 
-            # --- Stage 5: Apply Transformation (AI Processor) ---
-            anchored_coords = {}
-            if not transform_params:
-                logger.warning("Anchoring transformation calculation failed. Blueprint will use relative coordinates.")
-                anchored_coords = relative_coords # Use relative if anchor fails
-            else:
-                logger.info("Applying anchoring transformation...")
-                self.status["progress"] = 0.7
-                anchored_coords = self.ai_processor.apply_transform(relative_coords, transform_params)
-                logger.info(f"Applied transform to {len(anchored_coords)} entities.")
+            logger.info(f"Retrieved {len(distance_data)} distance readings for processing")
+            self.status = {"state": "processing", "progress": 0.1}
 
-            # --- Stage 6: Room Generation (AI Processor) ---
-            logger.info("Generating room geometry...")
-            self.status["progress"] = 0.8
-            # Group anchored device points by area
-            anchored_device_coords_by_area = {}
-            scanner_keywords = ['scanner', 'esp', 'beacon_fix', 'gateway'] # Keywords to identify non-user devices
-            for dev_id, area_id in device_area_map.items():
-                if area_id and dev_id in anchored_coords:
-                     # Filter out scanners/infrastructure devices
-                     if not any(kw in dev_id.lower() for kw in scanner_keywords):
-                          point = anchored_coords[dev_id]
-                          anchored_device_coords_by_area.setdefault(area_id, []).append(point)
+            # Step 2: Get recent area predictions
+            area_predictions = get_recent_area_predictions(
+                time_window_minutes=self.generation_config.get('area_window_minutes', 10)
+            )
+            logger.info(f"Retrieved {len(area_predictions)} area predictions for anchoring")
+            self.status = {"state": "processing", "progress": 0.2}
 
-            # Log areas with points for debugging
-            valid_areas_for_rooms = []
-            for area_id, points in anchored_device_coords_by_area.items():
-                logger.debug(f"Area {area_id}: {len(points)} device points for room generation.")
-                if len(points) >= min_points_per_room:
-                     valid_areas_for_rooms.append(area_id)
-                else:
-                    logger.warning(f"Area {area_id} has only {len(points)} points (min: {min_points_per_room}), will estimate room dimensions.")
+            # Step 3: Use the AI processor to run relative positioning
+            relative_positions = self.ai_processor.run_relative_positioning(
+                distance_data,
+                n_dimensions=self.generation_config.get('mds_dimensions', 2)
+            )
+            logger.info(f"Generated relative positions for {len(relative_positions)} devices")
+            self.status = {"state": "processing", "progress": 0.5}
 
-            # Generate rooms from point clouds (AI Processor)
-            rooms = self.ai_processor.generate_rooms_from_points({
-                aid: pts for aid, pts in anchored_device_coords_by_area.items() if aid in valid_areas_for_rooms
-            })
-            logger.info(f"Generated {len(rooms)} rooms from device positions.")
+            # Step 4: Generate rooms from device positions grouped by area
+            rooms = self.ai_processor.generate_rooms_from_points(relative_positions, area_predictions)
+            logger.info(f"Generated {len(rooms)} rooms from device positions")
+            self.status = {"state": "processing", "progress": 0.7}
 
-            # Add area names back to rooms generated from points
-            for room in rooms:
-                area_id = room.get('area_id')
-                if area_id and area_id in ha_areas_map:
-                    room['name'] = ha_areas_map[area_id].get('name', room['name'])
+            # Step 5: Generate walls between rooms
+            walls = self._generate_walls(rooms, relative_positions)
+            logger.info(f"Generated {len(walls)} walls between rooms")
+            self.status = {"state": "processing", "progress": 0.8}
 
-            # Add estimated rooms for areas with too few points
-            estimated_room_added = False
-            areas_with_generated_rooms = {room.get('area_id') for room in rooms}
-            missing_areas = set(active_area_ids) - areas_with_generated_rooms
-            if missing_areas:
-                logger.info(f"Estimating dimensions for {len(missing_areas)} areas with insufficient points.")
-                for area_id in missing_areas:
-                    if area_id in target_layout: # Only if we have a target position
-                        devices_in_area = [d for d, a in device_area_map.items() if a == area_id]
-                        dims = self.ai_processor.estimate_room_dimensions(area_id, devices_in_area)
-                        center = target_layout[area_id]
-                        center_z = 1.5 # Default mid-floor height
+            # Step 6: Group rooms into floors
+            floors = self._group_rooms_into_floors(rooms)
+            logger.info(f"Organized rooms into {len(floors)} floors")
+            self.status = {"state": "processing", "progress": 0.9}
 
-                        min_x, max_x = center['x'] - dims['width'] / 2, center['x'] + dims['width'] / 2
-                        min_y, max_y = center['y'] - dims['length'] / 2, center['y'] + dims['length'] / 2
-                        min_z, max_z = center_z - dims['height'] / 2, center_z + dims['height'] / 2
-
-                        room = {
-                            'id': f"room_{area_id}",
-                            'name': ha_areas_map.get(area_id, {}).get('name', f"Area {area_id}"),
-                            'area_id': area_id,
-                            'center': {'x': round(center['x'], 2), 'y': round(center['y'], 2), 'z': round(center_z, 2)},
-                            'dimensions': dims,
-                            'bounds': {
-                                'min': {'x': round(min_x, 2), 'y': round(min_y, 2), 'z': round(min_z, 2)},
-                                'max': {'x': round(max_x, 2), 'y': round(max_y, 2), 'z': round(max_z, 2)}
-                            },
-                            'polygon_coords': [ # Create rectangular polygon for estimated rooms
-                                (round(min_x, 2), round(min_y, 2)),
-                                (round(max_x, 2), round(min_y, 2)),
-                                (round(max_x, 2), round(max_y, 2)),
-                                (round(min_x, 2), round(max_y, 2)),
-                                (round(min_x, 2), round(min_y, 2)) # Close loop
-                            ],
-                            'estimated': True
-                        }
-                        rooms.append(room)
-                        estimated_room_added = True
-                        logger.info(f"Added estimated room for area {area_id}")
-
-            if not rooms:
-                 logger.error("No rooms could be generated or estimated. Cannot create blueprint.")
-                 self.status = {"state": "complete", "progress": 1.0, "error": "No rooms generated"}
-                 return None
-
-            # --- Stage 7: Wall Generation (AI Processor) ---
-            logger.info("Generating walls...")
-            self.status["progress"] = 0.85
-            walls = self.ai_processor.generate_walls_between_rooms(rooms)
-            logger.info(f"Generated {len(walls)} walls between rooms.")
-
-            # --- Stage 8: Assemble Blueprint ---
-            logger.info("Assembling final blueprint...")
-            self.status["progress"] = 0.9
+            # Step 7: Create the complete blueprint
             blueprint = {
-                'version': '2.0-MDS-Anchor',
-                'generated_at': job_start_time.isoformat(),
+                'version': '1.0',
+                'generated_at': datetime.now().isoformat(),
                 'rooms': rooms,
                 'walls': walls,
-                'floors': self._group_rooms_into_floors(rooms),
+                'floors': floors,
                 'metadata': {
-                    'generation_method': 'relative_positioning_mds',
-                    'anchoring_success': transform_params is not None,
-                    'anchoring_disparity': transform_params.get('disparity') if transform_params else None,
-                    'source_distance_records': len(distance_data),
-                    'source_area_records': len(device_area_map),
-                    'entities_positioned': len(relative_coords),
-                    'rooms_generated': len(rooms),
-                    'walls_generated': len(walls),
-                    'estimated_rooms_added': estimated_room_added,
+                    'room_count': len(rooms),
+                    'generation_time_ms': (datetime.now() - job_start_time).total_seconds() * 1000,
+                    'data_points': len(distance_data)
                 }
             }
 
-            # --- Stage 9: Validation & Saving ---
-            # Validate the blueprint
-            if not self._validate_blueprint(blueprint):
-                logger.warning("Generated blueprint failed validation, attempting minimal.")
-                # Fallback to minimal blueprint using the rooms list we have
-                blueprint = self._create_minimal_valid_blueprint(rooms)
-                # Optionally re-validate minimal blueprint
-                # if not self._validate_blueprint(blueprint):
-                #      logger.error("Minimal blueprint also failed validation. Cannot proceed.")
-                #      self.status = {"state": "error", "error": "Validation failed"}
-                #      return None
-
-            # Save the blueprint
-            logger.info(f"Saving final blueprint with {len(blueprint.get('rooms',[]))} rooms and {len(blueprint.get('walls',[]))} walls.")
-            saved = self._save_blueprint(blueprint)
-            if saved:
+            # Step 8: Validate and save the blueprint
+            if self._validate_blueprint(blueprint):
+                logger.info("Blueprint validation successful")
+                self._save_blueprint(blueprint)
                 self.latest_generated_blueprint = blueprint
-                logger.info("Blueprint saved successfully.")
+                self.status = {"state": "completed", "progress": 1.0}
+                return True
             else:
-                logger.error("Failed to save the generated blueprint to the database.")
-                # Decide if this is a critical failure
-                # self.status = {"state": "error", "error": "Failed to save blueprint"}
-                # return None # Optionally fail here
-
-            self.status = {"state": "complete", "progress": 1.0, "last_run": datetime.now().isoformat()}
-            logger.info("Blueprint generation complete.")
-            return blueprint
+                logger.warning("Blueprint validation failed, creating minimal valid blueprint")
+                # Create minimal valid blueprint
+                minimal_blueprint = self._create_minimal_valid_blueprint(rooms)
+                self._save_blueprint(minimal_blueprint)
+                self.latest_generated_blueprint = minimal_blueprint
+                self.status = {"state": "completed", "progress": 1.0, "warning": "Created minimal blueprint due to validation issues"}
+                return True
 
         except Exception as e:
-            logger.error(f"Critical error during blueprint generation: {e}", exc_info=True)
-            self.status = {"state": "error", "progress": 0, "error": str(e)}
-            return None
+            logger.error(f"Error generating blueprint: {e}", exc_info=True)
+            self.status = {"state": "error", "progress": 0.0, "message": str(e)}
+            return False
 
     def _create_minimal_valid_blueprint(self, rooms):
         """Create a minimal valid blueprint when validation fails."""
