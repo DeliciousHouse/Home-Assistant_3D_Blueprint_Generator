@@ -565,6 +565,20 @@ def get_recent_distances(time_window_minutes: int = 15) -> List[Dict[str, Any]]:
     params = (cutoff_time,)
 
     results = _execute_sqlite_read(query, params)
+
+    # Add debug logging HERE to inspect the 'results' structure
+    if results is not None:
+        logger.debug(f"get_recent_distances: Retrieved {len(results)} records.")
+        if len(results) > 0:
+            logger.debug(f"First record structure: {results[0]}") # Log the first record to see its format
+            # Check if the first record looks like the header row
+            if isinstance(results[0], dict) and results[0].get('tracked_device_id') == 'tracked_device_id':
+                 logger.error("!!! Database query returned header row as data !!!")
+                 # Potentially skip the first row if it's consistently the header
+                 # return results[1:] if len(results) > 1 else []
+    else:
+        logger.warning("get_recent_distances: Query returned None.")
+
     return results if results is not None else []
 
 def get_recent_area_predictions(time_window_minutes: int = 10) -> Dict[str, Optional[str]]:

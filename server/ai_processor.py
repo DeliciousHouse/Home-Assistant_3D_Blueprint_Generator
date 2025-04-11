@@ -1709,73 +1709,102 @@ class AIProcessor:
 
     # New methods for relative positioning and room geometry generation
 
-    def run_relative_positioning(self, distance_data: List[Tuple[str, str, str, float]], n_dimensions=3) -> Dict[str, Dict[str, float]]:
-        """Calculates relative positions using MDS."""
+    def run_relative_positioning(self, distance_data: List[Dict[str, Any]], n_dimensions=3) -> Dict[str, Dict[str, float]]:
+        """Calculates relative positions using MDS. Expects distance_data as a list of dictionaries."""
         logger.info(f"Running relative positioning with {len(distance_data)} distance entries...")
         if not distance_data:
+            logger.warning("No distance data provided for relative positioning.")
             return {}
 
-        # 1. Identify all unique entities (devices + scanners)
+        # 1. Identify all unique entities (devices + scanners) from the list of dictionaries
         entities = set()
         measurements = {} # {(id1, id2): [dist1, dist2, ...]}
 
-        # Add debug logging to see sample of the raw data
         logger.debug("--- Raw distance data sample & Entity Extraction ---")
-        for idx, (timestamp, dev_id, scan_id, dist) in enumerate(distance_data[:20]):  # Show first 20 records
-            # Ensure dist is a float - handle the case where it's a string
-            try:
-                dist_value = float(dist) if isinstance(dist, str) else dist
-                dist_display = f"{dist_value:.2f}"
-            except (ValueError, TypeError):
-                dist_value = dist  # Keep original if conversion fails
-                dist_display = str(dist)  # Just convert to string without formatting
+        processed_records = 0
+        valid_records_for_debug = 0
 
-            logger.debug(f"  Record: dev='{dev_id}', scan='{scan_id}', dist={dist_display}")
-            entities.add(dev_id)
-            entities.add(scan_id)
-            pair = tuple(sorted((dev_id, scan_id)))
+        for idx, record in enumerate(distance_data):
+            # Ensure record is a dictionary and has the required keys
+            if not isinstance(record, dict) or not all(k in record for k in ['tracked_device_id', 'scanner_id', 'distance']):
+                if idx < 20: # Log error only for the first few records to avoid spam
+                    logger.warning(f"Skipping invalid record format at index {idx}: {record}")
+                continue
 
-            # Only add numerical distances to measurements
-            if isinstance(dist_value, (int, float)):
-                measurements.setdefault(pair, []).append(dist_value)
+            dev_id = record.get('tracked_device_id')
+            scan_id = record.get('scanner_id')
+            dist = record.get('distance')
+            timestamp = record.get('timestamp', 'N/A') # Get timestamp if available
+
+            # Validate IDs - ensure they are not None or empty strings
+            if not dev_id or not isinstance(dev_id, str):
+                if idx < 20:
+                    logger.warning(f"Skipping record with invalid tracked_device_id at index {idx}: {dev_id}")
+                continue
+            if not scan_id or not isinstance(scan_id, str):
+                if idx < 20:
+                    logger.warning(f"Skipping record with invalid scanner_id at index {idx}: {scan_id}")
+                continue
+
+            # Log first 20 valid records for debugging
+            if valid_records_for_debug < 20:
+                # Ensure dist is a float - handle the case where it's a string or None
+                try:
+                    if dist is None:
+                        dist_value = None
+                        dist_display = "None"
+                    elif isinstance(dist, (int, float)):
+                        dist_value = float(dist)
+                        dist_display = f"{dist_value:.2f}"
+                    elif isinstance(dist, str):
+                        dist_value = float(dist)
+                        dist_display = f"{dist_value:.2f}"
+                    else:
+                        dist_value = None # Treat other types as invalid
+                        dist_display = f"InvalidType({type(dist).__name__})"
+                except (ValueError, TypeError):
+                    dist_value = None # Treat conversion errors as invalid
+                    dist_display = f"InvalidValue({dist})"
+
+                logger.debug(f"  Record (idx {idx}): dev='{dev_id}', scan='{scan_id}', dist={dist_display}, ts='{timestamp}'")
+                valid_records_for_debug += 1
             else:
-                logger.warning(f"Skipping non-numerical distance value: {dist} (type: {type(dist)})")
+                # Convert distance for processing after debug limit
+                try:
+                    if dist is None:
+                        dist_value = None
+                    elif isinstance(dist, (int, float)):
+                        dist_value = float(dist)
+                    elif isinstance(dist, str):
+                        dist_value = float(dist)
+                    else:
+                        dist_value = None
+                except (ValueError, TypeError):
+                    dist_value = None
 
-        # Continue with remaining records without detailed logging
-        for idx in range(20, len(distance_data)):
-            timestamp, dev_id, scan_id, dist = distance_data[idx]
+            # Add valid entities and measurements
             entities.add(dev_id)
             entities.add(scan_id)
             pair = tuple(sorted((dev_id, scan_id)))
 
-            # Ensure we only add numerical values
-            try:
-                dist_value = float(dist) if isinstance(dist, str) else dist
-                if isinstance(dist_value, (int, float)):
-                    measurements.setdefault(pair, []).append(dist_value)
-            except (ValueError, TypeError):
-                # Skip this record silently (we already logged examples in the first 20)
-                pass
+            if dist_value is not None and dist_value >= 0: # Only add valid, non-negative distances
+                measurements.setdefault(pair, []).append(dist_value)
+            elif valid_records_for_debug < 20: # Log warning only for first few invalid distances
+                 logger.warning(f"Skipping record with invalid distance value at index {idx}: {dist} (type: {type(dist).__name__}) for pair ({dev_id}, {scan_id})")
+
+            processed_records += 1
 
         # Diagnostic logging about entities found
         entity_list = sorted(list(entities))
         logger.debug("--- Entity Identification Summary ---")
+        logger.debug(f"Processed {processed_records} records from distance_data.")
         logger.debug(f"Total unique entities identified: {len(entity_list)}")
         logger.debug(f"Entities identified (full list): {entity_list}")
-
-        # Show sample entities from first records
-        sample_entities = set()
-        for _, dev_id, scan_id, _ in distance_data[:20]:
-            sample_entities.add(dev_id)
-            sample_entities.add(scan_id)
-        logger.debug(f"Entities seen in first 20 records: {sorted(list(sample_entities))}")
-
-        # More diagnostics
-        logger.debug(f"Total measurement pairs: {len(measurements)}")
+        logger.debug(f"Total measurement pairs with valid distances: {len(measurements)}")
 
         # Add reference positions to entities and measurements if needed
         if len(entity_list) < n_dimensions + 1:
-            logger.warning(f"Not enough unique entities ({len(entity_list)}) identified from {len(distance_data)} records for {n_dimensions}D positioning.")
+            logger.warning(f"Not enough unique entities ({len(entity_list)}) identified from processed records for {n_dimensions}D positioning.")
             logger.warning(f"Entities found: {entity_list}")
 
             # Try to retrieve reference positions from the database
@@ -1809,49 +1838,65 @@ class AIProcessor:
                             logger.debug(f"Added synthetic distance: {ref_id1} to {ref_id2} = {dist:.2f}m")
 
                         # Also connect to real devices if possible (using distance > 0)
-                        for real_entity in entity_list:
-                            if real_entity not in ref_positions:  # Only connect to non-reference entities
-                                pair = tuple(sorted((ref_id1, real_entity)))
-                                # Estimate distance based on area_id if available
-                                # For now just use arbitrary distance for testing
-                                measurements[pair] = [10.0]  # Choose sensible default
+                        # Find *actual* entities identified from distance_data (excluding refs)
+                        actual_entities_found = [e for e in entity_list if e not in ref_positions]
+                        for real_entity in actual_entities_found:
+                            pair = tuple(sorted((ref_id1, real_entity)))
+                            # Estimate distance based on area_id if available
+                            # For now just use arbitrary distance for testing
+                            measurements.setdefault(pair, []).append(10.0) # Use setdefault to avoid overwriting real data
+                            logger.debug(f"Added synthetic distance: {ref_id1} to {real_entity} = 10.0m")
 
                     # Re-check entity count after adding references
                     entity_list = sorted(list(entities))
                     logger.info(f"After adding reference positions: {len(entity_list)} entities available")
             except Exception as e:
-                logger.error(f"Failed to add reference positions to positioning calculation: {e}")
+                logger.error(f"Failed to add reference positions to positioning calculation: {e}", exc_info=True)
 
         entity_map = {name: i for i, name in enumerate(entity_list)}
         n_entities = len(entity_list)
         if n_entities < n_dimensions + 1:
-             logger.warning(f"Not enough entities ({n_entities}) for {n_dimensions}D positioning.")
+             logger.error(f"Still not enough entities ({n_entities}) for {n_dimensions}D positioning even after adding references.")
              return {}
 
         # 2. Create Dissimilarity Matrix (use median distance)
         dissimilarity_matrix = np.zeros((n_entities, n_entities))
+        valid_measurement_count = 0
         for (id1, id2), dists in measurements.items():
             if id1 in entity_map and id2 in entity_map:
                  idx1, idx2 = entity_map[id1], entity_map[id2]
-                 median_dist = np.median(dists) if dists else 0
-                 dissimilarity_matrix[idx1, idx2] = median_dist
-                 dissimilarity_matrix[idx2, idx1] = median_dist
+                 # Filter out potential non-numeric values that might have slipped through
+                 numeric_dists = [d for d in dists if isinstance(d, (int, float)) and d >= 0]
+                 if numeric_dists:
+                     median_dist = np.median(numeric_dists)
+                     dissimilarity_matrix[idx1, idx2] = median_dist
+                     dissimilarity_matrix[idx2, idx1] = median_dist
+                     valid_measurement_count += 1
+                 else:
+                     logger.warning(f"No valid numeric distances found for pair ({id1}, {id2})")
+
+        logger.debug(f"Created dissimilarity matrix with {valid_measurement_count} valid median distance pairs.")
 
         # Set maximum dissimilarity for missing measurements
         # This helps MDS handle sparse matrices better
-        max_dist = np.max(dissimilarity_matrix[dissimilarity_matrix > 0])
-        if max_dist > 0:
+        valid_distances = dissimilarity_matrix[dissimilarity_matrix > 0]
+        if valid_distances.size > 0:
+            max_dist = np.max(valid_distances)
             # Use max_dist + 10% for missing values (but not on diagonal)
             missing_value = max_dist * 1.1
             for i in range(n_entities):
                 for j in range(n_entities):
                     if i != j and dissimilarity_matrix[i, j] == 0:
                         dissimilarity_matrix[i, j] = missing_value
+            logger.debug(f"Filled missing dissimilarity values with {missing_value:.2f}")
+        else:
+            logger.error("No valid distances found to build dissimilarity matrix. Cannot run MDS.")
+            return {}
 
         # 3. Run MDS
         try:
             mds = MDS(n_components=n_dimensions, dissimilarity='precomputed',
-                     random_state=42, n_init=4, max_iter=300)
+                     random_state=42, n_init=4, max_iter=300, verbose=0, n_jobs=-1) # Use n_jobs=-1 for parallel
             relative_pos_array = mds.fit_transform(dissimilarity_matrix)
             logger.info(f"MDS stress: {mds.stress_:.4f}")
         except Exception as e:
