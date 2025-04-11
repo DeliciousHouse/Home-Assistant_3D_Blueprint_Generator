@@ -33,21 +33,16 @@ SQLITE_DB_PATH = os.environ.get('DB_PATH', '/config/home_generative_agent_db')
 def get_sqlite_connection():
     """Get connection to the add-on's local SQLite database."""
     try:
-        # Ensure the directory exists
-        os.makedirs(os.path.dirname(SQLITE_DB_PATH), exist_ok=True)
+        # Ensure data directory exists
+        data_dir = os.path.dirname(SQLITE_DB_PATH)
+        os.makedirs(data_dir, exist_ok=True)
 
-        conn = sqlite3.connect(f"{SQLITE_DB_PATH}.sqlite",
-                              isolation_level=None,  # Enable autocommit mode
-                              timeout=30.0)  # Increase timeout for busy DB
-
-        # Enable foreign keys and optimize for reliability
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")  # Write-Ahead Logging for better concurrency
-        conn.execute("PRAGMA busy_timeout = 5000")  # 5 second busy timeout
-
+        # Connect with row factory set to Row
+        conn = sqlite3.connect(f"{SQLITE_DB_PATH}.sqlite")
+        conn.row_factory = sqlite3.Row  # This is critical for dict conversion later
         return conn
     except sqlite3.Error as e:
-        logger.error(f"Database connection error: {e}")
+        logger.error(f"Failed to connect to SQLite database: {str(e)}")
         return None
 
 # --- Schema Initialization ---
@@ -253,26 +248,41 @@ def _execute_sqlite_read(query: str, params: Optional[Tuple] = None, fetch_one: 
     for attempt in range(max_retries):
         try:
             conn = get_sqlite_connection()
+            if not conn:
+                logger.error("Failed to get SQLite connection")
+                return None
+
+            # Ensure row_factory is set to Row
+            conn.row_factory = sqlite3.Row
+
             cursor = conn.cursor()
             cursor.execute(query, params or ())
+
             if fetch_one:
                 row = cursor.fetchone()
-                return dict(row) if row else None
+                result = dict(row) if row else None
             else:
-                # Convert all rows to dictionaries
-                return [dict(row) for row in cursor.fetchall()]
-        except sqlite3.OperationalError as e:
-            # Handle locked database for reads
-            if 'database is locked' in str(e).lower() and attempt < max_retries - 1:
-                logger.warning(f"SQLite read - database locked (attempt {attempt+1}/{max_retries}). Retrying...")
-                time.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
-            else:
-                logger.error(f"SQLite read query failed: {query[:60]}... Error: {str(e)}", exc_info=True)
-                return None  # Indicate failure
+                # Convert sqlite3.Row objects to dictionaries properly
+                result = []
+                for row in cursor.fetchall():
+                    try:
+                        # Create a dictionary with column names as keys
+                        row_dict = {}
+                        for idx, col in enumerate(cursor.description):
+                            row_dict[col[0]] = row[idx]
+                        result.append(row_dict)
+                    except Exception as row_e:
+                        logger.error(f"Error converting row to dict: {row_e}")
+
+            return result
         except sqlite3.Error as e:
-            logger.error(f"SQLite read query failed: {query[:60]}... Error: {str(e)}", exc_info=True)
-            return None  # Indicate failure
+            logger.error(f"SQLite read attempt {attempt+1} failed: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+            else:
+                logger.error(f"SQLite read failed after {max_retries} attempts: {query[:100]}...")
+        except Exception as e:
+            logger.error(f"Unexpected error in _execute_sqlite_read: {str(e)}", exc_info=True)
         finally:
             if conn:
                 conn.close()
@@ -519,20 +529,17 @@ def get_area_observations(
     return results if results is not None else []
 
 def get_recent_distances(time_window_minutes: int = 15) -> List[Dict[str, Any]]:
-    """Fetches recent distance logs within specified time window."""
+    """Get recent distance logs within the specified time window."""
     query = """
     SELECT timestamp, tracked_device_id, scanner_id, distance
     FROM distance_log
     WHERE timestamp >= ?
     ORDER BY timestamp DESC
     """
-    # Calculate cutoff time based on current time
-    cutoff_dt = datetime.now() - timedelta(minutes=time_window_minutes)
-    cutoff_time_iso = cutoff_dt.isoformat()
+    cutoff_time = (datetime.now() - timedelta(minutes=time_window_minutes)).isoformat()
+    params = (cutoff_time,)
 
-    params = (cutoff_time_iso,)
-    logger.debug(f"Querying distances since {cutoff_time_iso}")
-    results = _execute_sqlite_read(query, params) # Use the enhanced reader
+    results = _execute_sqlite_read(query, params)
     return results if results is not None else []
 
 def get_recent_area_predictions(time_window_minutes: int = 10) -> Dict[str, Optional[str]]:
