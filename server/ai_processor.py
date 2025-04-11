@@ -1716,6 +1716,15 @@ class AIProcessor:
             logger.warning("No distance data provided for relative positioning.")
             return {}
 
+        # --- NEW: Log type and first few elements of distance_data ---
+        logger.debug(f"Type of distance_data received: {type(distance_data)}")
+        if isinstance(distance_data, list) and len(distance_data) > 0:
+            logger.debug(f"Type of first element: {type(distance_data[0])}")
+            logger.debug(f"Value of first element: {distance_data[0]}")
+            if len(distance_data) > 1:
+                 logger.debug(f"Value of second element: {distance_data[1]}")
+        # --- END NEW LOGGING ---
+
         # 1. Identify all unique entities (devices + scanners) from the list of dictionaries
         entities = set()
         measurements = {} # {(id1, id2): [dist1, dist2, ...]}
@@ -1725,16 +1734,27 @@ class AIProcessor:
         valid_records_for_debug = 0
 
         for idx, record in enumerate(distance_data):
-            # Ensure record is a dictionary and has the required keys
-            if not isinstance(record, dict) or not all(k in record for k in ['tracked_device_id', 'scanner_id', 'distance']):
-                if idx < 20: # Log error only for the first few records to avoid spam
-                    logger.warning(f"Skipping invalid record format at index {idx}: {record}")
-                continue
+            dev_id = None
+            scan_id = None
+            dist = None
+            timestamp = 'N/A'
 
-            dev_id = record.get('tracked_device_id')
-            scan_id = record.get('scanner_id')
-            dist = record.get('distance')
-            timestamp = record.get('timestamp', 'N/A') # Get timestamp if available
+            # --- UPDATED: Explicitly handle tuple vs dict and validate ---
+            if isinstance(record, dict):
+                dev_id = record.get('tracked_device_id')
+                scan_id = record.get('scanner_id')
+                dist = record.get('distance')
+                timestamp = record.get('timestamp', 'N/A')
+            elif isinstance(record, (tuple, list)) and len(record) == 4:
+                # Assuming order: timestamp, tracked_device_id, scanner_id, distance
+                timestamp, dev_id, scan_id, dist = record
+                if idx < 5: # Log warning for first few tuple records
+                     logger.warning(f"Received record as tuple/list at index {idx}, expected dict. Data: {record}")
+            else:
+                if idx < 20: # Log error only for the first few records to avoid spam
+                    logger.warning(f"Skipping invalid record format at index {idx}: type={type(record)}, value={record}")
+                continue
+            # --- END UPDATED ---
 
             # Validate IDs - ensure they are not None or empty strings
             if not dev_id or not isinstance(dev_id, str):
@@ -1757,7 +1777,7 @@ class AIProcessor:
                         dist_value = float(dist)
                         dist_display = f"{dist_value:.2f}"
                     elif isinstance(dist, str):
-                        dist_value = float(dist)
+                        dist_value = float(dist) # Attempt conversion
                         dist_display = f"{dist_value:.2f}"
                     else:
                         dist_value = None # Treat other types as invalid
@@ -1770,7 +1790,7 @@ class AIProcessor:
                 valid_records_for_debug += 1
             else:
                 # Convert distance for processing after debug limit
-                try:
+                 try:
                     if dist is None:
                         dist_value = None
                     elif isinstance(dist, (int, float)):
@@ -1779,7 +1799,7 @@ class AIProcessor:
                         dist_value = float(dist)
                     else:
                         dist_value = None
-                except (ValueError, TypeError):
+                 except (ValueError, TypeError):
                     dist_value = None
 
             # Add valid entities and measurements
