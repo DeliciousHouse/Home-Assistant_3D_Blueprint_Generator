@@ -91,28 +91,37 @@ def health_check():
     """Health check endpoint."""
     try:
         # Check database connection with a simple SQLite test
+        db_status = False
         try:
             conn = get_sqlite_connection()
-            conn.execute("SELECT 1")  # Simple query
-            conn.close()
-            db_status = True
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                db_status = cursor.fetchone() is not None
+                conn.close()
         except Exception as e_db:
-            logger.error(f"SQLite connection test failed: {e_db}")
+            logger.error(f"Database health check failed: {e_db}")
             db_status = False
 
+        # Check Home Assistant API connection
+        ha_status = False
+        try:
+            ha_status = ha_client.test_connection()
+        except Exception as e_ha:
+            logger.error(f"HA API health check failed: {e_ha}")
+            ha_status = False
+
         status = {
-            'status': 'healthy' if db_status else 'unhealthy',
+            'status': 'healthy' if (db_status and ha_status) else 'unhealthy',
             'database': 'connected' if db_status else 'disconnected',
+            'home_assistant': 'connected' if ha_status else 'disconnected',
+            'timestamp': datetime.now().isoformat()
         }
 
-        return jsonify(status), 200 if status['status'] == 'healthy' else 503
-
+        return jsonify(status)
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
-        return jsonify({
-            'status': 'unhealthy',
-            'error': str(e)
-        }), 503
+        return jsonify({'status': 'error', 'error': str(e)}), 500
 
 @app.route('/api/scan', methods=['GET'])
 def scan_entities():
@@ -185,31 +194,24 @@ def generate_blueprint():
 def get_blueprint():
     """Get the latest blueprint from the database."""
     try:
-        # Use the existing instance instead of creating a new one
         blueprint = blueprint_generator.get_latest_blueprint()
-
-        if not blueprint:
-            logger.warning("No blueprint found in database")
-            return jsonify({'error': 'No blueprint found'}), 404
-
-        # Add debug logging
-        logger.info(f"Returning blueprint with {len(blueprint.get('rooms', []))} rooms")
-        return jsonify(blueprint)
+        if blueprint:
+            return jsonify({"success": True, "blueprint": blueprint})
+        else:
+            return jsonify({"success": False, "error": "No blueprint found"}), 404
     except Exception as e:
-        logger.error(f"Error retrieving blueprint: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error getting blueprint: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/blueprint/status', methods=['GET'])
 def get_blueprint_status():
     """Get the status of the blueprint generation."""
     try:
-        # Get the status of the generation process
         status = blueprint_generator.get_status()
-
-        return jsonify(status)
+        return jsonify({"success": True, "status": status})
     except Exception as e:
-        logger.error(f"Failed to get blueprint status: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error getting blueprint status: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/debug/fix-schema', methods=['POST'])
 def fix_schema():
@@ -344,7 +346,7 @@ def train_wall_prediction_model():
             'message': 'Wall prediction model training completed'
         })
     except Exception as e:
-        logger.error(f"Wall prediction model training failed: {str(e)}")
+        logger.error(f"Wall prediction model training failed: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/ai/train/blueprint-refinement', methods=['POST'])

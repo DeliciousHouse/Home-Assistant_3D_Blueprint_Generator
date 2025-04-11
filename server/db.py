@@ -7,6 +7,10 @@ import time  # Added for retry delays
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from typing import Union
+import uuid
+import traceback
+import numpy as np
+import websocket
 
 # Use the standardized config loader
 try:
@@ -29,22 +33,22 @@ SQLITE_DB_PATH = os.environ.get('DB_PATH', '/config/home_generative_agent_db')
 def get_sqlite_connection():
     """Get connection to the add-on's local SQLite database."""
     try:
-        # Ensure the PARENT directory exists
-        db_dir = os.path.dirname(SQLITE_DB_PATH)
-        os.makedirs(db_dir, exist_ok=True) # Ensures /config exists
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(SQLITE_DB_PATH), exist_ok=True)
 
-        # Increased timeout from 10 to 30 seconds for better lock handling
-        conn = sqlite3.connect(SQLITE_DB_PATH, timeout=30.0)
-        conn.row_factory = sqlite3.Row # Use Row factory for dict-like access
-        # Enable WAL mode for better concurrency
-        conn.execute("PRAGMA journal_mode=WAL;")
-        # Set busy timeout to wait for locks to clear
-        conn.execute("PRAGMA busy_timeout = 10000;")  # 10 seconds in ms
-        conn.execute("PRAGMA foreign_keys = ON;") # Enforce foreign keys if used
+        conn = sqlite3.connect(f"{SQLITE_DB_PATH}.sqlite",
+                              isolation_level=None,  # Enable autocommit mode
+                              timeout=30.0)  # Increase timeout for busy DB
+
+        # Enable foreign keys and optimize for reliability
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")  # Write-Ahead Logging for better concurrency
+        conn.execute("PRAGMA busy_timeout = 5000")  # 5 second busy timeout
+
         return conn
     except sqlite3.Error as e:
-        logger.error(f"Failed to connect to SQLite at {SQLITE_DB_PATH}: {str(e)}", exc_info=True)
-        raise # Re-raise critical error
+        logger.error(f"Database connection error: {e}")
+        return None
 
 # --- Schema Initialization ---
 
@@ -202,70 +206,43 @@ def _execute_sqlite_write(query: str, params: Optional[Tuple] = None, fetch_last
     for attempt in range(max_retries):
         try:
             conn = get_sqlite_connection()
+            if not conn:
+                logger.error(f"Failed to get database connection on attempt {attempt+1}/{max_retries}")
+                time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                continue
+
             cursor = conn.cursor()
             cursor.execute(query, params or ())
+            conn.commit()
+
             if fetch_last_id:
                 last_id = cursor.lastrowid
-            conn.commit()
-            if attempt > 0:
-                logger.info(f"SQLite write succeeded on attempt {attempt+1} after retry")
-            else:
-                logger.debug(f"SQLite write successful: {query[:60]}...")
-            return last_id
+
+            cursor.close()
+            conn.close()
+
+            return last_id if fetch_last_id else 1  # Return ID or success indicator
+
         except sqlite3.OperationalError as e:
-            # Specifically handle database locks with retries
-            if 'database is locked' in str(e).lower():
-                if conn:
-                    conn.rollback()
-
-                if attempt < max_retries - 1:
-                    logger.warning(f"SQLite database locked (attempt {attempt+1}/{max_retries}). Retrying in {retry_delay:.2f}s...")
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    # Final attempt failed
-                    logger.error(f"SQLite write failed after {max_retries} attempts due to database locks: {query[:60]}...")
-                    return None
+            if "database is locked" in str(e) and attempt < max_retries - 1:
+                logger.warning(f"Database locked, retrying in {retry_delay}s... (attempt {attempt+1}/{max_retries})")
+                time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
             else:
-                # Different operational error, don't retry
-                error_code = getattr(e, 'sqlite_errorcode', 'Unknown')
-                error_name = getattr(e, 'sqlite_errorname', 'Unknown')
-                logger.error(f"SQLite operational error: {error_code} {error_name} - {str(e)}", exc_info=True)
-                if conn:
-                    conn.rollback()
-                return None
-        except sqlite3.Error as e:
-            # Enhanced error logging with detailed SQLite error information
-            error_code = getattr(e, 'sqlite_errorcode', 'Unknown')
-            error_name = getattr(e, 'sqlite_errorname', 'Unknown')
+                logger.error(f"SQLite operational error on write: {e}")
+                break
 
-            # Create a more detailed error message
-            error_msg = f"SQLite write query failed: {query[:60]}... "
-            error_msg += f"Error Code: {error_code} "
-            error_msg += f"Error Name: {error_name} "
-            error_msg += f"Message: {str(e)}"
+        except Exception as e:
+            logger.error(f"Error executing SQLite write: {e}")
+            break
 
-            # Log the formatted error message with full stack trace
-            logger.error(error_msg, exc_info=True)
-
-            # Additional debug information
-            if params:
-                try:
-                    params_str = str(params)
-                    if len(params_str) > 200:
-                        params_str = params_str[:200] + "..."
-                    logger.debug(f"Query parameters: {params_str}")
-                except Exception as param_err:
-                    logger.debug(f"Could not log parameters: {str(param_err)}")
-
-            if conn:
-                conn.rollback()
-            return None # Indicate failure explicitly
         finally:
             if conn:
-                conn.close()
+                try:
+                    conn.close()
+                except:
+                    pass
 
-    return None  # Should not reach here but ensures return
+    return None  # Indicate failure after all retries
 
 def _execute_sqlite_read(query: str, params: Optional[Tuple] = None, fetch_one: bool = False) -> Optional[Union[List[Dict[str, Any]], Dict[str, Any]]]:
     """Helper function for SQLite reads with improved error handling."""
@@ -321,10 +298,10 @@ def save_blueprint_to_sqlite(blueprint_data: Dict) -> bool:
 
     result = _execute_sqlite_write(query, params)
     if result is not None:
-        logger.info(f"Successfully saved blueprint created at {created_at} to SQLite.")
+        logger.info(f"Blueprint saved to SQLite database with {len(blueprint_data.get('rooms', []))} rooms")
         return True
     else:
-        logger.error(f"Failed to save blueprint created at {created_at} to SQLite.")
+        logger.error("Failed to save blueprint to SQLite database")
         return False
 
 def get_reference_positions_from_sqlite() -> Dict[str, Dict[str, Any]]:
@@ -450,11 +427,11 @@ def get_latest_blueprint_from_sqlite() -> Optional[Dict[str, Any]]:
     result = _execute_sqlite_read(query, fetch_one=True)
     if result and result.get('data'):
         try:
-            blueprint = json.loads(result['data'])
-            logger.info(f"Retrieved latest active blueprint from {result.get('created_at')}")
-            return blueprint
+            blueprint_data = json.loads(result['data'])
+            logger.info(f"Retrieved blueprint from {result.get('created_at', 'unknown date')}")
+            return blueprint_data
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse latest blueprint from SQLite: {e}")
+            logger.error(f"Failed to parse blueprint JSON: {e}")
             return None
     logger.warning("No active blueprints found in SQLite database")
     return None
