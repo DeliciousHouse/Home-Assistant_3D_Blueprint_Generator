@@ -491,12 +491,37 @@ def save_area_observation(tracked_device_id: str, predicted_area_id: Optional[st
     timestamp = datetime.now().isoformat()
     params = (timestamp, tracked_device_id, predicted_area_id)
 
-    result = _execute_sqlite_write(query, params)
-    if result is not None:
-        logger.debug(f"Saved area observation for {tracked_device_id} -> {predicted_area_id}")
-        return True
-    else:
-        logger.error(f"Failed to save area observation for {tracked_device_id}")
+    # Add extensive logging to diagnose the issue
+    logger.debug(f"Attempting to save area observation: device='{tracked_device_id}', area='{predicted_area_id}'")
+
+    try:
+        conn = get_sqlite_connection()
+        if not conn:
+            logger.error(f"Failed to get database connection for area observation: {tracked_device_id}")
+            return False
+
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        conn.commit()
+
+        if cursor.rowcount > 0:
+            logger.debug(f"Successfully saved area observation for {tracked_device_id} -> {predicted_area_id}")
+            cursor.close()
+            conn.close()
+            return True
+        else:
+            logger.warning(f"No rows affected when saving area observation for {tracked_device_id}")
+            cursor.close()
+            conn.close()
+            return False
+
+    except sqlite3.Error as e:
+        logger.error(f"SQLite error saving area observation for {tracked_device_id}: {e}")
+        if 'no such table' in str(e).lower():
+            logger.error("The area_observations table doesn't exist! Check database initialization.")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error saving area observation for {tracked_device_id}: {e}", exc_info=True)
         return False
 
 def get_area_observations(

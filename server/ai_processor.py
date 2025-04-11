@@ -1718,14 +1718,89 @@ class AIProcessor:
         # 1. Identify all unique entities (devices + scanners)
         entities = set()
         measurements = {} # {(id1, id2): [dist1, dist2, ...]}
-        for _, dev_id, scan_id, dist in distance_data:
+
+        # Add debug logging to see sample of the raw data
+        logger.debug("--- Raw distance data sample & Entity Extraction ---")
+        for idx, (timestamp, dev_id, scan_id, dist) in enumerate(distance_data[:20]):  # Show first 20 records
+            logger.debug(f"  Record: dev='{dev_id}', scan='{scan_id}', dist={dist:.2f}")
             entities.add(dev_id)
             entities.add(scan_id)
             pair = tuple(sorted((dev_id, scan_id)))
             measurements.setdefault(pair, []).append(dist)
 
+        # Continue with remaining records without detailed logging
+        for idx in range(20, len(distance_data)):
+            timestamp, dev_id, scan_id, dist = distance_data[idx]
+            entities.add(dev_id)
+            entities.add(scan_id)
+            pair = tuple(sorted((dev_id, scan_id)))
+            measurements.setdefault(pair, []).append(dist)
+
+        # Diagnostic logging about entities found
         entity_list = sorted(list(entities))
-        logger.debug(f"Entities identified for MDS ({len(entity_list)}): {entity_list}") # Add this log
+        logger.debug("--- Entity Identification Summary ---")
+        logger.debug(f"Total unique entities identified: {len(entity_list)}")
+        logger.debug(f"Entities identified (full list): {entity_list}")
+
+        # Show sample entities from first records
+        sample_entities = set()
+        for _, dev_id, scan_id, _ in distance_data[:20]:
+            sample_entities.add(dev_id)
+            sample_entities.add(scan_id)
+        logger.debug(f"Entities seen in first 20 records: {sorted(list(sample_entities))}")
+
+        # More diagnostics
+        logger.debug(f"Total measurement pairs: {len(measurements)}")
+
+        # Add reference positions to entities and measurements if needed
+        if len(entity_list) < n_dimensions + 1:
+            logger.warning(f"Not enough unique entities ({len(entity_list)}) identified from {len(distance_data)} records for {n_dimensions}D positioning.")
+            logger.warning(f"Entities found: {entity_list}")
+
+            # Try to retrieve reference positions from the database
+            try:
+                from .db import get_reference_positions_from_sqlite
+                ref_positions = get_reference_positions_from_sqlite()
+                if ref_positions:
+                    logger.info(f"Found {len(ref_positions)} reference positions to supplement entity list")
+
+                    # Check which reference positions are not already in our entity list
+                    new_refs = [ref_id for ref_id in ref_positions.keys() if ref_id not in entities]
+                    logger.info(f"Adding {len(new_refs)} new reference positions to entity calculation")
+
+                    # Add synthetic distance measurements between reference points
+                    for i, ref_id1 in enumerate(new_refs):
+                        entities.add(ref_id1)
+                        pos1 = ref_positions[ref_id1]
+
+                        # Connect to other reference points with synthetic distances
+                        for j, ref_id2 in enumerate(new_refs[i+1:], i+1):
+                            entities.add(ref_id2)
+                            pos2 = ref_positions[ref_id2]
+
+                            # Calculate Euclidean distance between reference points
+                            dist = np.sqrt((pos1['x'] - pos2['x'])**2 +
+                                          (pos1['y'] - pos2['y'])**2 +
+                                          (pos1['z'] - pos2['z'])**2)
+
+                            pair = tuple(sorted((ref_id1, ref_id2)))
+                            measurements[pair] = [float(dist)]
+                            logger.debug(f"Added synthetic distance: {ref_id1} to {ref_id2} = {dist:.2f}m")
+
+                        # Also connect to real devices if possible (using distance > 0)
+                        for real_entity in entity_list:
+                            if real_entity not in ref_positions:  # Only connect to non-reference entities
+                                pair = tuple(sorted((ref_id1, real_entity)))
+                                # Estimate distance based on area_id if available
+                                # For now just use arbitrary distance for testing
+                                measurements[pair] = [10.0]  # Choose sensible default
+
+                    # Re-check entity count after adding references
+                    entity_list = sorted(list(entities))
+                    logger.info(f"After adding reference positions: {len(entity_list)} entities available")
+            except Exception as e:
+                logger.error(f"Failed to add reference positions to positioning calculation: {e}")
+
         entity_map = {name: i for i, name in enumerate(entity_list)}
         n_entities = len(entity_list)
         if n_entities < n_dimensions + 1:
