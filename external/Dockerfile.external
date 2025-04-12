@@ -1,0 +1,51 @@
+FROM python:3.9-slim
+
+# Set environment variables for Python
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libopenblas-dev \
+    liblapack-dev \
+    curl \
+    jq \
+    vim \
+    net-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create working directory
+WORKDIR /opt/blueprint_generator
+
+# Upgrade pip and install requirements
+COPY requirements.txt .
+RUN pip install --upgrade pip wheel setuptools
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install python-json-logger
+
+# Create data directory
+RUN mkdir -p /data
+RUN chmod -R 777 /data
+VOLUME /data
+
+# Copy your application code
+COPY . .
+
+# Make scripts executable
+RUN chmod +x run.py
+
+# External-specific config
+COPY external/run_external.py .
+RUN chmod +x run_external.py
+
+# Expose port
+EXPOSE 8001
+
+# Set environment variables for external use
+ENV HA_URL="http://localhost:8123"
+ENV HA_TOKEN=""
+ENV LOG_LEVEL="info"
+
+# Set up entrypoint
+CMD ["python3", "run_external.py"]

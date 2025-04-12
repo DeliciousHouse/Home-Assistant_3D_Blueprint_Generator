@@ -28,7 +28,7 @@ fi
 echo -e "${YELLOW}Starting new container...${NC}"
 docker run -d \
     --name blueprint-generator \
-    -p 8000:8000 \
+    -p 8001:8000 \
     -v "$(pwd)/data:/data" \
     -e "LOG_LEVEL=info" \
     blueprint-generator:$CURRENT_VERSION
@@ -36,7 +36,7 @@ docker run -d \
 # Check if container is running
 if docker ps | grep -q blueprint-generator; then
     echo -e "${GREEN}Container started successfully!${NC}"
-    echo -e "${GREEN}Blueprint Generator is available at: http://localhost:8000${NC}"
+    echo -e "${GREEN}Blueprint Generator is available at: http://localhost:8001${NC}"
 else
     echo -e "${RED}Failed to start container. Check logs with: docker logs blueprint-generator${NC}"
     exit 1
