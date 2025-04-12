@@ -586,6 +586,7 @@ def generate_default_blueprint():
         include_outside = params.get('include_outside', True)
 
         # Your actual home areas with device counts to estimate room sizes
+        # These are correctly defined internal data, not from external routes
         areas = {
             # Outside areas
             'outside': [
@@ -744,14 +745,15 @@ def generate_default_blueprint():
             'status': 'active' # Required by your existing _save_blueprint method
         }
 
-        # Save device positions to database
+        # Save device positions to database using internal method call
+        # Direct calling the method rather than making HTTP request
         for device_id, position in device_positions.items():
-            # Use the initialized bluetooth_processor instance instead of importing the function
+            # Use the initialized instance (bluetooth_processor) directly
             bluetooth_processor.save_device_position(device_id, position)
             logger.info(f"Created reference point {device_id} at position {position}")
 
         # Use blueprint generator to save the blueprint
-        # This uses your existing _save_blueprint method
+        # Uses internal method rather than HTTP calls
         blueprint_generator.latest_generated_blueprint = blueprint
         saved = blueprint_generator._save_blueprint(blueprint)
 

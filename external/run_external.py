@@ -249,6 +249,7 @@ def main():
             start_api(host=host, port=port, debug=debug, use_reloader=False)
         except OSError as e:
             if "Address already in use" in str(e):
+
                 logger.error(f"Port {port} already in use. Please choose a different port.")
                 # Try again with port+1
                 logger.info(f"Attempting to start with port {port+1}")
