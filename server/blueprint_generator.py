@@ -15,7 +15,8 @@ from .db import (
     get_recent_area_predictions,   # ESSENTIAL: To get data for anchoring
     save_blueprint_to_sqlite,      # ESSENTIAL: To save the final result
     get_latest_blueprint_from_sqlite, # ESSENTIAL: To retrieve the last blueprint for API/UI
-    execute_sqlite_query # Only if needed for other direct queries
+    execute_sqlite_query,          # Only if needed for other direct queries
+    get_device_positions_from_sqlite  # Added to retrieve device positions from SQLite
 )
 
 # --- Imports from other project files ---
