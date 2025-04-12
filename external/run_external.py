@@ -225,6 +225,115 @@ def start_processing_scheduler(config):
     processing_thread.start()
     logger.info("Background processing scheduler started")
 
+def configure_multilateration_and_room_naming():
+    """Configure multilateration for floor detection and fix room naming."""
+    try:
+        from server.ha_client import HomeAssistantClient
+        from server.db import save_reference_position
+
+        logger.info("Configuring system to use multilateration for room positioning and floor detection")
+
+        # Initialize Home Assistant client
+        ha_client = HomeAssistantClient()
+
+        # Define the areas we know should exist with proper naming
+        correct_areas = {
+            "master_bedroom": {"name": "Master Bedroom", "floor": 1},
+            "master_bathroom": {"name": "Master Bathroom", "floor": 1},
+            "sky_floor": {"name": "Sky Floor", "floor": 2},  # Make sure Sky Floor is on second floor
+            "lounge": {"name": "Lounge", "floor": 1},
+            "kitchen": {"name": "Kitchen", "floor": 1},
+            "office": {"name": "Office", "floor": 2},
+        }
+
+        # Update area registry via Home Assistant to ensure correct naming
+        areas = ha_client.get_areas()
+        area_map = {area["area_id"]: area for area in areas}
+
+        # Log all available areas for debugging
+        logger.info(f"Available Home Assistant areas: {[area['name'] for area in areas]}")
+
+        # Create reference positions for each area to help with multilateration
+        # These will serve as anchors for the multilateration algorithm
+        reference_points = {}
+
+        # Create a reference point for each area we want to ensure exists
+        floor_z_offset = 3.0  # 3 meters per floor
+        for area_id, area_info in correct_areas.items():
+            # Calculate z-coordinate based on floor
+            z_coord = (area_info['floor'] - 1) * floor_z_offset
+
+            # Create a unique reference point ID for this area
+            ref_id = f"reference_{area_id}"
+
+            # Ensure each reference point has distinct coordinates
+            # Use area-specific offsets to help the multilateration algorithm
+            x_offset = hash(area_id) % 5  # Simple hash-based offset between 0-4
+            y_offset = (hash(area_id) // 5) % 5  # Different offset for y
+
+            # Create reference position
+            reference_points[ref_id] = {
+                "x": 10 + x_offset,
+                "y": 10 + y_offset,
+                "z": z_coord,
+                "area_id": area_id
+            }
+
+            # Save the reference position to the database
+            save_reference_position(
+                device_id=ref_id,
+                x=reference_points[ref_id]['x'],
+                y=reference_points[ref_id]['y'],
+                z=reference_points[ref_id]['z'],
+                area_id=area_id
+            )
+
+            logger.info(f"Created reference position for {area_id} at floor {area_info['floor']}")
+
+        # Update configuration to enable multilateration
+        config_updates = {
+            "generation_settings": {
+                "use_multilateration": True,
+                "floor_height": floor_z_offset,
+                "min_points_per_room": 1
+            },
+            "room_detection": {
+                "use_areas": True,
+                "rename_map": {
+                    "alexs_room": "master_bedroom",
+                    "alexs_bathroom": "master_bathroom"
+                }
+            }
+        }
+
+        # Save the updated configuration
+        config_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(config_dir, '..', 'config', 'config.json')
+
+        # Load existing config
+        try:
+            with open(config_path, 'r') as f:
+                existing_config = json.load(f)
+
+            # Update with our multilateration settings
+            for section, settings in config_updates.items():
+                if section not in existing_config:
+                    existing_config[section] = {}
+                existing_config[section].update(settings)
+
+            # Save back to disk
+            with open(config_path, 'w') as f:
+                json.dump(existing_config, f, indent=2)
+
+            logger.info("Updated configuration to use multilateration for floor detection")
+        except Exception as e:
+            logger.warning(f"Could not update config file, but will continue with reference points: {e}")
+
+        return True
+    except Exception as e:
+        logger.error(f"Error configuring multilateration: {e}", exc_info=True)
+        return False
+
 def main():
     """Main entry point."""
     try:
@@ -246,10 +355,12 @@ def main():
 
         # Start the API
         try:
+            # Before starting the API, ensure room naming is correct and floor detection is enabled
+            configure_multilateration_and_room_naming()
+
             start_api(host=host, port=port, debug=debug, use_reloader=False)
         except OSError as e:
             if "Address already in use" in str(e):
-
                 logger.error(f"Port {port} already in use. Please choose a different port.")
                 # Try again with port+1
                 logger.info(f"Attempting to start with port {port+1}")

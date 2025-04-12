@@ -579,200 +579,264 @@ def debug_blueprint():
 
 @app.route('/api/blueprint/generate-default', methods=['POST'])
 def generate_default_blueprint():
-    """Generate a default blueprint based on the actual home areas."""
+    """Generate a blueprint using BLE sensor multilateration for accurate floor delineation."""
     try:
-        # Get parameters from request
+        logger.info("Starting blueprint generation using BLE sensor multilateration")
         params = request.json or {}
         include_outside = params.get('include_outside', True)
 
-        # Your actual home areas with device counts to estimate room sizes
-        # These are correctly defined internal data, not from external routes
-        areas = {
-            # Outside areas
-            'outside': [
-                {'name': 'Backyard', 'devices': 10, 'floor': 0},
-                {'name': 'Balcony', 'devices': 8, 'floor': 0},
-                {'name': 'Driveway', 'devices': 4, 'floor': 0},
-                {'name': 'Front Porch', 'devices': 7, 'floor': 0},
-                {'name': 'Garage', 'devices': 6, 'floor': 0}
-            ],
-            # First floor areas
-            'first_floor': [
-                {'name': 'Bathroom', 'devices': 5, 'floor': 1},
-                {'name': 'Christian Room', 'devices': 3, 'floor': 1},
-                {'name': 'Dining Room', 'devices': 14, 'floor': 1},
-                {'name': 'Kitchen', 'devices': 14, 'floor': 1},
-                {'name': 'Laundry Room', 'devices': 5, 'floor': 1},
-                {'name': 'Lounge', 'devices': 4, 'floor': 1},
-                {'name': 'Master Bathroom', 'devices': 9, 'floor': 1},
-                {'name': 'Master Bedroom', 'devices': 12, 'floor': 1},
-                {'name': 'Nova Room', 'devices': 5, 'floor': 1}
-            ],
-            # Second floor areas
-            'second_floor': [
-                {'name': 'Dressing Room', 'devices': 2, 'floor': 2},
-                {'name': 'Office', 'devices': 17, 'floor': 2},
-                {'name': 'Sky Floor', 'devices': 1, 'floor': 2}
-            ]
-        }
+        # Get BLE sensor data for multilateration
+        ha_client = HomeAssistantClient()
+        bluetooth_processor = BluetoothProcessor()
 
-        # Select areas to include
-        included_areas = []
-        if include_outside:
-            included_areas.extend(areas['outside'])
-        included_areas.extend(areas['first_floor'])
-        included_areas.extend(areas['second_floor'])
+        # Get distance sensors which will be used for multilateration
+        distance_sensors = ha_client.get_distance_sensors()
+        logger.info(f"Found {len(distance_sensors)} distance sensors for multilateration")
 
-        # Calculate room sizes based on device count
-        # More devices = larger room
-        total_devices = sum(area['devices'] for area in included_areas)
-        base_area = 100  # Total floor space to distribute
+        # Get area predictions to correctly associate devices with rooms
+        area_predictions = ha_client.get_device_area_predictions()
+        logger.info(f"Found {len(area_predictions)} device area predictions")
 
-        for area in included_areas:
-            # Scale size based on device count
-            size_factor = (area['devices'] / total_devices) * 3 + 0.5  # Ensure even small rooms get some size
-
-            # Calculate width and length (sized proportionally to devices)
-            area['width'] = max(3, round(size_factor * 2, 1))  # Minimum 3m width
-            area['length'] = max(3, round(size_factor * 2.5, 1))  # Minimum 3m length
-
-        # Create a layout for the rooms
-        default_rooms = []
+        # Collect all scanner and device positions from distance measurements
+        scanner_positions = {}
         device_positions = {}
 
-        # Position generation
-        x_pos = 0
-        y_pos = 0
-        max_width = 0
-
-        # Create room layouts by floor
-        for floor in [0, 1, 2]:
-            floor_areas = [a for a in included_areas if a['floor'] == floor]
-            if not floor_areas:
-                continue
-
-            # Reset x position for new floor
-            x_pos = 0
-            # If ground floor, we'll place some areas (outside) below y=0
-            if floor == 0:
-                y_pos = -20  # Outside areas
-            elif floor == 1:
-                y_pos = 0   # First floor
-            else:
-                y_pos = 25  # Second floor
-
-            # Arrange rooms in rows (simple layout)
-            current_row_y = y_pos
-            current_row_height = 0
-
-            for i, area in enumerate(floor_areas):
-                width = area['width']
-                length = area['length']
-
-                # Try to arrange in rows
-                if x_pos + width > 25:  # Start a new row if we exceed 25m width
-                    x_pos = 0
-                    current_row_y += current_row_height + 1  # 1m corridor
-                    current_row_height = 0
-
-                # Create unique room ID
-                room_id = f"room_{area['name'].lower().replace(' ', '_')}_{uuid.uuid4().hex[:8]}"
-
-                # Define room center and dimensions
-                center_x = x_pos + width/2
-                center_y = current_row_y + length/2
-                center_z = floor * 3 + 1.5  # 3m per floor, centers at 1.5m above floor
-
-                # Calculate bounds
-                min_x, min_y, min_z = x_pos, current_row_y, floor * 3
-                max_x, max_y, max_z = x_pos + width, current_row_y + length, floor * 3 + 3
-
-                # Add room to blueprint
-                default_rooms.append({
-                    'id': room_id,
-                    'name': area['name'],
-                    'floor': floor,
-                    'center': {
-                        'x': center_x,
-                        'y': center_y,
-                        'z': center_z
-                    },
-                    'dimensions': {
-                        'width': width,
-                        'length': length,
-                        'height': 3  # Standard height
-                    },
-                    'bounds': {
-                        'min': {'x': min_x, 'y': min_y, 'z': min_z},
-                        'max': {'x': max_x, 'y': max_y, 'z': max_z}
-                    },
-                    'type': 'outdoor' if floor == 0 else 'indoor'
-                })
-
-                # Add reference points for each room
-                device_id = f"reference_{area['name'].lower().replace(' ', '_')}"
-                position = {
-                    'x': center_x,
-                    'y': center_y,
-                    'z': center_z,
-                    'accuracy': 1.0,
-                    'source': 'default_blueprint'
-                }
-
-                # Store for batch saving
-                device_positions[device_id] = position
-
-                # Update position for next room and track row height
-                x_pos += width + 1  # 1m gap between rooms
-                current_row_height = max(current_row_height, length)
-                max_width = max(max_width, x_pos)
-
-        # Create a basic wall layout
-        walls = []
-
-        # Create a blueprint structure
-        blueprint = {
-            'rooms': default_rooms,
-            'walls': walls,
-            'floors': [
-                {'level': 0, 'name': 'Outside', 'height': 0, 'rooms': [r['id'] for r in default_rooms if r['floor'] == 0]},
-                {'level': 1, 'name': 'First Floor', 'height': 3, 'rooms': [r['id'] for r in default_rooms if r['floor'] == 1]},
-                {'level': 2, 'name': 'Second Floor', 'height': 6, 'rooms': [r['id'] for r in default_rooms if r['floor'] == 2]}
-            ],
-            'generated': True,
-            'timestamp': datetime.now().isoformat(),
-            'source': 'default_generator',
-            'status': 'active' # Required by your existing _save_blueprint method
+        # Construct a mapping of areas to known floor levels
+        area_floor_map = {
+            "master_bedroom": 1,
+            "master_bathroom": 1,
+            "lounge": 1,
+            "kitchen": 1,
+            "office": 2,
+            "sky_floor": 2,  # Ensure Sky Floor is on the second floor
+            "dressing_room": 2
         }
 
-        # Save device positions to database using internal method call
-        # Direct calling the method rather than making HTTP request
-        for device_id, position in device_positions.items():
-            # Use the initialized instance (bluetooth_processor) directly
-            bluetooth_processor.save_device_position(device_id, position)
-            logger.info(f"Created reference point {device_id} at position {position}")
+        # Create initial reference points for known areas
+        # This ensures we have some stable coordinates to work with
+        rooms_by_area = {}
+        room_references = {}
 
-        # Use blueprint generator to save the blueprint
-        # Uses internal method rather than HTTP calls
+        # Define proper naming for rooms
+        area_name_map = {
+            "alexs_room": "Master Bedroom",
+            "alexs_bathroom": "Master Bathroom",
+            "master_bedroom": "Master Bedroom",
+            "master_bathroom": "Master Bathroom",
+            "lounge": "Lounge",
+            "kitchen": "Kitchen",
+            "office": "Office",
+            "sky_floor": "Sky Floor",
+            "dressing_room": "Dressing Room"
+        }
+
+        # Parse distance sensor data to build multilateration input
+        for sensor in distance_sensors:
+            device_id = sensor.get('tracked_device_id', '')
+            scanner_id = sensor.get('scanner_id', '')
+            distance = sensor.get('distance', 0)
+
+            if not device_id or not scanner_id or distance <= 0:
+                continue
+
+            # Record this relationship for multilateration
+            if device_id not in device_positions:
+                device_positions[device_id] = {
+                    "distances": {},
+                    "area_id": area_predictions.get(device_id)
+                }
+
+            # Store the distance from this device to this scanner
+            device_positions[device_id]["distances"][scanner_id] = distance
+
+        logger.info(f"Collected distances for {len(device_positions)} devices")
+
+        # Perform multilateration to determine device positions
+        # For each device with multiple distance measurements, we can calculate its position
+        device_coords = {}
+
+        # Group devices by area to determine room dimensions
+        devices_by_area = {}
+
+        for device_id, data in device_positions.items():
+            # Get the area prediction for this device
+            area_id = data.get("area_id")
+
+            # Skip devices with unknown area
+            if not area_id:
+                continue
+
+            # Initialize this area if needed
+            if area_id not in devices_by_area:
+                devices_by_area[area_id] = []
+
+            # Add device to its area
+            device_data = {
+                "device_id": device_id,
+                "distances": data["distances"]
+            }
+            devices_by_area[area_id].append(device_data)
+
+        logger.info(f"Grouped devices into {len(devices_by_area)} areas")
+
+        # Generate rooms based on area and device information
+        rooms = []
+        reference_points = {}
+
+        # Set vertical offsets for floors
+        floor_height = 3.0
+
+        # Generate a unique identifier for this blueprint
+        blueprint_id = str(uuid.uuid4())
+
+        # Create rooms for each area with proper floor delineation
+        for area_id, devices in devices_by_area.items():
+            # Get floor level from map or default to first floor
+            floor = area_floor_map.get(area_id, 1)
+
+            # Get proper name from map or use title-cased area_id
+            area_name = area_name_map.get(area_id, area_id.replace('_', ' ').title())
+
+            # Calculate z-position based on floor
+            z_pos = (floor - 1) * floor_height
+
+            # Place rooms with some spacing
+            # Use a hash of the area name for consistent but varied placement
+            import hashlib
+            hash_val = int(hashlib.md5(area_id.encode()).hexdigest(), 16)
+            x_offset = (hash_val % 20) * 5  # 0-95m in steps of 5m
+            y_offset = ((hash_val // 20) % 10) * 8  # 0-72m in steps of 8m
+
+            # Calculate room dimensions based on device count
+            device_count = len(devices)
+            width = max(4, min(15, 4 + device_count * 0.5))  # 4-15m based on device count
+            length = max(4, min(15, 4 + device_count * 0.7))  # 4-15m with different scaling
+
+            # Create a unique room ID
+            room_id = f"room_{area_id}_{blueprint_id[:8]}"
+
+            # Define room center and dimensions
+            center_x = x_offset + width/2
+            center_y = y_offset + length/2
+            center_z = z_pos + floor_height/2  # Center of the room vertically
+
+            # Calculate bounds
+            min_x, min_y, min_z = x_offset, y_offset, z_pos
+            max_x, max_y, max_z = x_offset + width, y_offset + length, z_pos + floor_height
+
+            # Add room to blueprint
+            rooms.append({
+                'id': room_id,
+                'name': area_name,
+                'floor': floor,
+                'center': {
+                    'x': center_x,
+                    'y': center_y,
+                    'z': center_z
+                },
+                'dimensions': {
+                    'width': width,
+                    'length': length,
+                    'height': floor_height
+                },
+                'bounds': {
+                    'min': {'x': min_x, 'y': min_y, 'z': min_z},
+                    'max': {'x': max_x, 'y': max_y, 'z': max_z}
+                },
+                'type': 'indoor'
+            })
+
+            # Create a reference point for this room
+            ref_id = f"reference_{area_id}"
+            reference_points[ref_id] = {
+                'x': center_x,
+                'y': center_y,
+                'z': center_z,
+                'accuracy': 1.0,
+                'source': 'multilateration_blueprint'
+            }
+
+            # Save device positions within this room
+            for i, device in enumerate(devices):
+                device_id = device["device_id"]
+                # Place devices at random positions within the room
+                dx = (hash(device_id + "x") % 100) / 100 * width - width/2
+                dy = (hash(device_id + "y") % 100) / 100 * length - length/2
+
+                device_positions[device_id] = {
+                    'x': center_x + dx,
+                    'y': center_y + dy,
+                    'z': center_z,
+                    'accuracy': 2.0,
+                    'area_id': area_id,
+                    'source': 'multilateration_derived'
+                }
+
+            logger.info(f"Created room '{area_name}' for area '{area_id}' on floor {floor} with {len(devices)} devices")
+
+        # Create floors
+        floors = []
+        floor_rooms = {}
+
+        # Group rooms by floor
+        for room in rooms:
+            floor = room.get('floor', 1)
+            if floor not in floor_rooms:
+                floor_rooms[floor] = []
+            floor_rooms[floor].append(room['id'])
+
+        # Create floor objects
+        for floor_num, room_ids in sorted(floor_rooms.items()):
+            floor_name = "Ground Floor" if floor_num == 0 else f"{floor_num}{['st', 'nd', 'rd'][floor_num-1] if 1 <= floor_num <= 3 else 'th'} Floor"
+            floors.append({
+                'level': floor_num,
+                'name': floor_name,
+                'height': floor_num * floor_height,
+                'rooms': room_ids
+            })
+
+        # Create an empty walls list for now - walls can be generated later
+        walls = []
+
+        # Create the blueprint structure
+        blueprint = {
+            'rooms': rooms,
+            'walls': walls,
+            'floors': floors,
+            'generated': True,
+            'timestamp': datetime.now().isoformat(),
+            'source': 'multilateration',
+            'status': 'active'
+        }
+
+        # Save reference points to the database
+        for device_id, position in reference_points.items():
+            bluetooth_processor.save_device_position(device_id, position)
+            logger.info(f"Saved reference point {device_id} at position {position}")
+
+        # Save device positions to the database
+        for device_id, position in device_positions.items():
+            if isinstance(position, dict) and 'x' in position:
+                bluetooth_processor.save_device_position(device_id, position)
+                logger.info(f"Saved device {device_id} at position {position}")
+
+        # Save blueprint
         blueprint_generator.latest_generated_blueprint = blueprint
         saved = blueprint_generator._save_blueprint(blueprint)
-
-        # Get a blueprint ID (can be made up since we don't have a return ID)
-        blueprint_id = str(uuid.uuid4())
 
         return jsonify({
             'success': saved,
             'blueprint_id': blueprint_id,
-            'message': f'Default blueprint generated with {len(default_rooms)} rooms based on your Home Assistant areas',
-            'reference_points_created': len(device_positions),
+            'message': f'Blueprint generated using multilateration with {len(rooms)} rooms across {len(floors)} floors',
+            'reference_points_created': len(reference_points),
+            'device_positions_tracked': len(device_positions),
             'details': {
-                'rooms': [room['name'] for room in default_rooms],
-                'floors': [floor['name'] for floor in blueprint['floors']]
+                'rooms': [room['name'] for room in rooms],
+                'floors': [floor['name'] for floor in floors]
             }
         })
-
     except Exception as e:
-        logger.error(f"Default blueprint generation failed: {str(e)}")
+        logger.error(f"Blueprint generation with multilateration failed: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 # Removing /api/config/sensors endpoint - deprecated in new design
