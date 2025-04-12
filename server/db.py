@@ -624,6 +624,130 @@ def save_distance_log(tracked_device_id: str, scanner_id: str, distance: float) 
         logger.error(f"Failed to save distance log for {tracked_device_id}")
         return False
 
+def get_device_positions_from_sqlite(limit: int = 1000, time_window_minutes: Optional[int] = None) -> Dict[str, Dict[str, Any]]:
+    """
+    Get the latest device positions from the SQLite database.
+
+    Args:
+        limit: Maximum number of positions to retrieve per device
+        time_window_minutes: Optional time window to filter positions by
+
+    Returns:
+        Dict mapping device_id to position data
+    """
+    try:
+        # Build query with optional time filter
+        query = """
+        SELECT dp.device_id, dp.position_data, dp.source, dp.accuracy, dp.area_id, dp.timestamp
+        FROM device_positions dp
+        INNER JOIN (
+            SELECT device_id, MAX(timestamp) as latest_timestamp
+            FROM device_positions
+        """
+
+        params = []
+
+        # Add time window condition if specified
+        if time_window_minutes is not None:
+            cutoff_time = (datetime.now() - timedelta(minutes=time_window_minutes)).isoformat()
+            query += " WHERE timestamp >= ?"
+            params.append(cutoff_time)
+
+        query += """
+            GROUP BY device_id
+        ) latest ON dp.device_id = latest.device_id AND dp.timestamp = latest.latest_timestamp
+        LIMIT ?
+        """
+        params.append(limit)
+
+        # Execute query
+        results = _execute_sqlite_read(query, tuple(params))
+
+        if not results:
+            logger.info("No device positions found in database")
+            return {}
+
+        # Process results
+        device_positions = {}
+        for row in results:
+            device_id = row['device_id']
+
+            try:
+                # Parse the position data JSON
+                position_data = json.loads(row['position_data']) if isinstance(row['position_data'], str) else row['position_data']
+
+                # Ensure position data has x, y, z coordinates
+                if not all(key in position_data for key in ['x', 'y', 'z']):
+                    logger.warning(f"Invalid position data for device {device_id}: missing coordinates")
+                    continue
+
+                # Add additional metadata
+                position_data.update({
+                    'source': row['source'],
+                    'accuracy': row['accuracy'],
+                    'area_id': row['area_id'],
+                    'timestamp': row['timestamp']
+                })
+
+                device_positions[device_id] = position_data
+
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.error(f"Error parsing position data for device {device_id}: {e}")
+                continue
+
+        logger.info(f"Retrieved {len(device_positions)} device positions from database")
+        return device_positions
+
+    except Exception as e:
+        logger.error(f"Error getting device positions from database: {e}", exc_info=True)
+        return {}
+
+def save_device_position(device_id: str, position_data: Dict[str, Any], source: str = 'calculated', accuracy: Optional[float] = None, area_id: Optional[str] = None) -> bool:
+    """
+    Save a device position to the SQLite database.
+
+    Args:
+        device_id: Unique identifier for the device
+        position_data: Dict with position data (must contain x, y, z)
+        source: Source of the position data (e.g., 'calculated', 'manual')
+        accuracy: Optional estimated accuracy in meters
+        area_id: Optional area/room identifier
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Validate position data
+        if not isinstance(position_data, dict) or not all(key in position_data for key in ['x', 'y', 'z']):
+            logger.error(f"Invalid position data for device {device_id}: {position_data}")
+            return False
+
+        # Convert position data to JSON
+        position_json = json.dumps(position_data)
+
+        # Prepare query and parameters
+        query = """
+        INSERT INTO device_positions (device_id, position_data, source, accuracy, area_id, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """
+
+        timestamp = datetime.now().isoformat()
+        params = (device_id, position_json, source, accuracy, area_id, timestamp)
+
+        # Execute query
+        result = _execute_sqlite_write(query, params)
+
+        if result is not None:
+            logger.debug(f"Saved position for device {device_id} at ({position_data.get('x')}, {position_data.get('y')}, {position_data.get('z')})")
+            return True
+        else:
+            logger.error(f"Failed to save position for device {device_id}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error saving device position: {e}", exc_info=True)
+        return False
+
 # For compatibility with existing code
 execute_sqlite_query = _execute_sqlite_read
 execute_query = _execute_sqlite_read

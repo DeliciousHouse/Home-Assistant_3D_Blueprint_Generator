@@ -12,6 +12,9 @@ let currentFloor = 0;
 let camera = { x: 0, y: 0, scale: 1 };
 let isDragging = false;
 let lastMousePos = { x: 0, y: 0 };
+let contentBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+let autoScale = true; // Flag to control initial auto-scaling
+const zoomFactor = 1.1; // Define zoom factor constant
 
 // Constants
 const COLORS = [
@@ -30,6 +33,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (canvas) {
         ctx = canvas.getContext('2d');
         initializeCanvas();
+        canvas.style.cursor = 'grab'; // Set initial cursor
     }
 
     // Add event listeners
@@ -142,7 +146,6 @@ function fetchBlueprint() {
             return response.json();
         })
         .then(data => {
-            // --- FIX: Access the nested blueprint object ---
             if (data && data.success && data.blueprint) {
                 console.log("Successfully fetched blueprint data:", data.blueprint); // Log fetched data
                 blueprint = data.blueprint; // Assign ONLY the blueprint object
@@ -158,7 +161,6 @@ function fetchBlueprint() {
                 blueprint = null;
                 renderEmptyCanvas();
             }
-            // --- END FIX ---
             hideLoading();
         })
         .catch(error => {
@@ -170,13 +172,30 @@ function fetchBlueprint() {
         });
 }
 
-function renderBlueprint(blueprintData) { // Renamed parameter for clarity
+function renderBlueprint(blueprintData) {
     // This function should update the visual representation.
-    console.log("Calling updateScene with blueprint data:", blueprintData); // Log data being passed
-    updateScene(blueprintData); // Pass the correct blueprint object
+    console.log("Rendering blueprint data:", blueprintData); // Log data being passed
+
+    if (!blueprintData) {
+        console.error("No blueprint data to render");
+        renderEmptyCanvas();
+        return;
+    }
+
+    // Calculate bounds for auto-scaling
+    calculateContentBounds(blueprintData);
+
+    // Apply auto-scaling if enabled
+    if (autoScale) {
+        applyAutoScale();
+        autoScale = false; // Only auto-scale once when blueprint first loads
+    }
+
+    // Update the scene with blueprint data
+    updateScene(blueprintData);
 }
 
-function updateScene(blueprintData) { // Renamed parameter for clarity
+function updateScene(blueprintData) {
     // Add checks at the beginning
     if (!ctx) {
         console.error("Canvas context (ctx) is not available.");
@@ -221,15 +240,6 @@ function updateScene(blueprintData) { // Renamed parameter for clarity
     const floorRooms = blueprintData.rooms.filter(r => floorData.rooms.includes(r.id));
     console.log(`Found ${floorRooms.length} rooms for floor ${currentFloor}`); // Log room count
 
-    // Center the blueprint (only if rooms exist)
-    if (floorRooms.length > 0) {
-        centerBlueprint(floorRooms);
-    } else {
-        console.log("No rooms to draw for this floor.");
-        // Optionally reset camera if no rooms?
-        // camera = { x: canvas.width / 2, y: canvas.height / 2, scale: 1 };
-    }
-
     // Draw rooms
     floorRooms.forEach((room, index) => {
         console.log(`Drawing room: ${room.name} (ID: ${room.id})`); // Log room being drawn
@@ -241,7 +251,6 @@ function updateScene(blueprintData) { // Renamed parameter for clarity
         console.log(`Drawing ${blueprintData.walls.length} walls...`); // Log wall count
         blueprintData.walls.forEach(wall => {
             // Only draw walls for current floor (assuming walls have a floor property or are global)
-            // If walls don't have a floor property, this logic needs adjustment
             if (wall.floor === undefined || wall.floor === currentFloor) {
                 console.log("Drawing wall:", wall); // Log wall being drawn
                 drawWall(wall);
@@ -255,38 +264,65 @@ function updateScene(blueprintData) { // Renamed parameter for clarity
     updateFloorIndicator();
 }
 
-function centerBlueprint(rooms) {
-    if (!rooms || rooms.length === 0) return;
+// Calculate the bounds of all content for auto-scaling
+function calculateContentBounds(blueprintData) {
+    contentBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    if (!blueprintData || !blueprintData.rooms) return;
 
-    // Find the bounds of all rooms
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-
-    rooms.forEach(room => {
-        const bounds = room.bounds;
-        minX = Math.min(minX, bounds.min.x);
-        maxX = Math.max(maxX, bounds.max.x);
-        minY = Math.min(minY, bounds.min.y);
-        maxY = Math.max(maxY, bounds.max.y);
+    blueprintData.rooms.forEach(room => {
+        if (room.bounds) {
+            contentBounds.minX = Math.min(contentBounds.minX, room.bounds.min.x);
+            contentBounds.minY = Math.min(contentBounds.minY, room.bounds.min.y);
+            contentBounds.maxX = Math.max(contentBounds.maxX, room.bounds.max.x);
+            contentBounds.maxY = Math.max(contentBounds.maxY, room.bounds.max.y);
+        }
     });
 
-    // Calculate blueprint center and dimensions
-    const blueprintWidth = maxX - minX;
-    const blueprintHeight = maxY - minY;
-    const blueprintCenterX = minX + blueprintWidth / 2;
-    const blueprintCenterY = minY + blueprintHeight / 2;
+    // Also consider walls if they exist
+    if (blueprintData.walls) {
+        blueprintData.walls.forEach(wall => {
+            contentBounds.minX = Math.min(contentBounds.minX, wall.start.x, wall.end.x);
+            contentBounds.minY = Math.min(contentBounds.minY, wall.start.y, wall.end.y);
+            contentBounds.maxX = Math.max(contentBounds.maxX, wall.start.x, wall.end.x);
+            contentBounds.maxY = Math.max(contentBounds.maxY, wall.start.y, wall.end.y);
+        });
+    }
 
-    // Calculate canvas center
-    const canvasCenterX = canvas.width / 2;
-    const canvasCenterY = canvas.height / 2;
+    console.log("Calculated content bounds:", contentBounds);
+}
 
-    // Adjust camera to center blueprint
-    camera.x = canvasCenterX - blueprintCenterX * camera.scale;
-    camera.y = canvasCenterY - blueprintCenterY * camera.scale;
+// Apply auto-scaling to fit the blueprint in the canvas
+function applyAutoScale() {
+    if (contentBounds.minX === Infinity || !canvas) return; // No content or canvas not ready
 
-    // Auto-scale to fit blueprint
-    const scaleX = canvas.width / (blueprintWidth * 1.2);  // 1.2 for padding
-    const scaleY = canvas.height / (blueprintHeight * 1.2);
-    camera.scale = Math.min(scaleX, scaleY, 20);  // Limit max scale
+    const contentWidth = contentBounds.maxX - contentBounds.minX;
+    const contentHeight = contentBounds.maxY - contentBounds.minY;
+
+    if (contentWidth <= 0 || contentHeight <= 0) {
+        console.warn("Cannot auto-scale with zero or negative content dimensions.");
+        // Reset to default scale/offset if content is invalid
+        camera.scale = 10;
+        camera.x = canvas.width / 2;
+        camera.y = canvas.height / 2;
+        return;
+    }
+
+    const padding = 50; // Pixels padding around the content
+    const availableWidth = canvas.width - 2 * padding;
+    const availableHeight = canvas.height - 2 * padding;
+
+    // Calculate scale to fit content within available space
+    const scaleX = availableWidth / contentWidth;
+    const scaleY = availableHeight / contentHeight;
+    camera.scale = Math.min(scaleX, scaleY); // Use the smaller scale to fit both dimensions
+
+    // Calculate offsets to center the content
+    const scaledContentWidth = contentWidth * camera.scale;
+    const scaledContentHeight = contentHeight * camera.scale;
+    camera.x = padding + (availableWidth - scaledContentWidth) / 2 - (contentBounds.minX * camera.scale);
+    camera.y = padding + (availableHeight - scaledContentHeight) / 2 - (contentBounds.minY * camera.scale);
+
+    console.log(`Auto-scaling applied: scale=${camera.scale.toFixed(2)}, offsetX=${camera.x.toFixed(2)}, offsetY=${camera.y.toFixed(2)}`);
 }
 
 function drawRoom(room, index) {
@@ -426,8 +462,8 @@ function handleZoom(e) {
     const worldY = (mouseY - camera.y) / camera.scale;
 
     // Update scale
-    const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-    camera.scale = Math.max(0.1, Math.min(20, camera.scale * zoomFactor));
+    const delta = e.deltaY > 0 ? 1 / zoomFactor : zoomFactor;
+    camera.scale = Math.max(0.1, Math.min(20, camera.scale * delta));
 
     // Adjust camera position to zoom into the mouse position
     camera.x = mouseX - worldX * camera.scale;
@@ -444,6 +480,7 @@ function handleZoom(e) {
 function startDrag(e) {
     isDragging = true;
     lastMousePos = { x: e.offsetX, y: e.offsetY };
+    canvas.style.cursor = 'grabbing';
 }
 
 function drag(e) {
@@ -467,6 +504,9 @@ function drag(e) {
 
 function endDrag() {
     isDragging = false;
+    if (canvas) {
+        canvas.style.cursor = 'grab';
+    }
 }
 
 // UI helpers
@@ -513,193 +553,3 @@ function displayErrorMessage(message, duration = 5000) {
         }, duration);
     }
 }
-
-// --- NEW: Variables for auto-scaling ---
-let autoScale = true; // Flag to control initial auto-scaling
-let contentBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-// --- END NEW ---
-
-// --- NEW: Function to calculate overall bounds of blueprint content ---
-function calculateContentBounds() {
-    contentBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-    if (!blueprint || !blueprint.rooms) return;
-
-    blueprint.rooms.forEach(room => {
-        if (room.bounds) {
-            contentBounds.minX = Math.min(contentBounds.minX, room.bounds.min.x);
-            contentBounds.minY = Math.min(contentBounds.minY, room.bounds.min.y);
-            contentBounds.maxX = Math.max(contentBounds.maxX, room.bounds.max.x);
-            contentBounds.maxY = Math.max(contentBounds.maxY, room.bounds.max.y);
-        }
-    });
-
-     // Also consider walls if they exist
-     if (blueprint.walls) {
-         blueprint.walls.forEach(wall => {
-             contentBounds.minX = Math.min(contentBounds.minX, wall.start.x, wall.end.x);
-             contentBounds.minY = Math.min(contentBounds.minY, wall.start.y, wall.end.y);
-             contentBounds.maxX = Math.max(contentBounds.maxX, wall.start.x, wall.end.x);
-             contentBounds.maxY = Math.max(contentBounds.maxY, wall.start.y, wall.end.y);
-         });
-     }
-
-    console.log("Calculated content bounds:", contentBounds);
-}
-
-// --- NEW: Function to apply auto-scaling and centering ---
-function applyAutoScale() {
-    if (contentBounds.minX === Infinity || !canvas) return; // No content or canvas not ready
-
-    const contentWidth = contentBounds.maxX - contentBounds.minX;
-    const contentHeight = contentBounds.maxY - contentBounds.minY;
-
-    if (contentWidth <= 0 || contentHeight <= 0) {
-        console.warn("Cannot auto-scale with zero or negative content dimensions.");
-        // Reset to default scale/offset if content is invalid
-        camera.scale = 10;
-        camera.x = canvas.width / 2;
-        camera.y = canvas.height / 2;
-        return;
-    }
-
-
-    const padding = 50; // Pixels padding around the content
-    const availableWidth = canvas.width - 2 * padding;
-    const availableHeight = canvas.height - 2 * padding;
-
-    // Calculate scale to fit content within available space
-    const scaleX = availableWidth / contentWidth;
-    const scaleY = availableHeight / contentHeight;
-    camera.scale = Math.min(scaleX, scaleY); // Use the smaller scale to fit both dimensions
-
-    // Calculate offsets to center the content
-    const scaledContentWidth = contentWidth * camera.scale;
-    const scaledContentHeight = contentHeight * camera.scale;
-    camera.x = padding + (availableWidth - scaledContentWidth) / 2 - (contentBounds.minX * camera.scale);
-    camera.y = padding + (availableHeight - scaledContentHeight) / 2 - (contentBounds.minY * camera.scale);
-
-    console.log(`Auto-scaling applied: scale=${camera.scale.toFixed(2)}, offsetX=${camera.x.toFixed(2)}, offsetY=${camera.y.toFixed(2)}`);
-}
-// --- END NEW ---
-
-function updateScene() {
-    if (!canvas || !ctx || !blueprint) return;
-
-    // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Save context state
-    ctx.save();
-
-    // Apply transformations (scale and offset)
-    // The order matters: translate to origin, scale, then translate by offset
-    // Center the view around the middle of the canvas initially if not auto-scaled
-    // ctx.translate(camera.x, camera.y);
-    // ctx.scale(camera.scale, camera.scale);
-     // Simpler: Apply offset first, then scale relative to 0,0
-     ctx.translate(camera.x, camera.y);
-     ctx.scale(camera.scale, camera.scale);
-
-
-    // Find the data for the current floor
-    const floorData = blueprint.floors ? blueprint.floors.find(f => f.level === currentFloor) : null;
-    const roomsOnFloor = floorData && blueprint.rooms ? blueprint.rooms.filter(room => floorData.rooms.includes(room.id)) : [];
-    const wallsOnFloor = floorData && blueprint.walls ? blueprint.walls.filter(wall => wall.floor === currentFloor) : []; // Assuming walls have a floor property
-
-    // Draw rooms
-    if (roomsOnFloor.length > 0) {
-        roomsOnFloor.forEach(room => drawRoom(room));
-    } else {
-        console.log(`No rooms found for floor ${currentFloor}`);
-    }
-
-    // Draw walls
-    if (wallsOnFloor.length > 0) {
-        wallsOnFloor.forEach(wall => drawWall(wall));
-    } else {
-         console.log(`No walls found for floor ${currentFloor}`);
-    }
-
-    // Restore context state
-    ctx.restore();
-
-     // --- Optional: Draw bounds for debugging ---
-     /*
-     if (contentBounds.minX !== Infinity) {
-         ctx.strokeStyle = 'lime';
-         ctx.lineWidth = 1;
-         const bx = camera.x + contentBounds.minX * camera.scale;
-         const by = camera.y + contentBounds.minY * camera.scale;
-         const bw = (contentBounds.maxX - contentBounds.minX) * camera.scale;
-         const bh = (contentBounds.maxY - contentBounds.minY) * camera.scale;
-         ctx.strokeRect(bx, by, bw, bh);
-     }
-     */
-     // --- End Debug ---
-}
-
-// --- Update canvas event listeners to use scale/offset ---
-
-canvas.addEventListener('mousedown', (e) => {
-    isDragging = true;
-    lastMousePos = { x: e.clientX, y: e.clientY };
-    canvas.style.cursor = 'grabbing';
-});
-
-canvas.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
-    const dx = e.clientX - lastMousePos.x;
-    const dy = e.clientY - lastMousePos.y;
-    camera.x += dx;
-    camera.y += dy;
-    lastMousePos = { x: e.clientX, y: e.clientY };
-    updateScene(); // Redraw with new offset
-});
-
-canvas.addEventListener('mouseup', () => {
-    if (isDragging) {
-        isDragging = false;
-        canvas.style.cursor = 'grab';
-    }
-});
-
-canvas.addEventListener('mouseleave', () => {
-    if (isDragging) {
-        isDragging = false;
-        canvas.style.cursor = 'default';
-    }
-});
-
-canvas.addEventListener('wheel', (e) => {
-    e.preventDefault(); // Prevent page scrolling
-
-    const rect = canvas.getBoundingClientRect();
-    // Mouse position relative to canvas top-left
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-
-    // Convert mouse position to world coordinates before zoom
-    const worldX = (mouseX - camera.x) / camera.scale;
-    const worldY = (mouseY - camera.y) / camera.scale;
-
-    // Determine zoom direction
-    const delta = e.deltaY > 0 ? 1 / zoomFactor : zoomFactor;
-
-    // Update scale
-    camera.scale *= delta;
-
-    // Adjust offset so the point under the mouse stays in the same place
-    camera.x = mouseX - worldX * camera.scale;
-    camera.y = mouseY - worldY * camera.scale;
-
-
-    updateScene(); // Redraw with new scale and offset
-});
-
-
-// Initial setup
-document.addEventListener('DOMContentLoaded', () => {
-    // ... existing setup ...
-    canvas.style.cursor = 'grab'; // Set initial cursor
-    fetchBlueprint();
-});
