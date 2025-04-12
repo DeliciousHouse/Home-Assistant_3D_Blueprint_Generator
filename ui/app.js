@@ -114,98 +114,66 @@ function drawGrid() {
 
     ctx.stroke();
 
-    // Add scale indicator - using feet for US users
+    // Add scale indicator
     ctx.fillStyle = '#495057';
     ctx.font = '12px Arial';
     ctx.textAlign = 'left';
-
-    // Check if we're using imperial units
-    const isImperial = blueprint && blueprint.units === 'imperial';
-    const unitLabel = isImperial ? 'ft' : 'm';
-    ctx.fillText(`Scale: 1${unitLabel} = ${camera.scale.toFixed(1)}px`, 10, canvas.height - 10);
+    ctx.fillText(`Scale: 1m = ${camera.scale.toFixed(1)}px`, 10, canvas.height - 10);
 }
 
 // API Functions
 function fetchBlueprint() {
     showLoading('Loading blueprint...');
-    console.log("Fetching blueprint from /api/blueprint...");
+    console.log("Fetching blueprint from /api/blueprint..."); // Add log
 
     fetch('/api/blueprint')
         .then(response => {
-            console.log("API Response status:", response.status);
             if (response.status === 404) {
-                console.log("API returned 404 - No blueprint found.");
+                console.log("API returned 404 - No blueprint found."); // Add log
                 hideLoading();
                 blueprint = null; // Ensure blueprint is null if not found
                 renderEmptyCanvas(); // Render the empty state
                 return null;
             }
             if (!response.ok) {
-                console.error(`Network response error: ${response.status} ${response.statusText}`);
+                console.error(`Network response error: ${response.status} ${response.statusText}`); // Add log
                 throw new Error(`Network response was not ok: ${response.statusText}`);
             }
             return response.json();
         })
         .then(data => {
-            console.log("Blueprint API response:", data);
-
-            if (!data) {
-                console.log("No data returned from API");
-                blueprint = null;
-                renderEmptyCanvas();
-                hideLoading();
-                return;
-            }
-
-            // Extract the actual blueprint object from the response
-            if (data.success && data.blueprint) {
-                console.log("Successfully fetched blueprint data");
-                blueprint = data.blueprint; // Store the blueprint object
-
-                // Verify the blueprint has rooms
-                if (blueprint.rooms && blueprint.rooms.length > 0) {
-                    console.log(`Blueprint has ${blueprint.rooms.length} rooms`);
-                    renderBlueprint(); // Render the blueprint
-                } else {
-                    console.warn("Blueprint has no rooms array or it's empty");
-                    displayErrorMessage("Blueprint contains no rooms to display");
-                    renderEmptyCanvas();
-                }
-            } else if (data.success === false) {
-                console.error("API returned error:", data.error);
-                displayErrorMessage(data.error || "Error loading blueprint");
+            // --- FIX: Access the nested blueprint object ---
+            if (data && data.success && data.blueprint) {
+                console.log("Successfully fetched blueprint data:", data.blueprint); // Log fetched data
+                blueprint = data.blueprint; // Assign ONLY the blueprint object
+                renderBlueprint(blueprint); // Pass the correct object
+            } else if (data && !data.success) {
+                console.error("API call successful but returned error:", data.error);
+                displayErrorMessage(data.error || "API returned an error.");
                 blueprint = null;
                 renderEmptyCanvas();
             } else {
-                console.warn("Unexpected API response format");
-                displayErrorMessage("Invalid blueprint data format received");
+                // Handle cases where data is null (e.g., from 404) or malformed
+                console.log("No valid blueprint data received or data format incorrect.");
                 blueprint = null;
                 renderEmptyCanvas();
             }
-
+            // --- END FIX ---
             hideLoading();
         })
         .catch(error => {
             console.error('Error fetching blueprint:', error);
-            displayErrorMessage('Failed to load blueprint. See console for details.');
-            blueprint = null;
-            renderEmptyCanvas();
+            displayErrorMessage('Failed to load blueprint. Check console for details.');
+            blueprint = null; // Reset blueprint on error
+            renderEmptyCanvas(); // Render empty state on error
             hideLoading();
         });
 }
 
-function renderBlueprint() {
+function renderBlueprint(blueprintData) { // Renamed parameter for clarity
     // This function should update the visual representation.
-    console.log("Rendering blueprint with data:", blueprint); // Log data being used
-
-    // Add error handling for missing blueprint
-    if (!blueprint) {
-        console.error("No blueprint data available to render");
-        renderEmptyCanvas();
-        return;
-    }
-
-    updateScene(blueprint); // Pass the global blueprint object
+    console.log("Calling updateScene with blueprint data:", blueprintData); // Log data being passed
+    updateScene(blueprintData); // Pass the correct blueprint object
 }
 
 function updateScene(blueprintData) { // Renamed parameter for clarity
@@ -226,7 +194,6 @@ function updateScene(blueprintData) { // Renamed parameter for clarity
     }
 
     console.log(`Updating scene for floor ${currentFloor}`); // Log floor being rendered
-    console.log(`All available floor levels:`, blueprintData.floors.map(f => f.level));
 
     // Clear canvas
     ctx.fillStyle = '#f8f9fa';
@@ -237,40 +204,22 @@ function updateScene(blueprintData) { // Renamed parameter for clarity
 
     // Get rooms for current floor
     const floorData = blueprintData.floors.find(f => f.level === currentFloor);
-    console.log(`Floor data for level ${currentFloor}:`, floorData);
-
     if (!floorData) {
         console.warn(`No floor data found for level ${currentFloor}`); // Changed to warning
-        console.log(`Available floors:`, blueprintData.floors);
-
-        // Fallback to first floor if current floor doesn't exist
-        if (blueprintData.floors.length > 0) {
-            currentFloor = blueprintData.floors[0].level;
-            console.log(`Falling back to first available floor: ${currentFloor}`);
-            // Try again with the new floor level
-            updateScene(blueprintData);
-            return;
-        }
-
         ctx.fillStyle = '#6c757d';
         ctx.font = '16px Arial';
         ctx.textAlign = 'center';
         ctx.fillText(`No data for floor ${currentFloor}`, canvas.width / 2, canvas.height / 2);
         return;
     }
-
     if (!floorData.rooms || !Array.isArray(floorData.rooms)) {
         console.error(`Floor data for level ${currentFloor} is missing 'rooms' array:`, floorData);
         renderEmptyCanvas();
         return;
     }
 
-    console.log(`Room IDs on floor ${currentFloor}:`, floorData.rooms);
-    console.log(`All rooms in blueprint:`, blueprintData.rooms.map(r => r.id));
-
     const floorRooms = blueprintData.rooms.filter(r => floorData.rooms.includes(r.id));
     console.log(`Found ${floorRooms.length} rooms for floor ${currentFloor}`); // Log room count
-    console.log(`Rooms to render:`, floorRooms);
 
     // Center the blueprint (only if rooms exist)
     if (floorRooms.length > 0) {
@@ -284,12 +233,6 @@ function updateScene(blueprintData) { // Renamed parameter for clarity
     // Draw rooms
     floorRooms.forEach((room, index) => {
         console.log(`Drawing room: ${room.name} (ID: ${room.id})`); // Log room being drawn
-
-        if (!room.bounds || !room.bounds.min || !room.bounds.max) {
-            console.error(`Room is missing proper bounds:`, room);
-            return; // Skip this room
-        }
-
         drawRoom(room, index);
     });
 
@@ -301,12 +244,6 @@ function updateScene(blueprintData) { // Renamed parameter for clarity
             // If walls don't have a floor property, this logic needs adjustment
             if (wall.floor === undefined || wall.floor === currentFloor) {
                 console.log("Drawing wall:", wall); // Log wall being drawn
-
-                if (!wall.start || !wall.end) {
-                    console.error(`Wall is missing start or end points:`, wall);
-                    return; // Skip this wall
-                }
-
                 drawWall(wall);
             }
         });
@@ -376,20 +313,6 @@ function drawRoom(room, index) {
     ctx.font = '14px Arial';
     ctx.textAlign = 'center';
     ctx.fillText(room.name, (x1 + x2) / 2, (y1 + y2) / 2);
-
-    // Display room dimensions in feet or meters
-    const isImperial = blueprint && blueprint.units === 'imperial';
-    const unitLabel = isImperial ? 'ft' : 'm';
-
-    // Calculate dimensions
-    const width = Math.abs(bounds.max.x - bounds.min.x);
-    const length = Math.abs(bounds.max.y - bounds.min.y);
-
-    // Display dimensions below room name
-    ctx.font = '12px Arial';
-    ctx.fillText(`${width.toFixed(1)} × ${length.toFixed(1)} ${unitLabel}`,
-                (x1 + x2) / 2,
-                (y1 + y2) / 2 + 20);
 }
 
 function drawWall(wall) {
@@ -401,32 +324,12 @@ function drawWall(wall) {
 
     // Draw wall
     ctx.strokeStyle = '#212529';
-    ctx.lineWidth = Math.max(2, wall.thickness * camera.scale); // Ensure walls are visible
+    ctx.lineWidth = wall.thickness * camera.scale;
 
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
     ctx.stroke();
-
-    // Draw wall length if it's significant
-    const dx = wall.end.x - wall.start.x;
-    const dy = wall.end.y - wall.start.y;
-    const length = Math.sqrt(dx*dx + dy*dy);
-
-    if (length > 1.0) {  // Only label walls longer than 1 unit
-        const isImperial = blueprint && blueprint.units === 'imperial';
-        const unitLabel = isImperial ? 'ft' : 'm';
-
-        // Calculate midpoint for label
-        const midX = (x1 + x2) / 2;
-        const midY = (y1 + y2) / 2;
-
-        // Draw length label slightly offset from wall
-        ctx.fillStyle = '#343a40';
-        ctx.font = '10px Arial';
-        ctx.textAlign = 'center';
-        ctx.fillText(`${length.toFixed(1)}${unitLabel}`, midX, midY - 5);
-    }
 }
 
 function updateFloorIndicator() {
@@ -610,3 +513,193 @@ function displayErrorMessage(message, duration = 5000) {
         }, duration);
     }
 }
+
+// --- NEW: Variables for auto-scaling ---
+let autoScale = true; // Flag to control initial auto-scaling
+let contentBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+// --- END NEW ---
+
+// --- NEW: Function to calculate overall bounds of blueprint content ---
+function calculateContentBounds() {
+    contentBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    if (!blueprint || !blueprint.rooms) return;
+
+    blueprint.rooms.forEach(room => {
+        if (room.bounds) {
+            contentBounds.minX = Math.min(contentBounds.minX, room.bounds.min.x);
+            contentBounds.minY = Math.min(contentBounds.minY, room.bounds.min.y);
+            contentBounds.maxX = Math.max(contentBounds.maxX, room.bounds.max.x);
+            contentBounds.maxY = Math.max(contentBounds.maxY, room.bounds.max.y);
+        }
+    });
+
+     // Also consider walls if they exist
+     if (blueprint.walls) {
+         blueprint.walls.forEach(wall => {
+             contentBounds.minX = Math.min(contentBounds.minX, wall.start.x, wall.end.x);
+             contentBounds.minY = Math.min(contentBounds.minY, wall.start.y, wall.end.y);
+             contentBounds.maxX = Math.max(contentBounds.maxX, wall.start.x, wall.end.x);
+             contentBounds.maxY = Math.max(contentBounds.maxY, wall.start.y, wall.end.y);
+         });
+     }
+
+    console.log("Calculated content bounds:", contentBounds);
+}
+
+// --- NEW: Function to apply auto-scaling and centering ---
+function applyAutoScale() {
+    if (contentBounds.minX === Infinity || !canvas) return; // No content or canvas not ready
+
+    const contentWidth = contentBounds.maxX - contentBounds.minX;
+    const contentHeight = contentBounds.maxY - contentBounds.minY;
+
+    if (contentWidth <= 0 || contentHeight <= 0) {
+        console.warn("Cannot auto-scale with zero or negative content dimensions.");
+        // Reset to default scale/offset if content is invalid
+        camera.scale = 10;
+        camera.x = canvas.width / 2;
+        camera.y = canvas.height / 2;
+        return;
+    }
+
+
+    const padding = 50; // Pixels padding around the content
+    const availableWidth = canvas.width - 2 * padding;
+    const availableHeight = canvas.height - 2 * padding;
+
+    // Calculate scale to fit content within available space
+    const scaleX = availableWidth / contentWidth;
+    const scaleY = availableHeight / contentHeight;
+    camera.scale = Math.min(scaleX, scaleY); // Use the smaller scale to fit both dimensions
+
+    // Calculate offsets to center the content
+    const scaledContentWidth = contentWidth * camera.scale;
+    const scaledContentHeight = contentHeight * camera.scale;
+    camera.x = padding + (availableWidth - scaledContentWidth) / 2 - (contentBounds.minX * camera.scale);
+    camera.y = padding + (availableHeight - scaledContentHeight) / 2 - (contentBounds.minY * camera.scale);
+
+    console.log(`Auto-scaling applied: scale=${camera.scale.toFixed(2)}, offsetX=${camera.x.toFixed(2)}, offsetY=${camera.y.toFixed(2)}`);
+}
+// --- END NEW ---
+
+function updateScene() {
+    if (!canvas || !ctx || !blueprint) return;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Save context state
+    ctx.save();
+
+    // Apply transformations (scale and offset)
+    // The order matters: translate to origin, scale, then translate by offset
+    // Center the view around the middle of the canvas initially if not auto-scaled
+    // ctx.translate(camera.x, camera.y);
+    // ctx.scale(camera.scale, camera.scale);
+     // Simpler: Apply offset first, then scale relative to 0,0
+     ctx.translate(camera.x, camera.y);
+     ctx.scale(camera.scale, camera.scale);
+
+
+    // Find the data for the current floor
+    const floorData = blueprint.floors ? blueprint.floors.find(f => f.level === currentFloor) : null;
+    const roomsOnFloor = floorData && blueprint.rooms ? blueprint.rooms.filter(room => floorData.rooms.includes(room.id)) : [];
+    const wallsOnFloor = floorData && blueprint.walls ? blueprint.walls.filter(wall => wall.floor === currentFloor) : []; // Assuming walls have a floor property
+
+    // Draw rooms
+    if (roomsOnFloor.length > 0) {
+        roomsOnFloor.forEach(room => drawRoom(room));
+    } else {
+        console.log(`No rooms found for floor ${currentFloor}`);
+    }
+
+    // Draw walls
+    if (wallsOnFloor.length > 0) {
+        wallsOnFloor.forEach(wall => drawWall(wall));
+    } else {
+         console.log(`No walls found for floor ${currentFloor}`);
+    }
+
+    // Restore context state
+    ctx.restore();
+
+     // --- Optional: Draw bounds for debugging ---
+     /*
+     if (contentBounds.minX !== Infinity) {
+         ctx.strokeStyle = 'lime';
+         ctx.lineWidth = 1;
+         const bx = camera.x + contentBounds.minX * camera.scale;
+         const by = camera.y + contentBounds.minY * camera.scale;
+         const bw = (contentBounds.maxX - contentBounds.minX) * camera.scale;
+         const bh = (contentBounds.maxY - contentBounds.minY) * camera.scale;
+         ctx.strokeRect(bx, by, bw, bh);
+     }
+     */
+     // --- End Debug ---
+}
+
+// --- Update canvas event listeners to use scale/offset ---
+
+canvas.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    lastMousePos = { x: e.clientX, y: e.clientY };
+    canvas.style.cursor = 'grabbing';
+});
+
+canvas.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    const dx = e.clientX - lastMousePos.x;
+    const dy = e.clientY - lastMousePos.y;
+    camera.x += dx;
+    camera.y += dy;
+    lastMousePos = { x: e.clientX, y: e.clientY };
+    updateScene(); // Redraw with new offset
+});
+
+canvas.addEventListener('mouseup', () => {
+    if (isDragging) {
+        isDragging = false;
+        canvas.style.cursor = 'grab';
+    }
+});
+
+canvas.addEventListener('mouseleave', () => {
+    if (isDragging) {
+        isDragging = false;
+        canvas.style.cursor = 'default';
+    }
+});
+
+canvas.addEventListener('wheel', (e) => {
+    e.preventDefault(); // Prevent page scrolling
+
+    const rect = canvas.getBoundingClientRect();
+    // Mouse position relative to canvas top-left
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    // Convert mouse position to world coordinates before zoom
+    const worldX = (mouseX - camera.x) / camera.scale;
+    const worldY = (mouseY - camera.y) / camera.scale;
+
+    // Determine zoom direction
+    const delta = e.deltaY > 0 ? 1 / zoomFactor : zoomFactor;
+
+    // Update scale
+    camera.scale *= delta;
+
+    // Adjust offset so the point under the mouse stays in the same place
+    camera.x = mouseX - worldX * camera.scale;
+    camera.y = mouseY - worldY * camera.scale;
+
+
+    updateScene(); // Redraw with new scale and offset
+});
+
+
+// Initial setup
+document.addEventListener('DOMContentLoaded', () => {
+    // ... existing setup ...
+    canvas.style.cursor = 'grab'; // Set initial cursor
+    fetchBlueprint();
+});
