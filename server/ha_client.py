@@ -456,10 +456,8 @@ class HomeAssistantClient:
             # First try WebSocket approach
             areas = get_area_registry(self.base_url, self.token)
             if areas:
-                # Convert to expected format
-                return [{"area_id": area.get("area_id", area.get("id")),
-                        "name": area.get("name")}
-                    for area in areas]
+                logger.info(f"Successfully retrieved {len(areas)} areas via WebSocket")
+                return areas
 
             # Fallback to HTTP API
             logger.warning("WebSocket area fetch failed, trying HTTP API")
@@ -467,9 +465,8 @@ class HomeAssistantClient:
                                     headers=self.headers)
             if response.status_code == 200:
                 areas = response.json()
-                return [{"area_id": area.get("area_id", area.get("id")),
-                        "name": area.get("name")}
-                    for area in areas]
+                logger.info(f"Successfully retrieved {len(areas)} areas via HTTP API")
+                return areas
 
         except Exception as e:
             logger.error(f"Failed to get areas: {e}")

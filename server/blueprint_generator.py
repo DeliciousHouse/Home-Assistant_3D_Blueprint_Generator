@@ -274,7 +274,7 @@ class BlueprintGenerator:
 
             # Calculate wall properties
             length = np.linalg.norm(p2 - p1)
-            angle = np.arctan2(p2[1] - p1[1], p2[0] - p1[0])
+            angle = np.arctan2(p2[1] - p1[0], p2[0] - p1[0])
 
             # Skip walls that are too short or too long
             if length < self.validation['min_room_dimension'] or \
@@ -490,28 +490,72 @@ class BlueprintGenerator:
             return {}
 
     def _group_rooms_into_floors(self, rooms: List[Dict]) -> List[Dict]:
-        """Group rooms into floors based on their z-coordinate."""
+        """Group rooms into floors based on their z-coordinate and area metadata."""
         if not rooms:
             return []
 
-        # Group rooms by their z-coordinate (floor level)
+        # Define floor heights - these are approximate heights in meters for each floor
+        floor_heights = {
+            0: 0.0,   # Ground floor
+            1: 3.0,   # First floor
+            2: 6.0    # Second floor
+        }
+
+        # Map from area_id to floor level (based on your house layout)
+        area_floor_map = {
+            "lounge": 0,
+            "kitchen": 0,
+            "dining_room": 0,
+            "front_porch": 0,
+            "laundry_room": 0,
+            "master_bedroom": 0,
+            "master_bathroom": 0,
+            "office": 1,
+            "dressing_room": 1,
+            "sky_floor": 1,
+            "balcony": 1,
+            "garage": 0,
+            "nova_room": 0,
+            "christian_room": 0
+            # Add other areas as needed
+        }
+
+        # Group rooms by floor level
         floors_dict = {}
         for room in rooms:
-            # Use the minimum z-coordinate as the floor level
-            floor_level = int(room['bounds']['min']['z'])
+            # Try to determine floor from area_id first
+            area_id = room.get('area_id')
+            if area_id and area_id in area_floor_map:
+                floor_level = area_floor_map[area_id]
+            else:
+                # Fall back to z-coordinate
+                center_z = room['center']['z']
+                # Assign floor based on z-coordinate ranges
+                if center_z < 1.5:  # Below 1.5m is ground floor
+                    floor_level = 0
+                elif center_z < 4.5:  # 1.5m to 4.5m is first floor
+                    floor_level = 1
+                else:  # Above 4.5m is second floor
+                    floor_level = 2
 
+            # Initialize floor list if needed
             if floor_level not in floors_dict:
                 floors_dict[floor_level] = []
 
             floors_dict[floor_level].append(room['id'])
+
+            # Update room with floor level for UI reference
+            room['floor'] = floor_level
 
         # Convert to list of floor objects
         floors = []
         for level, room_ids in sorted(floors_dict.items()):
             floors.append({
                 'level': level,
+                'name': f"Floor {level}",  # Add names for UI
                 'rooms': room_ids,
-                'height': 3.0  # Default floor height
+                'height': 3.0,  # Standard floor height
+                'elevation': floor_heights.get(level, level * 3.0)  # Height from ground
             })
 
         logger.info(f"Grouped {len(rooms)} rooms into {len(floors)} floors")
