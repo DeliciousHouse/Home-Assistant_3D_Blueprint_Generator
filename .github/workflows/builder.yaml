@@ -67,7 +67,7 @@ jobs:
           echo "version=${version}" >> $GITHUB_OUTPUT
           echo "owner=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
           echo "Building version: ${version}"
-
+ 
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
