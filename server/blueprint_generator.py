@@ -523,29 +523,45 @@ class BlueprintGenerator:
         # Group rooms by floor level
         floors_dict = {}
         for room in rooms:
-            # Try to determine floor from area_id first
-            area_id = room.get('area_id')
-            if area_id and area_id in area_floor_map:
-                floor_level = area_floor_map[area_id]
-            else:
-                # Fall back to z-coordinate
-                center_z = room['center']['z']
-                # Assign floor based on z-coordinate ranges
-                if center_z < 1.5:  # Below 1.5m is ground floor
-                    floor_level = 0
-                elif center_z < 4.5:  # 1.5m to 4.5m is first floor
-                    floor_level = 1
-                else:  # Above 4.5m is second floor
-                    floor_level = 2
+            try:
+                # Try to determine floor from area_id first
+                area_id = room.get('area_id')
+                if area_id and area_id in area_floor_map:
+                    floor_level = area_floor_map[area_id]
+                else:
+                    # Fall back to z-coordinate if center exists
+                    if 'center' in room and 'z' in room['center']:
+                        center_z = room['center']['z']
+                        # Assign floor based on z-coordinate ranges
+                        if center_z < 1.5:  # Below 1.5m is ground floor
+                            floor_level = 0
+                        elif center_z < 4.5:  # 1.5m to 4.5m is first floor
+                            floor_level = 1
+                        else:  # Above 4.5m is second floor
+                            floor_level = 2
+                    else:
+                        # Default to ground floor if no center coordinate is available
+                        logger.warning(f"Room {room.get('id', 'unknown')} is missing 'center' data, defaulting to ground floor")
+                        floor_level = 0
 
-            # Initialize floor list if needed
-            if floor_level not in floors_dict:
-                floors_dict[floor_level] = []
+                # Initialize floor list if needed
+                if floor_level not in floors_dict:
+                    floors_dict[floor_level] = []
 
-            floors_dict[floor_level].append(room['id'])
+                floors_dict[floor_level].append(room['id'])
 
-            # Update room with floor level for UI reference
-            room['floor'] = floor_level
+                # Update room with floor level for UI reference
+                room['floor'] = floor_level
+
+            except Exception as e:
+                # Handle any other issues with specific rooms gracefully
+                logger.error(f"Error processing room for floor grouping: {str(e)}")
+                # Default problematic rooms to ground floor
+                if 'id' in room:
+                    if 0 not in floors_dict:
+                        floors_dict[0] = []
+                    floors_dict[0].append(room['id'])
+                    room['floor'] = 0
 
         # Convert to list of floor objects
         floors = []
