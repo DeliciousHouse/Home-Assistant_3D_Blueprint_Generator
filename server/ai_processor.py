@@ -2051,10 +2051,8 @@ class AIProcessor:
         logger.info(f"Applied anchoring transform to {len(anchored_coords)} entities.")
         return anchored_coords
 
-    def generate_rooms_from_points(self, anchored_device_coords_by_area: Dict[str, List[Dict[str, float]]], *args) -> List[Dict]:
-        """Generate rooms from device coordinates grouped by area using AI/ML techniques.
-        Note: Added *args to handle any extra arguments from legacy code.
-        """
+    def generate_rooms_from_points(self, anchored_device_coords_by_area: Dict[str, List[Dict[str, float]]]) -> List[Dict]:
+        """Generate rooms from device coordinates grouped by area using AI/ML techniques."""
         logger.info(f"Generating rooms from {len(anchored_device_coords_by_area)} areas with device coordinates.")
         rooms = []
         room_id = 0
@@ -2064,42 +2062,178 @@ class AIProcessor:
         min_dim = validation_config.get('min_room_dimension', 1.5)
         max_dim = validation_config.get('max_room_dimension', 15.0)
         min_area = validation_config.get('min_room_area', 4.0)
-        min_points = self.config.get('generation_settings', {}).get('min_points_per_room', 3)
+        min_points = self.config.get('generation_settings', {}).get('min_points_per_room', 1)
+
+        # Room spacing parameters - minimum distance between room centers
+        min_room_spacing = 2.0  # meters
+
+        # Room overlap prevention
+        room_centers = []
+        area_room_map = {}
+        area_floor_map = {
+            "lounge": 0,
+            "kitchen": 0,
+            "dining_room": 0,
+            "front_porch": 0,
+            "laundry_room": 0,
+            "master_bedroom": 0,
+            "master_bathroom": 0,
+            "office": 1,
+            "dressing_room": 1,
+            "sky_floor": 1,
+            "balcony": 1,
+            "garage": 0
+        }
+
+        # Calculate room centroids from device positions
+        area_centroids = {}
+        for area_id, devices in anchored_device_coords_by_area.items():
+            if len(devices) < min_points:
+                logger.warning(f"Area {area_id} has only {len(devices)} devices, which is below the minimum threshold of {min_points}. Using default positioning.")
+                # We'll still create a room but with a default position
+                continue
+
+            # Extract device coordinates for this area
+            positions = []
+            for device in devices:
+                if 'x' in device and 'y' in device:
+                    positions.append({
+                        'x': device['x'],
+                        'y': device['y'],
+                        'z': device.get('z', 0)
+                    })
+
+            if positions:
+                # Calculate centroid
+                sum_x = sum(p['x'] for p in positions)
+                sum_y = sum(p['y'] for p in positions)
+                sum_z = sum(p['z'] for p in positions)
+                count = len(positions)
+
+                area_centroids[area_id] = {
+                    'x': sum_x / count,
+                    'y': sum_y / count,
+                    'z': sum_z / count,
+                    'device_count': count
+                }
+                logger.debug(f"Calculated centroid for area {area_id}: {area_centroids[area_id]}")
+            else:
+                logger.warning(f"No valid positions found for area {area_id}")
 
         # Process each area
         for area_id, devices in anchored_device_coords_by_area.items():
-            if len(devices) < min_points:
-                logger.warning(f"Area {area_id} has only {len(devices)} devices, which is below the minimum threshold of {min_points}. Skipping.")
-                continue
-
             room_id += 1
 
             try:
-                # Extract device coordinates
-                points = [(d['x'], d['y']) for d in devices]
+                # Use calculated centroid if available, otherwise use a default position
+                if area_id in area_centroids:
+                    centroid = area_centroids[area_id]
+                    center_x = centroid['x']
+                    center_y = centroid['y']
+                    center_z = centroid['z']
+                    device_count = centroid['device_count']
+                else:
+                    # Default position with some spacing between rooms
+                    import hashlib
+                    hash_val = int(hashlib.md5(area_id.encode()).hexdigest(), 16)
+                    center_x = (hash_val % 100) / 5.0
+                    center_y = ((hash_val // 100) % 100) / 5.0
+                    center_z = 0  # Default to ground floor
+                    device_count = len(devices)
 
-                # Use ML clustering to identify potential sub-rooms if there are many points
-                if len(points) > 10:
-                    try:
-                        # Try DBSCAN for cluster detection
-                        clustering = DBSCAN(eps=1.5, min_samples=3).fit(points)
-                        labels = clustering.labels_
+                # Enforce minimum distance between room centers
+                adjusted_center = self._enforce_room_spacing(center_x, center_y, room_centers, min_room_spacing)
+                center_x, center_y = adjusted_center
 
-                        # If we found meaningful clusters, use them
-                        if len(set(labels)) > 1 and -1 not in labels:
-                            logger.info(f"ML clustering identified {len(set(labels))} sub-areas in {area_id}")
-                            # Process sub-clusters (implementation omitted for brevity)
-                    except Exception as e:
-                        logger.warning(f"ML clustering failed for {area_id}: {e}")
+                # Add to room centers list for future spacing checks
+                room_centers.append((center_x, center_y))
 
-                # Create a convex hull from the points
-                if len(points) >= 3:
-                    # Use ML-enhanced convex hull with outlier detection
-                    try:
-                        # Convert to numpy array for processing
+                # Determine floor based on area_id or z-coordinate
+                floor = area_floor_map.get(area_id, 0)  # Default to ground floor
+                if floor != 0:  # If not ground floor, adjust z-coordinate
+                    center_z = floor * 3.0  # Assume 3.0m per floor
+
+                # Calculate room dimensions based on device count
+                # More devices = larger room, but within bounds
+                width = max(min_dim, min(max_dim, 3.0 + device_count * 0.5))
+                length = max(min_dim, min(max_dim, 4.0 + device_count * 0.4))
+                height = validation_config.get('min_ceiling_height', 2.4)
+
+                # Calculate bounds
+                min_x = center_x - width/2
+                min_y = center_y - length/2
+                min_z = center_z - height/2
+                max_x = center_x + width/2
+                max_y = center_y + length/2
+                max_z = center_z + height/2
+
+                # Check for overlaps with existing rooms on same floor
+                bounded_room = {
+                    'center': {'x': center_x, 'y': center_y, 'z': center_z},
+                    'dimensions': {'width': width, 'length': length, 'height': height},
+                    'bounds': {
+                        'min': {'x': min_x, 'y': min_y, 'z': min_z},
+                        'max': {'x': max_x, 'y': max_y, 'z': max_z}
+                    },
+                    'floor': floor
+                }
+
+                adjusted_room = self._adjust_for_overlaps(bounded_room, rooms)
+
+                # Extract adjusted values
+                center_x = adjusted_room['center']['x']
+                center_y = adjusted_room['center']['y']
+                center_z = adjusted_room['center']['z']
+                width = adjusted_room['dimensions']['width']
+                length = adjusted_room['dimensions']['length']
+                height = adjusted_room['dimensions']['height']
+                min_x = adjusted_room['bounds']['min']['x']
+                min_y = adjusted_room['bounds']['min']['y']
+                min_z = adjusted_room['bounds']['min']['z']
+                max_x = adjusted_room['bounds']['max']['x']
+                max_y = adjusted_room['bounds']['max']['y']
+                max_z = adjusted_room['bounds']['max']['z']
+
+                # Create room object
+                room = {
+                    'id': f"room_{room_id}",
+                    'name': area_id.replace('_', ' ').title(),
+                    'area_id': area_id,
+                    'center': {
+                        'x': center_x,
+                        'y': center_y,
+                        'z': center_z
+                    },
+                    'dimensions': {
+                        'width': width,
+                        'length': length,
+                        'height': height
+                    },
+                    'bounds': {
+                        'min': {'x': min_x, 'y': min_y, 'z': min_z},
+                        'max': {'x': max_x, 'y': max_y, 'z': max_z}
+                    },
+                    'floor': floor,
+                    'devices': [d.get('device_id', f"device_{i}") for i, d in enumerate(devices)]
+                }
+
+                # Track area-to-room mapping for later use
+                area_room_map[area_id] = room['id']
+
+                # Try to get room polygon if possible (for better visuals)
+                try:
+                    # Extract device coordinates
+                    points = [(d.get('x', 0), d.get('y', 0)) for d in devices if 'x' in d and 'y' in d]
+
+                    if len(points) >= 3:
+                        # Use convex hull with outlier detection to create room polygon
+                        import numpy as np
+                        from scipy.spatial import ConvexHull
+
+                        # Convert to numpy array
                         points_array = np.array(points)
 
-                        # Detect and remove outliers using statistical methods
+                        # Detect and remove outliers
                         distances = np.zeros(len(points_array))
                         centroid = np.mean(points_array, axis=0)
 
@@ -2121,52 +2255,9 @@ class AIProcessor:
                                 (float(filtered_points[i, 0]), float(filtered_points[i, 1]))
                                 for i in hull.vertices
                             ]
-                        else:
-                            # Fallback to original points if filtering removed too many
-                            hull = ConvexHull(points_array)
-                            polygon_coords = [
-                                (float(points_array[i, 0]), float(points_array[i, 1]))
-                                for i in hull.vertices
-                            ]
-                    except Exception as e:
-                        logger.warning(f"ML convex hull generation failed: {e}, using simple bounding box")
-                        # Fallback to bounding box
-                        polygon_coords = None
-                else:
-                    polygon_coords = None
-
-                # Calculate room bounds (min/max)
-                xs = [d['x'] for d in devices]
-                ys = [d['y'] for d in devices]
-                min_x, max_x = min(xs), max(xs)
-                min_y, max_y = min(ys), max(ys)
-
-                # Apply minimum size constraints
-                width = max(min_dim, max_x - min_x)
-                length = max(min_dim, max_y - min_y)
-
-                # Apply padding for better visualization
-                padding = min(2.0, width * 0.1, length * 0.1)  # 10% padding, max 2m
-                min_x -= padding
-                min_y -= padding
-                max_x += padding
-                max_y += padding
-
-                # Create room object
-                room = {
-                    'id': f"room_{room_id}",
-                    'name': area_id.replace('_', ' ').title(),
-                    'area_id': area_id,
-                    'bounds': {
-                        'min': {'x': float(min_x), 'y': float(min_y), 'z': 0},
-                        'max': {'x': float(max_x), 'y': float(max_y), 'z': 2.4}
-                    },
-                    'devices': [d.get('device_id', f"device_{i}") for i, d in enumerate(devices)]
-                }
-
-                # Add polygon coordinates if available
-                if polygon_coords:
-                    room['polygon_coords'] = polygon_coords
+                            room['polygon_coords'] = polygon_coords
+                except Exception as e:
+                    logger.warning(f"Failed to generate room polygon for {area_id}: {e}")
 
                 rooms.append(room)
                 logger.debug(f"Generated room: {room['name']} with {len(devices)} devices")
@@ -2176,6 +2267,111 @@ class AIProcessor:
 
         logger.info(f"Generated {len(rooms)} rooms from device coordinates")
         return rooms
+
+    def _enforce_room_spacing(self, x, y, existing_centers, min_spacing):
+        """Enforce minimum spacing between room centers."""
+        if not existing_centers:
+            return (x, y)
+
+        # Check distance to all existing centers
+        for c_x, c_y in existing_centers:
+            dx = x - c_x
+            dy = y - c_y
+            distance = (dx**2 + dy**2)**0.5
+
+            # If too close, push away
+            if distance < min_spacing and distance > 0:
+                # Calculate push direction and distance
+                push_ratio = min_spacing / distance
+                push_dx = dx * (push_ratio - 1)
+                push_dy = dy * (push_ratio - 1)
+
+                # Apply push
+                x += push_dx
+                y += push_dy
+
+        return (x, y)
+
+    def _adjust_for_overlaps(self, new_room, existing_rooms):
+        """Adjust room position and size to avoid overlaps with existing rooms."""
+        # Only check against rooms on the same floor
+        same_floor_rooms = [room for room in existing_rooms if room.get('floor') == new_room.get('floor')]
+        if not same_floor_rooms:
+            return new_room
+
+        # Make a copy so we don't modify the original
+        room = {
+            'center': {**new_room['center']},
+            'dimensions': {**new_room['dimensions']},
+            'bounds': {
+                'min': {**new_room['bounds']['min']},
+                'max': {**new_room['bounds']['max']}
+            },
+            'floor': new_room.get('floor', 0)
+        }
+
+        # Maximum iterations to prevent infinite loops
+        max_iterations = 10
+        iterations = 0
+
+        while iterations < max_iterations:
+            iterations += 1
+            overlap_found = False
+
+            for other_room in same_floor_rooms:
+                # Check if bounding boxes overlap
+                if (room['bounds']['min']['x'] < other_room['bounds']['max']['x'] and
+                    room['bounds']['max']['x'] > other_room['bounds']['min']['x'] and
+                    room['bounds']['min']['y'] < other_room['bounds']['max']['y'] and
+                    room['bounds']['max']['y'] > other_room['bounds']['min']['y']):
+
+                    overlap_found = True
+
+                    # Calculate overlap amounts in each direction
+                    overlap_right = room['bounds']['max']['x'] - other_room['bounds']['min']['x']
+                    overlap_left = other_room['bounds']['max']['x'] - room['bounds']['min']['x']
+                    overlap_top = room['bounds']['max']['y'] - other_room['bounds']['min']['y']
+                    overlap_bottom = other_room['bounds']['max']['y'] - room['bounds']['min']['y']
+
+                    # Find the smallest overlap and use that direction to adjust
+                    min_overlap = min(overlap_right, overlap_left, overlap_top, overlap_bottom)
+
+                    # Add a small buffer to ensure rooms don't touch
+                    buffer = 0.2  # meters
+
+                    # Apply adjustment based on smallest overlap direction
+                    if min_overlap == overlap_right:
+                        shift_x = overlap_right + buffer
+                        room['center']['x'] += shift_x
+                        room['bounds']['min']['x'] += shift_x
+                        room['bounds']['max']['x'] += shift_x
+                    elif min_overlap == overlap_left:
+                        shift_x = -(overlap_left + buffer)
+                        room['center']['x'] += shift_x
+                        room['bounds']['min']['x'] += shift_x
+                        room['bounds']['max']['x'] += shift_x
+                    elif min_overlap == overlap_top:
+                        shift_y = overlap_top + buffer
+                        room['center']['y'] += shift_y
+                        room['bounds']['min']['y'] += shift_y
+                        room['bounds']['max']['y'] += shift_y
+                    else:  # overlap_bottom
+                        shift_y = -(overlap_bottom + buffer)
+                        room['center']['y'] += shift_y
+                        room['bounds']['min']['y'] += shift_y
+                        room['bounds']['max']['y'] += shift_y
+
+                    # Break the inner loop to recheck all rooms with the new position
+                    break
+
+            # If no overlaps found, we're done
+            if not overlap_found:
+                break
+
+        if iterations >= max_iterations:
+            logger.warning(f"Room adjustment reached maximum iterations ({max_iterations}), room may still have overlaps")
+
+        return room
 
     def generate_walls_between_rooms(self, rooms: List[Dict]) -> List[Dict]:
         """Infers walls based on proximity and alignment of room boundaries."""

@@ -111,6 +111,9 @@ class BlueprintGenerator:
             dimensions = self.generation_config.get('mds_dimensions', 2)
             relative_positions = self.ai_processor.run_relative_positioning(distance_data, dimensions)
             logger.info(f"Generated relative positions for {len(relative_positions)} devices")
+            # --- ADD DEBUG LOGGING ---
+            logger.debug(f"Relative Positions (MDS Output): {json.dumps(relative_positions, indent=2)}")
+            # --- END DEBUG LOGGING ---
 
             # Step 4: Group TRACKED devices by area/room
             device_coords_by_area = {}
@@ -157,6 +160,9 @@ class BlueprintGenerator:
             logger.info(f"  Considered {tracked_device_count} as potential tracked devices.")
             logger.info(f"  {devices_without_area} tracked devices had no area prediction.")
             logger.info(f"  {devices_added_to_area} tracked devices were added to {len(device_coords_by_area)} areas.")
+            # --- ADD DEBUG LOGGING ---
+            logger.debug(f"Device Coordinates Grouped by Area: {json.dumps(device_coords_by_area, indent=2)}")
+            # --- END DEBUG LOGGING ---
 
             # Log the final areas and counts for debugging
             logger.debug("--- Final device counts per area for room generation --- ")

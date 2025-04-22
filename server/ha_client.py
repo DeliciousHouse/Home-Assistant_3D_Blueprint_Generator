@@ -476,8 +476,8 @@ class HomeAssistantClient:
         return [
             {"area_id": "lounge", "name": "Lounge"},
             {"area_id": "kitchen", "name": "Kitchen"},
-            {"area_id": "master_bedroom", "name": "Master Bedroom"},
-            {"area_id": "master_bathroom", "name": "Master Bathroom"},
+            {"area_id": "master_bedroom", "name": "Master Bedroom"}, # Renamed from alexs_room
+            {"area_id": "master_bathroom", "name": "Master Bathroom"}, # Renamed from alexs_bathroom
             {"area_id": "office", "name": "Office"},
             {"area_id": "dining_room", "name": "Dining Room"},
             {"area_id": "sky_floor", "name": "Sky Floor"},
