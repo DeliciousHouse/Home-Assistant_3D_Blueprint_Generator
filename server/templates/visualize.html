@@ -129,7 +129,7 @@
                         const start = wall.start;
                         const end = wall.end;
                         const height = wall.height || 2.5;
-                        const thickness = wall.thickness || 0.1;
+                        const thickness = wall.thickness || 0.2;
 
                         // Calculate length and direction
                         const length = Math.sqrt(
@@ -147,14 +147,15 @@
                         // Create wall geometry
                         const wallGeometry = new THREE.BoxGeometry(length, height, thickness);
                         const wallMaterial = new THREE.MeshPhongMaterial({
-                            color: 0xaaaaaa,
-                            wireframe: true
+                            color: 0x8B8B8B, // Medium gray
+                            transparent: false,
+                            opacity: 1.0
                         });
 
                         const wallMesh = new THREE.Mesh(wallGeometry, wallMaterial);
 
                         // Position the wall properly
-                        wallMesh.position.set(midX, height/2, midY);
+                        wallMesh.position.set(midX, height / 2, midY);
                         wallMesh.rotation.y = angle;
 
                         scene.add(wallMesh);

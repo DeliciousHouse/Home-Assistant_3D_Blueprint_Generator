@@ -2460,3 +2460,249 @@ class AIProcessor:
         except Exception as e:
             logger.error(f"Failed to generate walls: {e}", exc_info=True)
             return []
+
+    def predict_objects(self, rooms: List[Dict]) -> List[Dict]:
+        """Predict objects (furniture, fixtures) based on room types and dimensions."""
+        logger.info(f"Predicting objects for {len(rooms)} rooms")
+        objects = []
+        object_id = 0
+
+        # Object prediction rules based on room types
+        object_types_by_area = {
+            'lounge': ['sofa', 'coffee_table', 'tv_unit'],
+            'living_room': ['sofa', 'coffee_table', 'tv_unit', 'armchair'],
+            'kitchen': ['refrigerator', 'stove', 'sink', 'counter'],
+            'dining_room': ['dining_table', 'chair'],
+            'bedroom': ['bed', 'wardrobe', 'nightstand'],
+            'master_bedroom': ['king_bed', 'wardrobe', 'nightstand', 'dresser'],
+            'bathroom': ['toilet', 'shower', 'sink', 'bathtub'],
+            'master_bathroom': ['toilet', 'shower', 'double_sink', 'bathtub'],
+            'office': ['desk', 'office_chair', 'bookshelf'],
+            'laundry_room': ['washing_machine', 'dryer', 'sink'],
+            'garage': ['car', 'storage_shelf']
+        }
+
+        # Object dimensions and placement rules
+        object_specs = {
+            'sofa': {'width': 2.0, 'length': 0.85, 'height': 0.8, 'wall_placement': True},
+            'coffee_table': {'width': 0.9, 'length': 0.9, 'height': 0.45, 'central': True},
+            'tv_unit': {'width': 1.6, 'length': 0.5, 'height': 0.6, 'wall_placement': True},
+            'armchair': {'width': 0.9, 'length': 0.85, 'height': 0.8, 'corner': True},
+            'refrigerator': {'width': 0.8, 'length': 0.8, 'height': 1.8, 'corner': True},
+            'stove': {'width': 0.6, 'length': 0.6, 'height': 0.9, 'wall_placement': True},
+            'sink': {'width': 0.6, 'length': 0.5, 'height': 0.2, 'wall_placement': True},
+            'counter': {'width': 2.0, 'length': 0.6, 'height': 0.9, 'wall_placement': True},
+            'dining_table': {'width': 1.8, 'length': 1.0, 'height': 0.75, 'central': True},
+            'chair': {'width': 0.5, 'length': 0.5, 'height': 0.9, 'surrounding': 'dining_table'},
+            'bed': {'width': 1.5, 'length': 2.0, 'height': 0.5, 'wall_placement': True},
+            'king_bed': {'width': 1.8, 'length': 2.2, 'height': 0.5, 'wall_placement': True},
+            'wardrobe': {'width': 1.2, 'length': 0.6, 'height': 2.0, 'corner': True},
+            'nightstand': {'width': 0.5, 'length': 0.4, 'height': 0.6, 'adjacent_to': 'bed'},
+            'toilet': {'width': 0.4, 'length': 0.6, 'height': 0.4, 'wall_placement': True},
+            'shower': {'width': 0.9, 'length': 0.9, 'height': 2.0, 'corner': True},
+            'bathtub': {'width': 1.7, 'length': 0.8, 'height': 0.55, 'wall_placement': True},
+            'double_sink': {'width': 1.2, 'length': 0.5, 'height': 0.2, 'wall_placement': True},
+            'desk': {'width': 1.4, 'length': 0.7, 'height': 0.75, 'wall_placement': True},
+            'office_chair': {'width': 0.6, 'length': 0.6, 'height': 1.0, 'adjacent_to': 'desk'},
+            'bookshelf': {'width': 0.9, 'length': 0.3, 'height': 1.8, 'wall_placement': True},
+            'washing_machine': {'width': 0.6, 'length': 0.6, 'height': 0.85, 'wall_placement': True},
+            'dryer': {'width': 0.6, 'length': 0.6, 'height': 0.85, 'wall_placement': True},
+            'car': {'width': 2.0, 'length': 4.5, 'height': 1.5, 'central': True},
+            'storage_shelf': {'width': 1.8, 'length': 0.6, 'height': 1.8, 'wall_placement': True}
+        }
+
+        try:
+            for room in rooms:
+                # Get room properties
+                area_id = room.get('area_id', '').lower()
+                room_name = room.get('name', '').lower()
+
+                # Determine appropriate object types for this room
+                room_type = None
+                if area_id in object_types_by_area:
+                    room_type = area_id
+                else:
+                    # Try to match by name if area_id doesn't match
+                    for area_type in object_types_by_area.keys():
+                        if area_type in room_name:
+                            room_type = area_type
+                            break
+
+                if not room_type:
+                    logger.debug(f"No matching room type found for {room.get('name', 'unnamed')} ({area_id})")
+                    continue
+
+                # Get room bounds
+                if not room.get('bounds'):
+                    logger.warning(f"Room {room.get('id', 'unknown')} has no bounds defined, skipping object prediction")
+                    continue
+
+                bounds = room['bounds']
+                center = room.get('center', {})
+                min_x, min_y = bounds['min'].get('x', 0), bounds['min'].get('y', 0)
+                max_x, max_y = bounds['max'].get('x', 0), bounds['max'].get('y', 0)
+                width = max_x - min_x
+                length = max_y - min_y
+
+                # Get object types for this room
+                object_types = object_types_by_area.get(room_type, [])
+
+                # Keep track of placed objects and their positions
+                placed_objects = []
+
+                # Place wall-aligned objects first
+                for obj_type in object_types:
+                    if obj_type not in object_specs:
+                        continue
+
+                    spec = object_specs[obj_type]
+                    obj_width = spec.get('width', 1.0)
+                    obj_length = spec.get('length', 1.0)
+                    obj_height = spec.get('height', 0.5)
+
+                    # Skip if room is too small for this object
+                    if obj_width > width * 0.8 or obj_length > length * 0.8:
+                        logger.debug(f"Room too small for {obj_type} (room: {width}x{length}, object: {obj_width}x{obj_length})")
+                        continue
+
+                    # Wall placement
+                    if spec.get('wall_placement', False):
+                        # Try different wall placements
+                        placements = [
+                            {'x': min_x + obj_width/2 + 0.1, 'y': min_y + length/2},  # Left wall
+                            {'x': max_x - obj_width/2 - 0.1, 'y': min_y + length/2},  # Right wall
+                            {'x': min_x + width/2, 'y': min_y + obj_length/2 + 0.1},  # Bottom wall
+                            {'x': min_x + width/2, 'y': max_y - obj_length/2 - 0.1}   # Top wall
+                        ]
+
+                        # Find the best placement
+                        best_placement = None
+                        for placement in placements:
+                            if self._is_valid_placement(placement, obj_width, obj_length, placed_objects):
+                                best_placement = placement
+                                break
+
+                        if best_placement:
+                            object_id += 1
+                            new_object = {
+                                'id': f"object_{object_id}",
+                                'type': obj_type,
+                                'room_id': room['id'],
+                                'position': {
+                                    'x': best_placement['x'],
+                                    'y': best_placement['y'],
+                                    'z': center.get('z', 0)
+                                },
+                                'dimensions': {
+                                    'width': obj_width,
+                                    'length': obj_length,
+                                    'height': obj_height
+                                }
+                            }
+                            objects.append(new_object)
+                            placed_objects.append({
+                                'position': best_placement,
+                                'width': obj_width,
+                                'length': obj_length
+                            })
+
+                    # Center placement
+                    elif spec.get('central', False):
+                        object_id += 1
+                        new_object = {
+                            'id': f"object_{object_id}",
+                            'type': obj_type,
+                            'room_id': room['id'],
+                            'position': {
+                                'x': min_x + width/2,
+                                'y': min_y + length/2,
+                                'z': center.get('z', 0)
+                            },
+                            'dimensions': {
+                                'width': obj_width,
+                                'length': obj_length,
+                                'height': obj_height
+                            }
+                        }
+                        objects.append(new_object)
+                        placed_objects.append({
+                            'position': {'x': min_x + width/2, 'y': min_y + length/2},
+                            'width': obj_width,
+                            'length': obj_length
+                        })
+
+                    # Corner placement
+                    elif spec.get('corner', False):
+                        # Try different corner placements
+                        corners = [
+                            {'x': min_x + obj_width/2 + 0.1, 'y': min_y + obj_length/2 + 0.1},  # Bottom-left
+                            {'x': max_x - obj_width/2 - 0.1, 'y': min_y + obj_length/2 + 0.1},  # Bottom-right
+                            {'x': min_x + obj_width/2 + 0.1, 'y': max_y - obj_length/2 - 0.1},  # Top-left
+                            {'x': max_x - obj_width/2 - 0.1, 'y': max_y - obj_length/2 - 0.1}   # Top-right
+                        ]
+
+                        # Find the first valid corner
+                        best_corner = None
+                        for corner in corners:
+                            if self._is_valid_placement(corner, obj_width, obj_length, placed_objects):
+                                best_corner = corner
+                                break
+
+                        if best_corner:
+                            object_id += 1
+                            new_object = {
+                                'id': f"object_{object_id}",
+                                'type': obj_type,
+                                'room_id': room['id'],
+                                'position': {
+                                    'x': best_corner['x'],
+                                    'y': best_corner['y'],
+                                    'z': center.get('z', 0)
+                                },
+                                'dimensions': {
+                                    'width': obj_width,
+                                    'length': obj_length,
+                                    'height': obj_height
+                                }
+                            }
+                            objects.append(new_object)
+                            placed_objects.append({
+                                'position': best_corner,
+                                'width': obj_width,
+                                'length': obj_length
+                            })
+
+            logger.info(f"Predicted {len(objects)} objects for {len(rooms)} rooms")
+            return objects
+
+        except Exception as e:
+            logger.error(f"Error predicting objects: {str(e)}", exc_info=True)
+            return []
+
+    def _is_valid_placement(self, position, width, length, existing_objects):
+        """Check if an object placement is valid and doesn't overlap with existing objects."""
+        # Define safety margin
+        margin = 0.3  # 30cm margin
+
+        # Calculate bounds of new object
+        min_x = position['x'] - width/2 - margin
+        max_x = position['x'] + width/2 + margin
+        min_y = position['y'] - length/2 - margin
+        max_y = position['y'] + length/2 + margin
+
+        # Check for overlaps with existing objects
+        for obj in existing_objects:
+            obj_pos = obj['position']
+            obj_width = obj['width']
+            obj_length = obj['length']
+
+            obj_min_x = obj_pos['x'] - obj_width/2
+            obj_max_x = obj_pos['x'] + obj_width/2
+            obj_min_y = obj_pos['y'] - obj_length/2
+            obj_max_y = obj_pos['y'] + obj_length/2
+
+            # Check for overlap
+            if not (max_x < obj_min_x or min_x > obj_max_x or max_y < obj_min_y or min_y > obj_max_y):
+                return False
+
+        return True

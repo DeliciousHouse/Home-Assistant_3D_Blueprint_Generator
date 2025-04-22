@@ -180,16 +180,23 @@ class BlueprintGenerator:
             # Step 7: Group rooms into floors
             floors = self._group_rooms_into_floors(rooms)
 
-            # Step 8: Create the final blueprint
+            # Step 8: Predict objects (furniture, fixtures) in rooms
+            objects = self.ai_processor.predict_objects(rooms)
+            logger.info(f"Predicted {len(objects)} objects for the blueprint")
+
+            # Step 9: Create the final blueprint
             blueprint = {
                 'version': '1.0',
                 'generated_at': datetime.now().isoformat(),
                 'rooms': rooms,
                 'walls': walls,
                 'floors': floors,
+                'objects': objects,
                 'metadata': {
                     'room_count': len(rooms),
                     'device_count': len(relative_positions),
+                    'wall_count': len(walls),
+                    'object_count': len(objects),
                     'generation_time_seconds': (datetime.now() - job_start_time).total_seconds()
                 }
             }
