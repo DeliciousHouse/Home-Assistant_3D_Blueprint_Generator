@@ -230,151 +230,77 @@ class BlueprintGenerator:
         if not rooms:
             return []
 
-        # Check if ML wall prediction is enabled
-        use_ml = self.config.get('ai_settings', {}).get('use_ml_wall_prediction', True)
-
-        if use_ml and positions:
-            try:
-                # Try to use the ML-based wall prediction
-                walls = self.ai_processor.predict_walls(positions, rooms) if self.ai_processor else []
-                if walls:
-                    logger.debug(f"Using ML-based wall prediction: generated {len(walls)} walls")
-                    return walls
-            except Exception as e:
-                logger.warning(f"ML-based wall prediction failed: {str(e)}")
-
-        # Fall back to Delaunay triangulation
-        logger.debug("Using Delaunay triangulation for wall generation")
-
+        logger.info(f"Generating walls for {len(rooms)} rooms")
         walls = []
-
-        # Extract room vertices
-        vertices = []
-        for room in rooms:
-            bounds = room['bounds']
-            vertices.extend([
-                [bounds['min']['x'], bounds['min']['y']],
-                [bounds['min']['x'], bounds['max']['y']],
-                [bounds['max']['x'], bounds['min']['y']],
-                [bounds['max']['x'], bounds['max']['y']]
-            ])
-
-        if len(vertices) < 3 or len(rooms) < 2:
-            return walls
-
-        # Create Delaunay triangulation
-        vertices = np.array(vertices)
-        tri = Delaunay(vertices)
-
-        # Extract edges
-        edges = set()
-        for simplex in tri.simplices:
-            for i in range(3):
-                edge = tuple(sorted([simplex[i], simplex[(i + 1) % 3]]))
-                edges.add(edge)
-
-        # Convert edges to walls
-        for edge in edges:
-            p1 = vertices[edge[0]]
-            p2 = vertices[edge[1]]
-
-            # Calculate wall properties
-            length = np.linalg.norm(p2 - p1)
-            angle = np.arctan2(p2[1] - p1[0], p2[0] - p1[0])
-
-            # Skip walls that are too short or too long
-            if length < self.validation['min_room_dimension'] or \
-               length > self.validation['max_room_dimension']:
-                continue
-
-            walls.append({
-                'start': {'x': float(p1[0]), 'y': float(p1[1])},
-                'end': {'x': float(p2[0]), 'y': float(p2[1])},
-                'thickness': self.validation['min_wall_thickness'],
-                'height': self.validation['min_ceiling_height'],
-                'angle': float(angle)
-            })
-
-        return walls
-
-    def _generate_walls_between_rooms(self, rooms):
-        """Generate walls between rooms using more realistic algorithms (fallback)."""
-        walls = []
+        wall_id = 0
 
         try:
-            # First identify rooms on the same floor
-            rooms_by_floor = {}
+            # For each room, create walls along its boundaries
             for room in rooms:
-                floor = int(room['center']['z'] // 3)  # Assuming 3m floor height
-                if floor not in rooms_by_floor:
-                    rooms_by_floor[floor] = []
-                rooms_by_floor[floor].append(room)
+                # Get room bounds
+                bounds = room['bounds']
+                min_x = bounds['min']['x']
+                min_y = bounds['min']['y']
+                max_x = bounds['max']['x']
+                max_y = bounds['max']['y']
 
-            # For each floor, generate walls between adjacent rooms
-            for floor, floor_rooms in rooms_by_floor.items():
-                logger.info(f"Generating walls for floor {floor} with {len(floor_rooms)} rooms")  # Add this line
-                if len(floor_rooms) <= 1:
-                    continue
+                # Get room height for walls
+                room_height = room['dimensions']['height']
 
-                # Use Delaunay triangulation to find potential adjacent rooms
-                from scipy.spatial import Delaunay
-                import numpy as np
+                # Default wall thickness
+                thickness = self.validation['min_wall_thickness']
 
-                # Extract room centers
-                centers = []
-                for room in floor_rooms:
-                    centers.append([room['center']['x'], room['center']['y']])
+                # Create four walls for this room (one for each side)
+                # Bottom wall (min_y)
+                wall_id += 1
+                walls.append({
+                    'id': f"wall_{wall_id}",
+                    'start': {'x': min_x, 'y': min_y},
+                    'end': {'x': max_x, 'y': min_y},
+                    'thickness': thickness,
+                    'height': room_height,
+                    'angle': 0
+                })
 
-                # Handle case with too few rooms
-                if len(centers) < 3:
-                    # Just connect them with a wall
-                    if len(centers) == 2:
-                        r1, r2 = floor_rooms[0], floor_rooms[1]
-                        wall_height = min(r1['dimensions']['height'], r2['dimensions']['height'])
-                        walls.append({
-                            'start': {'x': r1['center']['x'], 'y': r1['center']['y']},
-                            'end': {'x': r2['center']['x'], 'y': r2['center']['y']},
-                            'height': wall_height,
-                            'thickness': 0.2
-                        })
-                    continue
+                # Right wall (max_x)
+                wall_id += 1
+                walls.append({
+                    'id': f"wall_{wall_id}",
+                    'start': {'x': max_x, 'y': min_y},
+                    'end': {'x': max_x, 'y': max_y},
+                    'thickness': thickness,
+                    'height': room_height,
+                    'angle': 90 * (math.pi/180)  # Convert to radians
+                })
 
-                # Create Delaunay triangulation
-                tri = Delaunay(np.array(centers))
+                # Top wall (max_y)
+                wall_id += 1
+                walls.append({
+                    'id': f"wall_{wall_id}",
+                    'start': {'x': max_x, 'y': max_y},
+                    'end': {'x': min_x, 'y': max_y},
+                    'thickness': thickness,
+                    'height': room_height,
+                    'angle': 0
+                })
 
-                # Generate walls from triangulation edges
-                edges = set()
-                for simplex in tri.simplices:
-                    for i in range(3):
-                        edge = tuple(sorted([simplex[i], simplex[(i+1)%3]]))
-                        edges.add(edge)
+                # Left wall (min_x)
+                wall_id += 1
+                walls.append({
+                    'id': f"wall_{wall_id}",
+                    'start': {'x': min_x, 'y': max_y},
+                    'end': {'x': min_x, 'y': min_y},
+                    'thickness': thickness,
+                    'height': room_height,
+                    'angle': 90 * (math.pi/180)  # Convert to radians
+                })
 
-                # Create walls from edges
-                for i, j in edges:
-                    r1, r2 = floor_rooms[i], floor_rooms[j]
+            logger.info(f"Generated {len(walls)} walls for {len(rooms)} rooms")
+            return walls
 
-                    # Check if rooms are too far apart
-                    dx = r1['center']['x'] - r2['center']['x']
-                    dy = r1['center']['y'] - r2['center']['y']
-                    distance = (dx**2 + dy**2)**0.5
-
-                    # Skip if too far apart
-                    if distance > 10:  # Adjust threshold as needed
-                        continue
-
-                    # Create wall
-                    wall_height = min(r1['dimensions']['height'], r2['dimensions']['height'])
-                    walls.append({
-                        'start': {'x': r1['center']['x'], 'y': r1['center']['y']},
-                        'end': {'x': r2['center']['x'], 'y': r2['center']['y']},
-                        'height': wall_height,
-                        'thickness': 0.2
-                    })
         except Exception as e:
-            logger.error(f"Wall generation failed: {str(e)}")
-
-        logger.info(f"Generated {len(walls)} walls between rooms")
-        return walls
+            logger.error(f"Error generating walls: {str(e)}", exc_info=True)
+            return []
 
     def _validate_blueprint(self, blueprint: Dict) -> bool:
         """Validate generated blueprint."""
