@@ -16,7 +16,9 @@ from .db import (
     save_blueprint_to_sqlite,      # ESSENTIAL: To save the final result
     get_latest_blueprint_from_sqlite, # ESSENTIAL: To retrieve the last blueprint for API/UI
     execute_sqlite_query,          # Only if needed for other direct queries
-    get_device_positions_from_sqlite  # Added to retrieve device positions from SQLite
+    get_device_positions_from_sqlite, # Added to retrieve device positions from SQLite
+    get_reference_positions_from_sqlite, # Added to retrieve reference positions
+    save_reference_position         # Added to save reference positions
 )
 
 # --- Imports from other project files ---
@@ -111,9 +113,7 @@ class BlueprintGenerator:
             dimensions = self.generation_config.get('mds_dimensions', 2)
             relative_positions = self.ai_processor.run_relative_positioning(distance_data, dimensions)
             logger.info(f"Generated relative positions for {len(relative_positions)} devices")
-            # --- ADD DEBUG LOGGING ---
             logger.debug(f"Relative Positions (MDS Output): {json.dumps(relative_positions, indent=2)}")
-            # --- END DEBUG LOGGING ---
 
             # Step 4: Group TRACKED devices by area/room
             device_coords_by_area = {}
@@ -126,19 +126,15 @@ class BlueprintGenerator:
             devices_added_to_area = 0
 
             for device_id, coords in relative_positions.items():
-                logger.debug(f"Processing entity: '{device_id}'") # Log entity being processed
-                # --- FILTER: Only include actual tracked devices, not scanners/reference points ---
+                logger.debug(f"Processing entity: '{device_id}'")
                 if device_id.startswith('scanner_') or device_id.startswith('reference_point_'):
                     logger.debug(f"  Skipping '{device_id}' (scanner/reference point).")
                     scanner_or_ref_count += 1
-                    continue # Skip scanners and reference points for room generation
-                # --- END FILTER ---
+                    continue
 
-                # If it wasn't skipped, it's considered a tracked device for this step
                 tracked_device_count += 1
                 area_id = area_predictions.get(device_id)
 
-                # Log which area (if any) is predicted for this tracked device
                 if area_id:
                     logger.debug(f"  Device '{device_id}' kept. Predicted area: '{area_id}'")
                     if area_id not in device_coords_by_area:
@@ -154,17 +150,13 @@ class BlueprintGenerator:
                     logger.debug(f"  Device '{device_id}' kept, but has no area prediction.")
                     devices_without_area += 1
 
-            # Corrected summary logging
             logger.info(f"Processed {len(relative_positions)} total entities from MDS.")
             logger.info(f"  Skipped {scanner_or_ref_count} scanners/reference points.")
             logger.info(f"  Considered {tracked_device_count} as potential tracked devices.")
             logger.info(f"  {devices_without_area} tracked devices had no area prediction.")
             logger.info(f"  {devices_added_to_area} tracked devices were added to {len(device_coords_by_area)} areas.")
-            # --- ADD DEBUG LOGGING ---
             logger.debug(f"Device Coordinates Grouped by Area: {json.dumps(device_coords_by_area, indent=2)}")
-            # --- END DEBUG LOGGING ---
 
-            # Log the final areas and counts for debugging
             logger.debug("--- Final device counts per area for room generation --- ")
             for area, devices in device_coords_by_area.items():
                  logger.debug(f"  Area '{area}': {len(devices)} devices")
@@ -175,14 +167,24 @@ class BlueprintGenerator:
             rooms = self.ai_processor.generate_rooms_from_points(device_coords_by_area)
 
             # Step 6: Generate walls between rooms
-            walls = self._generate_walls(rooms)
+            try:
+                walls = self.ai_processor.generate_walls_between_rooms(rooms)
+                logger.info(f"Generated {len(walls)} walls")
+            except Exception as e:
+                logger.error(f"Failed to generate walls: {e}", exc_info=True)
+                walls = self._generate_basic_walls(rooms)
+                logger.info(f"Generated {len(walls)} basic walls from room bounds")
 
             # Step 7: Group rooms into floors
             floors = self._group_rooms_into_floors(rooms)
 
             # Step 8: Predict objects (furniture, fixtures) in rooms
-            objects = self.ai_processor.predict_objects(rooms)
-            logger.info(f"Predicted {len(objects)} objects for the blueprint")
+            try:
+                objects = self.ai_processor.predict_objects(rooms)
+                logger.info(f"Predicted {len(objects)} objects")
+            except Exception as e:
+                logger.error(f"Failed to predict objects: {e}", exc_info=True)
+                objects = []
 
             # Step 9: Create the final blueprint
             blueprint = {
@@ -217,170 +219,143 @@ class BlueprintGenerator:
             self.status = {"state": "failed", "progress": 0.0}
             return False
 
-    def _create_minimal_valid_blueprint(self, rooms):
-        """Create a minimal valid blueprint when validation fails."""
-        # Basic structure with just rooms
-        return {
-            'version': '1.0',
-            'generated_at': datetime.now().isoformat(),
-            'rooms': rooms,
-            'walls': [],
-            'floors': [{'level': 0, 'rooms': [r['id'] for r in rooms]}],
-            'metadata': {
-                'room_count': len(rooms),
-                'is_minimal': True
-            }
-        }
-
-    def _generate_walls(self, rooms: List[Dict], positions: Optional[Dict[str, Dict[str, float]]] = None) -> List[Dict]:
-        """Generate walls between rooms using AI prediction when available."""
-        if not rooms:
-            return []
-
-        logger.info(f"Generating walls for {len(rooms)} rooms")
+    def _generate_basic_walls(self, rooms: List[Dict]) -> List[Dict]:
+        """Generate basic walls from room bounds when AI wall generation fails."""
         walls = []
         wall_id = 0
 
-        try:
-            # For each room, create walls along its boundaries
-            for room in rooms:
-                # Get room bounds
-                bounds = room['bounds']
-                min_x = bounds['min']['x']
-                min_y = bounds['min']['y']
-                max_x = bounds['max']['x']
-                max_y = bounds['max']['y']
+        for room in rooms:
+            if not room.get('bounds'):
+                continue
 
-                # Get room height for walls
-                room_height = room['dimensions']['height']
+            bounds = room['bounds']
+            min_x, min_y = bounds['min']['x'], bounds['min']['y']
+            max_x, max_y = bounds['max']['x'], bounds['max']['y']
 
-                # Default wall thickness
-                thickness = self.validation['min_wall_thickness']
+            wall_height = room.get('dimensions', {}).get('height', 2.4)
+            wall_thickness = 0.15
 
-                # Create four walls for this room (one for each side)
-                # Bottom wall (min_y)
-                wall_id += 1
-                walls.append({
-                    'id': f"wall_{wall_id}",
-                    'start': {'x': min_x, 'y': min_y},
-                    'end': {'x': max_x, 'y': min_y},
-                    'thickness': thickness,
-                    'height': room_height,
-                    'angle': 0
-                })
+            wall_id += 1
+            walls.append({
+                'id': f"wall_{wall_id}",
+                'start': {'x': min_x, 'y': min_y},
+                'end': {'x': min_x, 'y': max_y},
+                'thickness': wall_thickness,
+                'height': wall_height
+            })
 
-                # Right wall (max_x)
-                wall_id += 1
-                walls.append({
-                    'id': f"wall_{wall_id}",
-                    'start': {'x': max_x, 'y': min_y},
-                    'end': {'x': max_x, 'y': max_y},
-                    'thickness': thickness,
-                    'height': room_height,
-                    'angle': 90 * (math.pi/180)  # Convert to radians
-                })
+            wall_id += 1
+            walls.append({
+                'id': f"wall_{wall_id}",
+                'start': {'x': min_x, 'y': max_y},
+                'end': {'x': max_x, 'y': max_y},
+                'thickness': wall_thickness,
+                'height': wall_height
+            })
 
-                # Top wall (max_y)
-                wall_id += 1
-                walls.append({
-                    'id': f"wall_{wall_id}",
-                    'start': {'x': max_x, 'y': max_y},
-                    'end': {'x': min_x, 'y': max_y},
-                    'thickness': thickness,
-                    'height': room_height,
-                    'angle': 0
-                })
+            wall_id += 1
+            walls.append({
+                'id': f"wall_{wall_id}",
+                'start': {'x': max_x, 'y': max_y},
+                'end': {'x': max_x, 'y': min_y},
+                'thickness': wall_thickness,
+                'height': wall_height
+            })
 
-                # Left wall (min_x)
-                wall_id += 1
-                walls.append({
-                    'id': f"wall_{wall_id}",
-                    'start': {'x': min_x, 'y': max_y},
-                    'end': {'x': min_x, 'y': min_y},
-                    'thickness': thickness,
-                    'height': room_height,
-                    'angle': 90 * (math.pi/180)  # Convert to radians
-                })
+            wall_id += 1
+            walls.append({
+                'id': f"wall_{wall_id}",
+                'start': {'x': max_x, 'y': min_y},
+                'end': {'x': min_x, 'y': min_y},
+                'thickness': wall_thickness,
+                'height': wall_height
+            })
 
-            logger.info(f"Generated {len(walls)} walls for {len(rooms)} rooms")
-            return walls
+        return walls
 
-        except Exception as e:
-            logger.error(f"Error generating walls: {str(e)}", exc_info=True)
+    def _group_rooms_into_floors(self, rooms: List[Dict]) -> List[Dict]:
+        """Group rooms into floors based on their z-coordinate and area metadata."""
+        if not rooms:
             return []
 
-    def _validate_blueprint(self, blueprint: Dict) -> bool:
-        """Validate generated blueprint."""
-        try:
-            # Log the validation criteria
-            logger.debug(f"Validation criteria: {self.validation}")
+        floor_heights = {
+            0: 0.0,
+            1: 3.0,
+            2: 6.0
+        }
 
-            # Check if blueprint has the required keys
-            if not all(key in blueprint for key in ['rooms', 'walls']):
-                raise ValueError("Blueprint is missing required keys: rooms or walls")
+        area_floor_map = {
+            "lounge": 0,
+            "kitchen": 0,
+            "dining_room": 0,
+            "front_porch": 0,
+            "laundry_room": 0,
+            "master_bedroom": 0,
+            "master_bathroom": 0,
+            "office": 1,
+            "dressing_room": 1,
+            "sky_floor": 1,
+            "balcony": 1,
+            "garage": 0,
+            "nova_room": 0,
+            "christian_room": 0
+        }
 
-            # Validate rooms
-            for room in blueprint['rooms']:
-                # Log room data for debugging
-                logger.debug(f"Validating room: {room['id']}")
-                logger.debug(f"Room dimensions: {room['dimensions']}")
+        floors_dict = {}
+        for room in rooms:
+            try:
+                area_id = room.get('area_id')
+                if area_id and area_id in area_floor_map:
+                    floor_level = area_floor_map[area_id]
+                else:
+                    if 'center' in room and 'z' in room['center']:
+                        center_z = room['center']['z']
+                        if center_z < 1.5:
+                            floor_level = 0
+                        elif center_z < 4.5:
+                            floor_level = 1
+                        else:
+                            floor_level = 2
+                    else:
+                        logger.warning(f"Room {room.get('id', 'unknown')} is missing 'center' data, defaulting to ground floor")
+                        floor_level = 0
 
-                # Check dimensions
-                dims = room['dimensions']
-                if dims['width'] < self.validation['min_room_dimension'] or \
-                   dims['width'] > self.validation['max_room_dimension'] or \
-                   dims['length'] < self.validation['min_room_dimension'] or \
-                   dims['length'] > self.validation['max_room_dimension'] or \
-                   dims['height'] < self.validation['min_ceiling_height'] or \
-                   dims['height'] > self.validation['max_ceiling_height']:
-                    logger.error(f"Room {room['id']} dimensions out of valid range: width={dims['width']}, length={dims['length']}, height={dims['height']}")
-                    raise ValueError(f"Room {room['id']} dimensions out of valid range")
+                if floor_level not in floors_dict:
+                    floors_dict[floor_level] = []
 
-                # Check area
-                area = dims['width'] * dims['length']
-                if area < self.validation['min_room_area'] or \
-                   area > self.validation['max_room_area']:
-                    logger.error(f"Room {room['id']} area out of valid range: {area}")
-                    return False
+                floors_dict[floor_level].append(room['id'])
+                room['floor'] = floor_level
 
-            # Validate walls
-            for idx, wall in enumerate(blueprint['walls']):
-                # Log wall data
-                logger.debug(f"Validating wall {idx}: {wall}")
+            except Exception as e:
+                logger.error(f"Error processing room for floor grouping: {str(e)}")
+                if 'id' in room:
+                    if 0 not in floors_dict:
+                        floors_dict[0] = []
+                    floors_dict[0].append(room['id'])
+                    room['floor'] = 0
 
-                # Check thickness
-                if wall['thickness'] < self.validation['min_wall_thickness'] or \
-                   wall['thickness'] > self.validation['max_wall_thickness']:
-                    logger.error(f"Wall {idx} thickness out of valid range: {wall['thickness']}")
-                    raise ValueError(f"Wall {idx} thickness out of valid range")
+        floors = []
+        for level, room_ids in sorted(floors_dict.items()):
+            floors.append({
+                'level': level,
+                'name': f"Floor {level}",
+                'rooms': room_ids,
+                'height': 3.0,
+                'elevation': floor_heights.get(level, level * 3.0)
+            })
 
-                # Check height
-                if wall['height'] < self.validation['min_ceiling_height'] or \
-                   wall['height'] > self.validation['max_ceiling_height']:
-                    logger.error(f"Wall {idx} height out of valid range: {wall['height']}")
-                    raise ValueError(f"Wall {idx} height out of valid range")
-
-            logger.info("Blueprint validation passed successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"Blueprint validation failed with exception: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False
+        logger.info(f"Grouped {len(rooms)} rooms into {len(floors)} floors")
+        return floors
 
     def get_latest_blueprint(self):
         """Get the latest blueprint from the database."""
         try:
-            # First check in-memory cache
             if hasattr(self, 'latest_generated_blueprint') and self.latest_generated_blueprint:
                 return self.latest_generated_blueprint
 
-            # Get from SQLite using helper function
             blueprint = get_latest_blueprint_from_sqlite()
 
             if blueprint:
-                # Store in memory for later access
                 self.latest_generated_blueprint = blueprint
                 logger.info(f"Retrieved latest blueprint with {len(blueprint.get('rooms', []))} rooms")
                 return blueprint
@@ -403,11 +378,9 @@ class BlueprintGenerator:
                 logger.warning("Blueprint is empty, not saving to database.")
                 return False
 
-            # Use helper function from db
             success = save_blueprint_to_sqlite(blueprint)
 
             if success:
-                # Update in-memory cache
                 self.latest_generated_blueprint = blueprint
                 logger.info(f"Successfully saved blueprint with {len(blueprint.get('rooms', []))} rooms")
 
@@ -420,7 +393,6 @@ class BlueprintGenerator:
     def get_device_positions_from_db(self):
         """Get the latest device positions from the SQLite database."""
         try:
-            # Use the helper function from db module
             device_positions = get_device_positions_from_sqlite()
             logger.info(f"Loaded {len(device_positions)} device positions from SQLite database")
             return device_positions
@@ -428,99 +400,10 @@ class BlueprintGenerator:
             logger.error(f"Error getting device positions from database: {e}")
             return {}
 
-    def _group_rooms_into_floors(self, rooms: List[Dict]) -> List[Dict]:
-        """Group rooms into floors based on their z-coordinate and area metadata."""
-        if not rooms:
-            return []
-
-        # Define floor heights - these are approximate heights in meters for each floor
-        floor_heights = {
-            0: 0.0,   # Ground floor
-            1: 3.0,   # First floor
-            2: 6.0    # Second floor
-        }
-
-        # Map from area_id to floor level (based on your house layout)
-        area_floor_map = {
-            "lounge": 0,
-            "kitchen": 0,
-            "dining_room": 0,
-            "front_porch": 0,
-            "laundry_room": 0,
-            "master_bedroom": 0,
-            "master_bathroom": 0,
-            "office": 1,
-            "dressing_room": 1,
-            "sky_floor": 1,
-            "balcony": 1,
-            "garage": 0,
-            "nova_room": 0,
-            "christian_room": 0
-            # Add other areas as needed
-        }
-
-        # Group rooms by floor level
-        floors_dict = {}
-        for room in rooms:
-            try:
-                # Try to determine floor from area_id first
-                area_id = room.get('area_id')
-                if area_id and area_id in area_floor_map:
-                    floor_level = area_floor_map[area_id]
-                else:
-                    # Fall back to z-coordinate if center exists
-                    if 'center' in room and 'z' in room['center']:
-                        center_z = room['center']['z']
-                        # Assign floor based on z-coordinate ranges
-                        if center_z < 1.5:  # Below 1.5m is ground floor
-                            floor_level = 0
-                        elif center_z < 4.5:  # 1.5m to 4.5m is first floor
-                            floor_level = 1
-                        else:  # Above 4.5m is second floor
-                            floor_level = 2
-                    else:
-                        # Default to ground floor if no center coordinate is available
-                        logger.warning(f"Room {room.get('id', 'unknown')} is missing 'center' data, defaulting to ground floor")
-                        floor_level = 0
-
-                # Initialize floor list if needed
-                if floor_level not in floors_dict:
-                    floors_dict[floor_level] = []
-
-                floors_dict[floor_level].append(room['id'])
-
-                # Update room with floor level for UI reference
-                room['floor'] = floor_level
-
-            except Exception as e:
-                # Handle any other issues with specific rooms gracefully
-                logger.error(f"Error processing room for floor grouping: {str(e)}")
-                # Default problematic rooms to ground floor
-                if 'id' in room:
-                    if 0 not in floors_dict:
-                        floors_dict[0] = []
-                    floors_dict[0].append(room['id'])
-                    room['floor'] = 0
-
-        # Convert to list of floor objects
-        floors = []
-        for level, room_ids in sorted(floors_dict.items()):
-            floors.append({
-                'level': level,
-                'name': f"Floor {level}",  # Add names for UI
-                'rooms': room_ids,
-                'height': 3.0,  # Standard floor height
-                'elevation': floor_heights.get(level, level * 3.0)  # Height from ground
-            })
-
-        logger.info(f"Grouped {len(rooms)} rooms into {len(floors)} floors")
-        return floors
-
 def ensure_reference_positions():
     """Make sure we have at least some reference positions in the SQLite database"""
     from .db import get_reference_positions_from_sqlite, save_reference_position
 
-    # Check if we already have reference positions
     existing_refs = get_reference_positions_from_sqlite()
     if len(existing_refs) >= 3:
         logger.info(f"Found {len(existing_refs)} existing reference positions, no need to create more")
@@ -528,7 +411,6 @@ def ensure_reference_positions():
 
     logger.info("Insufficient reference positions found, creating initial reference points")
 
-    # Create at least 3 reference points for the system to work with
     default_positions = {
         "reference_point_1": {"x": 0, "y": 0, "z": 0, "area_id": "lounge"},
         "reference_point_2": {"x": 5, "y": 0, "z": 0, "area_id": "kitchen"},
@@ -536,7 +418,6 @@ def ensure_reference_positions():
         "reference_point_4": {"x": 5, "y": 5, "z": 0, "area_id": "office"}
     }
 
-    # Save only the additional reference points we need
     for device_id, position in default_positions.items():
         if device_id not in existing_refs:
             save_reference_position(
@@ -548,5 +429,4 @@ def ensure_reference_positions():
             )
             logger.info(f"Created reference position: {device_id} at ({position['x']}, {position['y']}, {position['z']})")
 
-    # Return the updated reference positions
     return get_reference_positions_from_sqlite()

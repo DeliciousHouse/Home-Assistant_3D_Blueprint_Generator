@@ -13,6 +13,7 @@ gunicorn
 websocket-client
 PyYAML
 protobuf
+python-json-logger
 
 # ML/AI dependencies
 tensorflow

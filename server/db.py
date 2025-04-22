@@ -26,7 +26,16 @@ except ImportError:
 logger = logging.getLogger(__name__)
 app_config = load_config()
 
-SQLITE_DB_PATH = os.environ.get('DB_PATH', '/config/home_generative_agent_db')
+# Update the default path to use the proper Home Assistant data directory
+# /data is the persistent data directory in Home Assistant add-ons
+# Fallback to /config for compatibility with previous versions
+SQLITE_DB_PATH = os.environ.get('DB_PATH', '/data/blueprint_generator_db')
+if not os.path.exists(os.path.dirname(SQLITE_DB_PATH)):
+    fallback_path = '/config/home_generative_agent_db'
+    logger.warning(f"Primary DB path {SQLITE_DB_PATH} not available. Falling back to {fallback_path}")
+    SQLITE_DB_PATH = fallback_path
+
+logger.info(f"Using SQLite database path: {SQLITE_DB_PATH}")
 
 # --- SQLite Connection ---
 

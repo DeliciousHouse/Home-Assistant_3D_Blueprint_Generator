@@ -40,13 +40,33 @@ logger.setLevel(getattr(logging, log_level, logging.INFO))
 logger.info("Configuration loaded and processed successfully")
 
 from server.api import app, start_api
-from server.db import init_sqlite_db
+from server.db import init_sqlite_db, SQLITE_DB_PATH
 
 def initialize_databases():
     """Initialize database schema."""
     try:
+        # Check if we have access to the data directory
+        data_dir = os.path.dirname(SQLITE_DB_PATH)
+
+        # Try to create directories if they don't exist
+        try:
+            os.makedirs(data_dir, exist_ok=True)
+            logger.info(f"Ensured data directory exists at: {data_dir}")
+        except PermissionError:
+            logger.error(f"Permission error creating data directory: {data_dir}")
+            logger.info("Will attempt to use the database path anyway")
+        except Exception as dir_e:
+            logger.warning(f"Issue with data directory {data_dir}: {dir_e}")
+
+        # Check if we can write to the data directory
+        if os.path.exists(data_dir):
+            if os.access(data_dir, os.W_OK):
+                logger.info(f"Data directory {data_dir} is writable")
+            else:
+                logger.warning(f"Data directory {data_dir} exists but is not writable!")
+
         # Initialize SQLite database
-        logger.info("Initializing SQLite database...")
+        logger.info(f"Initializing SQLite database at {SQLITE_DB_PATH}...")
         if not init_sqlite_db():
             logger.error("Failed to initialize SQLite database")
             return False
@@ -58,6 +78,10 @@ def initialize_databases():
             from server.db import get_sqlite_connection
             from datetime import datetime
             conn_test = get_sqlite_connection()
+            if not conn_test:
+                logger.error("Failed to connect to database for test write")
+                return False
+
             cursor_test = conn_test.cursor()
             cursor_test.execute("INSERT INTO distance_log (timestamp, tracked_device_id, scanner_id, distance) VALUES (?, ?, ?, ?)",
                                (datetime.now().isoformat(), 'test_device', 'test_scanner', 1.23))
@@ -70,10 +94,11 @@ def initialize_databases():
             conn_test.close()
         except Exception as test_e:
             logger.error(f"Direct DB write test FAILED: {test_e}", exc_info=True)
+            # Continue anyway, as this might be a transient issue
 
         return True
     except Exception as e:
-        logger.error(f"Database initialization failed: {str(e)}")
+        logger.error(f"Database initialization failed: {str(e)}", exc_info=True)
         return False
 
 def start_processing_scheduler(config):

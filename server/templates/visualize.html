@@ -1,11 +1,17 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Blueprint Viewer</title>
+    <title>3D Blueprint Viewer</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <style>
-        body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+        }
         canvas { display: block; }
         #error-message {
             position: absolute;
@@ -16,6 +22,7 @@
             padding: 10px;
             border-radius: 5px;
             display: none;
+            z-index: 100;
         }
         #info-panel {
             position: absolute;
@@ -25,6 +32,48 @@
             color: white;
             padding: 10px;
             border-radius: 5px;
+            z-index: 100;
+            max-width: 300px;
+        }
+        #floor-controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 100;
+        }
+        #floor-controls button {
+            margin: 0 5px;
+            padding: 5px 10px;
+            background: #444;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        #floor-controls button.active {
+            background: #0078d4;
+        }
+        #floor-controls button:hover {
+            background: #555;
+        }
+        #object-info {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+            z-index: 100;
+        }
+        .controls-label {
+            font-weight: bold;
+            margin-right: 10px;
         }
     </style>
 </head>
@@ -35,10 +84,54 @@
         <h3>Blueprint Info</h3>
         <div id="blueprint-stats"></div>
     </div>
+    <div id="floor-controls">
+        <span class="controls-label">Floor:</span>
+        <!-- Floor buttons will be generated here -->
+    </div>
+    <div id="object-info"></div>
 
     <script>
         // Blueprint data from server
         let blueprintData;
+        let currentFloor = 0;
+        const meshes = {
+            rooms: [],
+            walls: [],
+            objects: []
+        };
+        let selectedObject = null;
+
+        // Standard material colors
+        const COLORS = {
+            ROOM: 0x9bc4e2,
+            WALL: 0x8B8B8B,
+            FLOOR: 0xcccccc,
+            CEILING: 0xe0e0e0,
+            SELECTED: 0xffcc00,
+            OBJECT: {
+                'sofa': 0x7b68ee,
+                'coffee_table': 0x8b4513,
+                'tv_unit': 0x2f4f4f,
+                'armchair': 0x6a5acd,
+                'refrigerator': 0xb0c4de,
+                'stove': 0x696969,
+                'sink': 0xb0e0e6,
+                'counter': 0xa9a9a9,
+                'dining_table': 0x8b4513,
+                'chair': 0xa0522d,
+                'bed': 0x6495ed,
+                'king_bed': 0x4169e1,
+                'wardrobe': 0xdaa520,
+                'nightstand': 0xd2b48c,
+                'toilet': 0xf0f8ff,
+                'shower': 0x87ceeb,
+                'bathtub': 0xb0e0e6,
+                'desk': 0x8b4513,
+                'office_chair': 0x2f4f4f,
+                'bookshelf': 0xdeb887,
+                'default': 0x9370db
+            }
+        };
 
         try {
             blueprintData = JSON.parse('{{ blueprint|tojson|safe }}');
@@ -49,129 +142,464 @@
             statsDiv.innerHTML = `
                 <p>Rooms: ${blueprintData.rooms.length}</p>
                 <p>Walls: ${blueprintData.walls ? blueprintData.walls.length : 0}</p>
+                <p>Objects: ${blueprintData.objects ? blueprintData.objects.length : 0}</p>
                 <p>Floors: ${blueprintData.floors ? blueprintData.floors.length : 0}</p>
+                <p><em>Click on objects for more info</em></p>
             `;
+
+            // Set up floor controls
+            setupFloorControls();
         } catch (e) {
             showError("Failed to parse blueprint data: " + e.message);
         }
 
         // Set up Three.js scene
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0xf0f0f0);
+        scene.background = new THREE.Color(0x121212); // Dark background
 
         // Camera
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.set(10, 10, 10);
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(15, 15, 15);
         camera.lookAt(0, 0, 0);
 
         // Renderer
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
         document.getElementById('blueprint-container').appendChild(renderer.domElement);
 
         // Controls for camera
         const controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.25;
+        controls.minDistance = 5;
+        controls.maxDistance = 50;
 
         // Lighting
-        const light = new THREE.AmbientLight(0x404040, 1.5);
-        scene.add(light);
+        const ambientLight = new THREE.AmbientLight(0x404040, 1.5);
+        scene.add(ambientLight);
+
         const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        directionalLight.position.set(1, 1, 1);
+        directionalLight.position.set(10, 20, 10);
+        directionalLight.castShadow = true;
+        directionalLight.shadow.camera.near = 0.1;
+        directionalLight.shadow.camera.far = 50;
+        directionalLight.shadow.camera.left = -20;
+        directionalLight.shadow.camera.right = 20;
+        directionalLight.shadow.camera.top = 20;
+        directionalLight.shadow.camera.bottom = -20;
         scene.add(directionalLight);
 
+        // Add another light from the opposite direction
+        const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.5);
+        directionalLight2.position.set(-10, 15, -10);
+        scene.add(directionalLight2);
+
         // Grid helper
-        const gridHelper = new THREE.GridHelper(20, 20);
+        const gridHelper = new THREE.GridHelper(50, 50, 0x444444, 0x333333);
+        gridHelper.position.y = -0.01; // Slightly below everything else
         scene.add(gridHelper);
 
-        // Helper function to get random color for rooms
-        function getRandomColor() {
-            const colors = [0x9bc4e2, 0xa5d6a7, 0xffcc80, 0xef9a9a, 0xb39ddb, 0x90caf9];
-            return colors[Math.floor(Math.random() * colors.length)];
+        // Raycaster for object selection
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        // Main rendering function
+        renderBlueprint();
+
+        // Setup floor control buttons
+        function setupFloorControls() {
+            if (!blueprintData.floors || blueprintData.floors.length === 0) {
+                document.getElementById('floor-controls').style.display = 'none';
+                return;
+            }
+
+            const floorControls = document.getElementById('floor-controls');
+
+            // Add "All Floors" button
+            const allFloorsBtn = document.createElement('button');
+            allFloorsBtn.textContent = 'All Floors';
+            allFloorsBtn.className = 'active';
+            allFloorsBtn.onclick = () => {
+                setCurrentFloor('all');
+                setActiveButton(allFloorsBtn);
+            };
+            floorControls.appendChild(allFloorsBtn);
+
+            // Add individual floor buttons
+            blueprintData.floors.sort((a, b) => a.level - b.level).forEach(floor => {
+                const btn = document.createElement('button');
+                btn.textContent = floor.name || `Floor ${floor.level}`;
+                btn.onclick = () => {
+                    setCurrentFloor(floor.level);
+                    setActiveButton(btn);
+                };
+                floorControls.appendChild(btn);
+            });
         }
 
-        // Render rooms from blueprint data
-        try {
-            if (blueprintData && blueprintData.rooms && blueprintData.rooms.length) {
-                blueprintData.rooms.forEach(room => {
-                    if (!room.dimensions || !room.center) {
-                        console.warn("Room missing dimensions or center:", room);
-                        return;
-                    }
+        function setActiveButton(activeBtn) {
+            const buttons = document.querySelectorAll('#floor-controls button');
+            buttons.forEach(btn => {
+                btn.className = (btn === activeBtn) ? 'active' : '';
+            });
+        }
 
-                    const width = room.dimensions.width || 5;
-                    const height = room.dimensions.height || 2.5;
-                    const length = room.dimensions.length || 4;
+        function setCurrentFloor(floor) {
+            currentFloor = floor;
+            renderBlueprint();
+        }
 
-                    const geometry = new THREE.BoxGeometry(width, height, length);
-                    const material = new THREE.MeshPhongMaterial({
-                        color: getRandomColor(),
-                        wireframe: true,
-                        transparent: true,
-                        opacity: 0.7
+        // Helper function to get material for rooms
+        function getRoomMaterial(roomData) {
+            return new THREE.MeshPhongMaterial({
+                color: COLORS.ROOM,
+                transparent: true,
+                opacity: 0.4,
+                side: THREE.DoubleSide
+            });
+        }
+
+        // Helper function to get material for walls
+        function getWallMaterial() {
+            return new THREE.MeshPhongMaterial({
+                color: COLORS.WALL,
+                transparent: false,
+                opacity: 1.0,
+                side: THREE.DoubleSide
+            });
+        }
+
+        // Helper function to get material for objects
+        function getObjectMaterial(objectType) {
+            const color = COLORS.OBJECT[objectType] || COLORS.OBJECT.default;
+            return new THREE.MeshPhongMaterial({
+                color: color,
+                transparent: false,
+                opacity: 1.0,
+                side: THREE.DoubleSide
+            });
+        }
+
+        // Clear all rendered elements
+        function clearScene() {
+            // Clear rooms
+            meshes.rooms.forEach(mesh => {
+                scene.remove(mesh);
+                if (mesh.geometry) mesh.geometry.dispose();
+                if (mesh.material) mesh.material.dispose();
+            });
+            meshes.rooms = [];
+
+            // Clear walls
+            meshes.walls.forEach(mesh => {
+                scene.remove(mesh);
+                if (mesh.geometry) mesh.geometry.dispose();
+                if (mesh.material) mesh.material.dispose();
+            });
+            meshes.walls = [];
+
+            // Clear objects
+            meshes.objects.forEach(mesh => {
+                scene.remove(mesh);
+                if (mesh.geometry) mesh.geometry.dispose();
+                if (mesh.material) mesh.material.dispose();
+            });
+            meshes.objects = [];
+        }
+
+        // Render the entire blueprint based on current floor selection
+        function renderBlueprint() {
+            clearScene();
+
+            // Filter rooms by current floor if specified
+            const roomsToRender = blueprintData.rooms.filter(room => {
+                if (currentFloor === 'all') return true;
+                return room.floor === currentFloor;
+            });
+
+            // Render rooms
+            renderRooms(roomsToRender);
+
+            // Render walls for those rooms
+            if (blueprintData.walls) {
+                // For "all floors" view or specific floor view, show walls appropriately
+                const wallsToRender = currentFloor === 'all' ?
+                    blueprintData.walls :
+                    blueprintData.walls.filter(wall => {
+                        // Find if this wall belongs to any of the current floor's rooms
+                        // This is a simplification - in a production system, walls would have floor info
+                        return true;
                     });
-                    const cube = new THREE.Mesh(geometry, material);
 
-                    // Position at the room's center
-                    cube.position.set(
-                        room.center.x || 0,
-                        room.center.z || 0, // Using z for vertical position (up/down)
-                        room.center.y || 0  // Using y for depth (forward/backward)
-                    );
+                renderWalls(wallsToRender);
+            }
 
-                    scene.add(cube);
+            // Render objects (furniture) for those rooms
+            if (blueprintData.objects) {
+                const objectsToRender = currentFloor === 'all' ?
+                    blueprintData.objects :
+                    blueprintData.objects.filter(obj => {
+                        // Find the room for this object
+                        const room = blueprintData.rooms.find(room => room.id === obj.room_id);
+                        return room && room.floor === currentFloor;
+                    });
+
+                renderObjects(objectsToRender);
+            }
+        }
+
+        // Render rooms as 3D boxes
+        function renderRooms(rooms) {
+            rooms.forEach(room => {
+                if (!room.dimensions || !room.bounds) {
+                    console.warn("Room missing dimensions or bounds:", room);
+                    return;
+                }
+
+                const width = room.dimensions.width;
+                const height = room.dimensions.height || 2.5;
+                const length = room.dimensions.length;
+                const floor = room.floor || 0;
+
+                // Create exterior (transparent) and floor/ceiling (solid)
+                const mainGeometry = new THREE.BoxGeometry(width, height, length);
+                const mainMaterial = getRoomMaterial(room);
+
+                const floorGeometry = new THREE.BoxGeometry(width, 0.05, length);
+                const floorMaterial = new THREE.MeshPhongMaterial({
+                    color: COLORS.FLOOR,
+                    transparent: false,
+                    opacity: 1.0
                 });
 
-                // Render walls if available
-                if (blueprintData.walls && blueprintData.walls.length) {
-                    blueprintData.walls.forEach(wall => {
-                        const start = wall.start;
-                        const end = wall.end;
-                        const height = wall.height || 2.5;
-                        const thickness = wall.thickness || 0.2;
+                const ceilingGeometry = new THREE.BoxGeometry(width, 0.05, length);
+                const ceilingMaterial = new THREE.MeshPhongMaterial({
+                    color: COLORS.CEILING,
+                    transparent: false,
+                    opacity: 1.0
+                });
 
-                        // Calculate length and direction
-                        const length = Math.sqrt(
-                            Math.pow(end.x - start.x, 2) +
-                            Math.pow(end.y - start.y, 2)
-                        );
+                // Create the meshes
+                const roomMesh = new THREE.Mesh(mainGeometry, mainMaterial);
+                const floorMesh = new THREE.Mesh(floorGeometry, floorMaterial);
+                const ceilingMesh = new THREE.Mesh(ceilingGeometry, ceilingMaterial);
 
-                        // Find midpoint
-                        const midX = (start.x + end.x) / 2;
-                        const midY = (start.y + end.y) / 2;
+                // Store room data on the mesh for selection
+                roomMesh.userData = { type: 'room', data: room };
 
-                        // Calculate rotation angle
-                        const angle = Math.atan2(end.y - start.y, end.x - start.x);
+                // Position at the room's center
+                // Calculate center from bounds
+                const centerX = (room.bounds.min.x + room.bounds.max.x) / 2;
+                const centerY = (room.bounds.min.y + room.bounds.max.y) / 2;
 
-                        // Create wall geometry
-                        const wallGeometry = new THREE.BoxGeometry(length, height, thickness);
-                        const wallMaterial = new THREE.MeshPhongMaterial({
-                            color: 0x8B8B8B, // Medium gray
-                            transparent: false,
-                            opacity: 1.0
-                        });
+                roomMesh.position.set(centerX, height/2, centerY);
+                floorMesh.position.set(centerX, 0, centerY);
+                ceilingMesh.position.set(centerX, height, centerY);
 
-                        const wallMesh = new THREE.Mesh(wallGeometry, wallMaterial);
+                scene.add(roomMesh);
+                scene.add(floorMesh);
+                scene.add(ceilingMesh);
 
-                        // Position the wall properly
-                        wallMesh.position.set(midX, height / 2, midY);
-                        wallMesh.rotation.y = angle;
+                meshes.rooms.push(roomMesh);
+                meshes.rooms.push(floorMesh);
+                meshes.rooms.push(ceilingMesh);
+            });
+        }
 
-                        scene.add(wallMesh);
-                    });
+        // Render walls
+        function renderWalls(walls) {
+            walls.forEach(wall => {
+                const start = wall.start;
+                const end = wall.end;
+                const height = wall.height || 2.5;
+                const thickness = wall.thickness || 0.15;
+
+                // Calculate wall length and orientation
+                const dx = end.x - start.x;
+                const dy = end.y - start.y;
+                const length = Math.sqrt(dx * dx + dy * dy);
+
+                // Create wall geometry with proper thickness
+                const wallGeometry = new THREE.BoxGeometry(length, height, thickness);
+                const wallMaterial = getWallMaterial();
+                const wallMesh = new THREE.Mesh(wallGeometry, wallMaterial);
+
+                // Store wall data on the mesh for selection
+                wallMesh.userData = { type: 'wall', data: wall };
+
+                // Calculate midpoint and rotation
+                const midpointX = (start.x + end.x) / 2;
+                const midpointY = (start.y + end.y) / 2;
+
+                // Rotation angle
+                const angle = Math.atan2(dy, dx);
+
+                // Position the wall
+                wallMesh.position.set(midpointX, height / 2, midpointY);
+                wallMesh.rotation.y = -angle;
+
+                scene.add(wallMesh);
+                meshes.walls.push(wallMesh);
+            });
+        }
+
+        // Render furniture/objects
+        function renderObjects(objects) {
+            objects.forEach(obj => {
+                if (!obj.dimensions || !obj.position) {
+                    console.warn("Object missing dimensions or position:", obj);
+                    return;
                 }
-            } else {
-                showError("No rooms found in blueprint data");
+
+                const width = obj.dimensions.width;
+                const height = obj.dimensions.height;
+                const length = obj.dimensions.length;
+
+                // Create object based on type
+                let objectGeometry;
+
+                // Special shapes for different furniture types
+                switch(obj.type) {
+                    case 'toilet':
+                        objectGeometry = new THREE.CylinderGeometry(width/3, width/2.5, height, 12);
+                        break;
+                    case 'shower':
+                        objectGeometry = new THREE.BoxGeometry(width, height, length);
+                        break;
+                    case 'bathtub':
+                        objectGeometry = new THREE.BoxGeometry(width, height, length);
+                        // Round the corners slightly
+                        objectGeometry.translate(0, height/4, 0);
+                        break;
+                    case 'sofa':
+                    case 'bed':
+                    case 'king_bed':
+                        objectGeometry = new THREE.BoxGeometry(width, height, length);
+                        // Add a little elevation
+                        objectGeometry.translate(0, height/2, 0);
+                        break;
+                    default:
+                        // Default box shape for most objects
+                        objectGeometry = new THREE.BoxGeometry(width, height, length);
+                        break;
+                }
+
+                const objectMaterial = getObjectMaterial(obj.type);
+                const objectMesh = new THREE.Mesh(objectGeometry, objectMaterial);
+
+                // Store object data on the mesh for selection
+                objectMesh.userData = { type: 'object', data: obj };
+
+                // Position at the object's position
+                const x = obj.position.x;
+                const y = obj.position.z || height/2;
+                const z = obj.position.y;
+
+                objectMesh.position.set(x, y, z);
+
+                scene.add(objectMesh);
+                meshes.objects.push(objectMesh);
+            });
+        }
+
+        // Handle object selection with raycaster
+        document.addEventListener('click', onDocumentClick, false);
+
+        function onDocumentClick(event) {
+            // Calculate mouse position in normalized device coordinates (-1 to +1)
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = - (event.clientY / window.innerHeight) * 2 + 1;
+
+            // Update the picking ray with the camera and mouse position
+            raycaster.setFromCamera(mouse, camera);
+
+            // Calculate objects intersecting the picking ray
+            const intersects = raycaster.intersectObjects([...meshes.rooms, ...meshes.walls, ...meshes.objects]);
+
+            // Reset previous selection
+            if (selectedObject) {
+                if (selectedObject.userData.type === 'object') {
+                    selectedObject.material.color.setHex(
+                        COLORS.OBJECT[selectedObject.userData.data.type] || COLORS.OBJECT.default
+                    );
+                } else if (selectedObject.userData.type === 'room') {
+                    selectedObject.material.color.setHex(COLORS.ROOM);
+                } else if (selectedObject.userData.type === 'wall') {
+                    selectedObject.material.color.setHex(COLORS.WALL);
+                }
+                document.getElementById('object-info').style.display = 'none';
             }
-        } catch (e) {
-            showError("Error rendering rooms: " + e.message);
+
+            selectedObject = null;
+
+            // Process new selection
+            if (intersects.length > 0) {
+                selectedObject = intersects[0].object;
+
+                // Highlight selected object
+                if (selectedObject.userData.type === 'object' ||
+                    selectedObject.userData.type === 'room' ||
+                    selectedObject.userData.type === 'wall') {
+
+                    selectedObject.material.color.setHex(COLORS.SELECTED);
+
+                    // Show info about selected object
+                    showObjectInfo(selectedObject);
+                }
+            }
+        }
+
+        function showObjectInfo(object) {
+            const infoPanel = document.getElementById('object-info');
+            const data = object.userData.data;
+            let html = '';
+
+            if (object.userData.type === 'room') {
+                html = `
+                    <h3>Room: ${data.name || data.id}</h3>
+                    <p>Type: ${data.type || 'Standard'}</p>
+                    <p>Floor: ${data.floor || 'Ground'}</p>
+                    <p>Dimensions: ${data.dimensions.width.toFixed(1)}m ×
+                                  ${data.dimensions.length.toFixed(1)}m ×
+                                  ${data.dimensions.height.toFixed(1)}m</p>
+                    <p>Area: ${(data.dimensions.width * data.dimensions.length).toFixed(2)} m²</p>
+                `;
+            } else if (object.userData.type === 'object') {
+                html = `
+                    <h3>Object: ${data.type.replace('_', ' ')}</h3>
+                    <p>Room: ${data.room_id}</p>
+                    <p>Size: ${data.dimensions.width.toFixed(1)}m ×
+                              ${data.dimensions.length.toFixed(1)}m ×
+                              ${data.dimensions.height.toFixed(1)}m</p>
+                    <p>Position: (${data.position.x.toFixed(1)},
+                                 ${data.position.y.toFixed(1)},
+                                 ${data.position.z ? data.position.z.toFixed(1) : '0.0'})</p>
+                `;
+            } else if (object.userData.type === 'wall') {
+                html = `
+                    <h3>Wall</h3>
+                    <p>ID: ${data.id}</p>
+                    <p>Height: ${data.height ? data.height.toFixed(1) : '2.5'}m</p>
+                    <p>Thickness: ${data.thickness ? data.thickness.toFixed(2) : '0.15'}m</p>
+                    <p>Length: ${calculateDistance(data.start, data.end).toFixed(2)}m</p>
+                `;
+            }
+
+            infoPanel.innerHTML = html;
+            infoPanel.style.display = 'block';
+        }
+
+        function calculateDistance(point1, point2) {
+            const dx = point2.x - point1.x;
+            const dy = point2.y - point1.y;
+            return Math.sqrt(dx * dx + dy * dy);
         }
 
         // Animation loop
         function animate() {
             requestAnimationFrame(animate);
-            controls.update(); // Only required if controls.enableDamping = true
+            controls.update();
             renderer.render(scene, camera);
         }
         animate();
