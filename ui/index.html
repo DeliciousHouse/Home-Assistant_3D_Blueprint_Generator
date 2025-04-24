@@ -4,79 +4,123 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>3D Blueprint Generator</title>
-
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-
-    <!-- Google Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-
-    <!-- Font Awesome -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
-
-    <!-- Custom CSS -->
     <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 </head>
-<body class="bg-gray-100 font-sans">
-    <!-- Header -->
-    <header class="bg-white shadow-sm">
-        <nav class="container mx-auto px-4 py-3">
-            <div class="flex justify-between items-center">
-                <div class="flex items-center space-x-4">
-                    <i class="fas fa-cube text-blue-600 text-2xl"></i>
-                    <h1 class="text-xl font-semibold text-gray-800">3D Blueprint Generator</h1>
+<body>
+    <div class="app-container">
+        <!-- Header section -->
+        <header class="header">
+            <h1>3D Blueprint Generator</h1>
+            <div class="actions">
+                <button id="generate-btn" class="primary-btn">
+                    <span class="material-icons">autorenew</span>
+                    Generate Blueprint
+                </button>
+                <a href="/api/blueprint/visualize" target="_blank" class="secondary-btn">
+                    <span class="material-icons">view_in_ar</span>
+                    View in 3D
+                </a>
+            </div>
+        </header>
+
+        <!-- Main content -->
+        <main class="content">
+            <div class="content-container">
+                <!-- Left sidebar - Controls -->
+                <div class="sidebar">
+                    <div class="control-section">
+                        <h3>Floor Navigation</h3>
+                        <div class="floor-navigator">
+                            <button id="floor-up" class="icon-btn">
+                                <span class="material-icons">arrow_upward</span>
+                            </button>
+                            <div id="current-floor" class="floor-indicator">Floor 0</div>
+                            <button id="floor-down" class="icon-btn">
+                                <span class="material-icons">arrow_downward</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="control-section">
+                        <h3>View Controls</h3>
+                        <div class="toggle-buttons">
+                            <button id="toggle-room-labels" class="toggle-btn active" title="Show/Hide Room Labels">
+                                <span class="material-icons">label</span>
+                                Room Labels
+                            </button>
+                            <button id="toggle-object-labels" class="toggle-btn" title="Show/Hide Object Labels">
+                                <span class="material-icons">chair</span>
+                                Object Labels
+                            </button>
+                            <button id="toggle-dimensions" class="toggle-btn" title="Show/Hide Dimensions">
+                                <span class="material-icons">straighten</span>
+                                Dimensions
+                            </button>
+                        </div>
+
+                        <div class="view-buttons">
+                            <button id="standard-view" class="view-btn active" title="Standard View">
+                                <span class="material-icons">home</span>
+                                Standard
+                            </button>
+                            <button id="measurement-view" class="view-btn" title="Measurement View">
+                                <span class="material-icons">square_foot</span>
+                                Measurement
+                            </button>
+                            <button id="furniture-view" class="view-btn" title="Furniture View">
+                                <span class="material-icons">weekend</span>
+                                Furniture
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Room details panel (shown when a room is selected) -->
+                    <div id="room-details" class="room-details">
+                        <!-- Content will be populated by JavaScript -->
+                    </div>
                 </div>
-                <div class="flex items-center space-x-4">
-                    <button id="generateBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
-                        <i class="fas fa-sync-alt mr-2"></i>Generate
-                    </button>
+
+                <!-- Main canvas area -->
+                <div class="canvas-container">
+                    <canvas id="blueprint-canvas"></canvas>
+
+                    <!-- Help overlay with keyboard shortcuts and mouse controls -->
+                    <div id="controls-help" class="controls-help">
+                        <div class="controls-help-content">
+                            <h4>Controls</h4>
+                            <ul>
+                                <li><strong>Pan:</strong> Click and drag</li>
+                                <li><strong>Zoom:</strong> Mouse wheel</li>
+                                <li><strong>Select:</strong> Click on rooms</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Loading spinner -->
+                    <div id="loading-spinner" class="spinner-overlay">
+                        <div class="spinner"></div>
+                        <p class="message">Loading...</p>
+                    </div>
                 </div>
             </div>
-        </nav>
-    </header>
+        </main>
 
-    <!-- Main Content -->
-    <main class="container mx-auto px-4 py-8">
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <!-- 3D Viewer -->
-            <div class="lg:col-span-3 bg-white rounded-lg shadow-md p-4">
-                <div id="viewer" class="w-full h-[600px] bg-gray-50 rounded-lg">
-                    <canvas id="blueprint-canvas" class="w-full h-full"></canvas>
-                </div>
-                <div class="mt-4 flex justify-center space-x-4">
-                    <button id="floor-down" class="text-gray-600 hover:text-blue-600">
-                        <i class="fas fa-arrow-down mr-2"></i>Floor Down
-                    </button>
-                    <span id="current-floor" class="text-gray-800 font-medium">Floor 0</span>
-                    <button id="floor-up" class="text-gray-600 hover:text-blue-600">
-                        <i class="fas fa-arrow-up mr-2"></i>Floor Up
-                    </button>
-                </div>
+        <!-- Status message display -->
+        <div id="status-message" class="status-message"></div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>3D Blueprint Generator - Home Assistant Add-on</p>
+            <div class="footer-links">
+                <a href="/api/blueprint/visualize" target="_blank">3D View</a>
+                <a href="/api/health" target="_blank">API Status</a>
             </div>
-        </div>
+        </footer>
+    </div>
 
-        <!-- Status Messages -->
-        <div class="mt-4">
-            <div id="status-message" class="alert alert-info mt-3 d-none"></div>
-            <div id="loading-spinner" class="d-none">
-                <div class="spinner-border text-primary" role="status">
-                    <span class="visually-hidden">Loading...</span>
-                </div>
-            </div>
-        </div>
-    </main>
-
-    <!-- Status Bar -->
-    <footer class="fixed bottom-0 w-full bg-white shadow-md">
-        <div class="container mx-auto px-4 py-2">
-            <div class="flex justify-between items-center text-sm text-gray-600">
-                <div id="status">Ready</div>
-                <div id="lastUpdate">Last update: Never</div>
-            </div>
-        </div>
-    </footer>
-
-    <!-- Custom JavaScript -->
+    <!-- JavaScript -->
     <script src="app.js"></script>
 </body>
 </html>

@@ -7,7 +7,7 @@
       "name": "3D Blueprint Generator",
       "slug": "blueprint_generator",
       "description": "Generates 3D blueprints using BLE sensors and Home Assistant data",
-      "version": "2.61",
+      "version": "2.62",
       "arch": ["aarch64", "amd64", "armhf", "armv7", "i386"]
     }
   ]

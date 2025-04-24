@@ -15,12 +15,53 @@ let lastMousePos = { x: 0, y: 0 };
 let contentBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
 let autoScale = true; // Flag to control initial auto-scaling
 const zoomFactor = 1.1; // Define zoom factor constant
+let showRoomLabels = true; // Show room labels by default
+let showObjectLabels = false; // Don't show object labels by default to prevent clutter
+let showDimensions = false; // Option to display room dimensions
+let selectedRoom = null; // Track selected room for highlighting
+let hoveredObject = null; // Track hovered object for tooltips
+let viewMode = 'standard'; // standard, measurement, or furniture
 
 // Constants
-const COLORS = [
-    '#4285F4', '#EA4335', '#FBBC05', '#34A853',
-    '#FF6D01', '#46BDC6', '#9C27B0', '#2196F3'
-];
+const COLORS = {
+    ROOMS: ['#4285F4', '#EA4335', '#FBBC05', '#34A853', '#FF6D01', '#46BDC6', '#9C27B0', '#2196F3'],
+    WALLS: '#555555',
+    SELECTED: '#FF9900',
+    DOORS: '#8B4513',
+    WINDOWS: '#87CEFA',
+    TEXT: '#000000',
+    OBJECTS: {
+        'sofa': '#7b68ee',
+        'coffee_table': '#8b4513',
+        'tv_stand': '#2f4f4f',
+        'bookshelf': '#deb887',
+        'armchair': '#6a5acd',
+        'refrigerator': '#b0c4de',
+        'stove': '#696969',
+        'sink': '#b0e0e6',
+        'kitchen_cabinet': '#a9a9a9',
+        'kitchen_island': '#a9a9a9',
+        'bed': '#6495ed',
+        'wardrobe': '#daa520',
+        'nightstand': '#d2b48c',
+        'dresser': '#d2b48c',
+        'desk': '#8b4513',
+        'office_chair': '#2f4f4f',
+        'filing_cabinet': '#a9a9a9',
+        'computer': '#808080',
+        'dining_table': '#8b4513',
+        'dining_chair': '#a0522d',
+        'toilet': '#f0f8ff',
+        'shower': '#87ceeb',
+        'bathtub': '#b0e0e6',
+        'mirror': '#c0c0c0',
+        'default': '#9370db'
+    },
+    GRID: '#DDDDDD',
+    GRID_MAIN: '#AAAAAA',
+    BACKGROUND: '#f8f9fa',
+    MEASUREMENT: '#FF4500'
+};
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
@@ -33,7 +74,6 @@ document.addEventListener('DOMContentLoaded', function() {
     if (canvas) {
         ctx = canvas.getContext('2d');
         initializeCanvas();
-        canvas.style.cursor = 'grab'; // Set initial cursor
     }
 
     // Add event listeners
@@ -53,17 +93,93 @@ function setupEventListeners() {
     // Floor navigation
     const floorUp = document.getElementById('floor-up');
     const floorDown = document.getElementById('floor-down');
-    if (floorUp) floorUp.addEventListener('click', () => changeFloor(1));
-    if (floorDown) floorDown.addEventListener('click', () => changeFloor(-1));
+    if (floorUp) {
+        floorUp.addEventListener('click', () => changeFloor(1));
+    }
+    if (floorDown) {
+        floorDown.addEventListener('click', () => changeFloor(-1));
+    }
+
+    // View options
+    const roomLabelsToggle = document.getElementById('toggle-room-labels');
+    if (roomLabelsToggle) {
+        roomLabelsToggle.addEventListener('click', () => {
+            showRoomLabels = !showRoomLabels;
+            roomLabelsToggle.classList.toggle('active', showRoomLabels);
+            renderBlueprint(blueprint);
+        });
+        // Set initial state
+        roomLabelsToggle.classList.toggle('active', showRoomLabels);
+    }
+
+    const objectLabelsToggle = document.getElementById('toggle-object-labels');
+    if (objectLabelsToggle) {
+        objectLabelsToggle.addEventListener('click', () => {
+            showObjectLabels = !showObjectLabels;
+            objectLabelsToggle.classList.toggle('active', showObjectLabels);
+            renderBlueprint(blueprint);
+        });
+    }
+
+    const dimensionsToggle = document.getElementById('toggle-dimensions');
+    if (dimensionsToggle) {
+        dimensionsToggle.addEventListener('click', () => {
+            showDimensions = !showDimensions;
+            dimensionsToggle.classList.toggle('active', showDimensions);
+            renderBlueprint(blueprint);
+        });
+    }
+
+    // View mode selection
+    const standardViewBtn = document.getElementById('standard-view');
+    const measurementViewBtn = document.getElementById('measurement-view');
+    const furnitureViewBtn = document.getElementById('furniture-view');
+
+    if (standardViewBtn) {
+        standardViewBtn.addEventListener('click', () => {
+            viewMode = 'standard';
+            setActiveViewButton(standardViewBtn);
+            renderBlueprint(blueprint);
+        });
+    }
+
+    if (measurementViewBtn) {
+        measurementViewBtn.addEventListener('click', () => {
+            viewMode = 'measurement';
+            setActiveViewButton(measurementViewBtn);
+            renderBlueprint(blueprint);
+        });
+    }
+
+    if (furnitureViewBtn) {
+        furnitureViewBtn.addEventListener('click', () => {
+            viewMode = 'furniture';
+            setActiveViewButton(furnitureViewBtn);
+            renderBlueprint(blueprint);
+        });
+    }
 
     // Canvas interactions
     if (canvas) {
-        canvas.addEventListener('wheel', handleZoom);
+        canvas.addEventListener('wheel', handleZoom, { passive: false });
         canvas.addEventListener('mousedown', startDrag);
         canvas.addEventListener('mousemove', drag);
         canvas.addEventListener('mouseup', endDrag);
-        canvas.addEventListener('mouseout', endDrag);
+        canvas.addEventListener('mouseleave', endDrag);
+
+        // For room selection and object info
+        canvas.addEventListener('click', handleCanvasClick);
+        canvas.addEventListener('mousemove', handleCanvasHover);
     }
+}
+
+function setActiveViewButton(activeButton) {
+    // Remove active class from all view buttons
+    document.querySelectorAll('.view-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    // Add active class to the selected button
+    activeButton.classList.add('active');
 }
 
 function initializeCanvas() {
@@ -78,7 +194,7 @@ function initializeCanvas() {
 
 function renderEmptyCanvas() {
     // Clear canvas
-    ctx.fillStyle = '#f8f9fa';
+    ctx.fillStyle = COLORS.BACKGROUND;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     // Draw grid
@@ -86,199 +202,224 @@ function renderEmptyCanvas() {
 
     // Show message if no blueprint
     if (!blueprint) {
-        ctx.fillStyle = '#6c757d';
-        ctx.font = '16px Arial';
+        ctx.fillStyle = '#888';
+        ctx.font = 'bold 14px Arial';
         ctx.textAlign = 'center';
-        ctx.fillText('No blueprint data available.', canvas.width / 2, canvas.height / 2);
-        ctx.fillText('Click "Generate Blueprint" to create one.', canvas.width / 2, canvas.height / 2 + 30);
+        ctx.fillText('No blueprint data available.', canvas.width / 2, canvas.height / 2 - 20);
+        ctx.font = '12px Arial';
+        ctx.fillText('Generate a blueprint using the button above.', canvas.width / 2, canvas.height / 2 + 10);
     }
 }
 
 function drawGrid() {
     // Draw light grid
+    ctx.strokeStyle = COLORS.GRID;
+    ctx.lineWidth = 0.5;
+
+    // Calculate grid size based on scale
     const gridSize = 50 * camera.scale;
-    const offsetX = camera.x % gridSize;
-    const offsetY = camera.y % gridSize;
 
-    ctx.strokeStyle = '#e9ecef';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
+    // Calculate grid offset based on camera position
+    const offsetX = (camera.x % gridSize);
+    const offsetY = (camera.y % gridSize);
 
-    // Vertical lines
+    // Draw vertical grid lines
     for (let x = offsetX; x < canvas.width; x += gridSize) {
+        ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, canvas.height);
+        ctx.stroke();
     }
 
-    // Horizontal lines
+    // Draw horizontal grid lines
     for (let y = offsetY; y < canvas.height; y += gridSize) {
+        ctx.beginPath();
         ctx.moveTo(0, y);
         ctx.lineTo(canvas.width, y);
+        ctx.stroke();
     }
 
-    ctx.stroke();
+    // Draw main grid lines
+    ctx.strokeStyle = COLORS.GRID_MAIN;
+    ctx.lineWidth = 1;
 
-    // Add scale indicator
-    ctx.fillStyle = '#495057';
-    ctx.font = '12px Arial';
-    ctx.textAlign = 'left';
-    ctx.fillText(`Scale: 1m = ${camera.scale.toFixed(1)}px`, 10, canvas.height - 10);
+    // Calculate main grid size (every 5 normal grid lines)
+    const mainGridSize = gridSize * 5;
+    const mainOffsetX = (camera.x % mainGridSize);
+    const mainOffsetY = (camera.y % mainGridSize);
+
+    // Draw main vertical grid lines
+    for (let x = mainOffsetX; x < canvas.width; x += mainGridSize) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+    }
+
+    // Draw main horizontal grid lines
+    for (let y = mainOffsetY; y < canvas.height; y += mainGridSize) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+    }
 }
 
 // API Functions
 function fetchBlueprint() {
     showLoading('Loading blueprint...');
-    console.log("Fetching blueprint from /api/blueprint..."); // Add log
 
-    fetch('/api/blueprint')
+    fetch('/api/blueprint/latest')
         .then(response => {
-            if (response.status === 404) {
-                console.log("API returned 404 - No blueprint found."); // Add log
-                hideLoading();
-                blueprint = null; // Ensure blueprint is null if not found
-                renderEmptyCanvas(); // Render the empty state
-                return null;
-            }
             if (!response.ok) {
-                console.error(`Network response error: ${response.status} ${response.statusText}`); // Add log
-                throw new Error(`Network response was not ok: ${response.statusText}`);
+                throw new Error(`Failed to fetch blueprint: ${response.statusText}`);
             }
             return response.json();
         })
         .then(data => {
-            if (data && data.success && data.blueprint) {
-                console.log("Successfully fetched blueprint data:", data.blueprint); // Log fetched data
-                blueprint = data.blueprint; // Assign ONLY the blueprint object
-                renderBlueprint(blueprint); // Pass the correct object
-            } else if (data && !data.success) {
-                console.error("API call successful but returned error:", data.error);
-                displayErrorMessage(data.error || "API returned an error.");
-                blueprint = null;
-                renderEmptyCanvas();
-            } else {
-                // Handle cases where data is null (e.g., from 404) or malformed
-                console.log("No valid blueprint data received or data format incorrect.");
-                blueprint = null;
-                renderEmptyCanvas();
-            }
+            blueprint = data;
             hideLoading();
+            updateScene(data);
         })
         .catch(error => {
-            console.error('Error fetching blueprint:', error);
-            displayErrorMessage('Failed to load blueprint. Check console for details.');
-            blueprint = null; // Reset blueprint on error
-            renderEmptyCanvas(); // Render empty state on error
             hideLoading();
+            displayErrorMessage(`Error loading blueprint: ${error.message}`);
+            // Continue rendering empty canvas without data
+            renderEmptyCanvas();
         });
 }
 
 function renderBlueprint(blueprintData) {
-    // This function should update the visual representation.
-    console.log("Rendering blueprint data:", blueprintData); // Log data being passed
+    // Clear canvas and draw grid
+    renderEmptyCanvas();
 
-    if (!blueprintData) {
-        console.error("No blueprint data to render");
-        renderEmptyCanvas();
+    if (!blueprintData || !blueprintData.rooms) {
         return;
     }
 
-    // Calculate bounds for auto-scaling
-    calculateContentBounds(blueprintData);
+    // Filter rooms by current floor
+    const roomsToRender = blueprintData.rooms.filter(room => {
+        return room.floor === currentFloor;
+    });
 
-    // Apply auto-scaling if enabled
-    if (autoScale) {
-        applyAutoScale();
-        autoScale = false; // Only auto-scale once when blueprint first loads
-    }
-
-    // Update the scene with blueprint data
-    updateScene(blueprintData);
-}
-
-function updateScene(blueprintData) {
-    // Add checks at the beginning
-    if (!ctx) {
-        console.error("Canvas context (ctx) is not available.");
-        return;
-    }
-    if (!blueprintData || typeof blueprintData !== 'object') {
-        console.error("updateScene called with invalid blueprint data:", blueprintData);
-        renderEmptyCanvas(); // Render empty state if data is bad
-        return;
-    }
-    if (!blueprintData.floors || !blueprintData.rooms) {
-        console.error("Blueprint data is missing 'floors' or 'rooms' array:", blueprintData);
-        renderEmptyCanvas();
-        return;
-    }
-
-    console.log(`Updating scene for floor ${currentFloor}`); // Log floor being rendered
-
-    // Clear canvas
-    ctx.fillStyle = '#f8f9fa';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Draw grid
-    drawGrid();
-
-    // Get rooms for current floor
-    const floorData = blueprintData.floors.find(f => f.level === currentFloor);
-    if (!floorData) {
-        console.warn(`No floor data found for level ${currentFloor}`); // Changed to warning
-        ctx.fillStyle = '#6c757d';
-        ctx.font = '16px Arial';
-        ctx.textAlign = 'center';
-        ctx.fillText(`No data for floor ${currentFloor}`, canvas.width / 2, canvas.height / 2);
-        return;
-    }
-    if (!floorData.rooms || !Array.isArray(floorData.rooms)) {
-        console.error(`Floor data for level ${currentFloor} is missing 'rooms' array:`, floorData);
-        renderEmptyCanvas();
-        return;
-    }
-
-    const floorRooms = blueprintData.rooms.filter(r => floorData.rooms.includes(r.id));
-    console.log(`Found ${floorRooms.length} rooms for floor ${currentFloor}`); // Log room count
-
-    // Draw rooms
-    floorRooms.forEach((room, index) => {
-        console.log(`Drawing room: ${room.name} (ID: ${room.id})`); // Log room being drawn
-        drawRoom(room, index);
+    // First pass: Draw all room backgrounds
+    roomsToRender.forEach((room, index) => {
+        drawRoomBackground(room, index);
     });
 
     // Draw walls
-    if (blueprintData.walls && Array.isArray(blueprintData.walls)) {
-        console.log(`Drawing ${blueprintData.walls.length} walls...`); // Log wall count
-        blueprintData.walls.forEach(wall => {
-            // Only draw walls for current floor (assuming walls have a floor property or are global)
-            if (wall.floor === undefined || wall.floor === currentFloor) {
-                console.log("Drawing wall:", wall); // Log wall being drawn
-                drawWall(wall);
+    if (blueprintData.walls) {
+        const wallsToRender = blueprintData.walls.filter(wall => {
+            // Here we could filter walls by floor, but for simplicity we're showing all walls
+            // In a real implementation, walls would have floor info
+            return true;
+        });
+
+        wallsToRender.forEach(wall => {
+            drawWall(wall);
+        });
+    }
+
+    // Draw doors and windows if available
+    if (blueprintData.doors) {
+        blueprintData.doors.filter(door => door.floor === currentFloor).forEach(door => {
+            drawDoor(door);
+        });
+    }
+
+    if (blueprintData.windows) {
+        blueprintData.windows.filter(window => window.floor === currentFloor).forEach(window => {
+            drawWindow(window);
+        });
+    }
+
+    // Draw objects (furniture) if in furniture view or standard view
+    if ((viewMode === 'furniture' || viewMode === 'standard') && blueprintData.objects) {
+        const objectsToRender = blueprintData.objects.filter(obj => {
+            // Find the room for this object
+            const room = blueprintData.rooms.find(r => r.id === obj.room_id);
+            return room && room.floor === currentFloor;
+        });
+
+        objectsToRender.forEach(object => {
+            drawObject(object);
+        });
+    }
+
+    // Draw room labels and dimensions in a second pass (so they appear on top)
+    if (showRoomLabels || showDimensions || viewMode === 'measurement') {
+        roomsToRender.forEach(room => {
+            if (showRoomLabels) {
+                drawRoomLabel(room);
+            }
+
+            if (showDimensions || viewMode === 'measurement') {
+                drawRoomDimensions(room);
             }
         });
-    } else {
-        console.log("No walls array found in blueprint data or it's not an array.");
+    }
+
+    // Draw measurement indicators if in measurement mode
+    if (viewMode === 'measurement') {
+        drawMeasurementGrid();
     }
 
     // Update floor indicator
     updateFloorIndicator();
 }
 
+function updateScene(blueprintData) {
+    if (!blueprintData || !blueprintData.rooms || blueprintData.rooms.length === 0) {
+        displayErrorMessage('Blueprint data is empty or invalid.');
+        renderEmptyCanvas();
+        return;
+    }
+
+    // Calculate content bounds
+    calculateContentBounds(blueprintData);
+
+    // Auto-scale on first load if needed
+    if (autoScale) {
+        applyAutoScale();
+        autoScale = false; // Only auto-scale once
+    }
+
+    // Set initial floor if not already set
+    if (blueprint && blueprint.rooms && blueprint.rooms.length > 0) {
+        // Find all available floors
+        const floors = [...new Set(blueprint.rooms.map(room => room.floor))].sort((a, b) => a - b);
+
+        if (!floors.includes(currentFloor)) {
+            currentFloor = floors[0] || 0; // Set to first floor if current floor not available
+        }
+    }
+
+    // Render blueprint
+    renderBlueprint(blueprintData);
+}
+
 // Calculate the bounds of all content for auto-scaling
 function calculateContentBounds(blueprintData) {
-    contentBounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-    if (!blueprintData || !blueprintData.rooms) return;
+    contentBounds = {
+        minX: Infinity,
+        minY: Infinity,
+        maxX: -Infinity,
+        maxY: -Infinity
+    };
 
-    blueprintData.rooms.forEach(room => {
-        if (room.bounds) {
-            contentBounds.minX = Math.min(contentBounds.minX, room.bounds.min.x);
-            contentBounds.minY = Math.min(contentBounds.minY, room.bounds.min.y);
-            contentBounds.maxX = Math.max(contentBounds.maxX, room.bounds.max.x);
-            contentBounds.maxY = Math.max(contentBounds.maxY, room.bounds.max.y);
-        }
-    });
+    // Include rooms in bounds
+    if (blueprintData.rooms) {
+        blueprintData.rooms.forEach(room => {
+            if (room.bounds) {
+                contentBounds.minX = Math.min(contentBounds.minX, room.bounds.min.x);
+                contentBounds.minY = Math.min(contentBounds.minY, room.bounds.min.y);
+                contentBounds.maxX = Math.max(contentBounds.maxX, room.bounds.max.x);
+                contentBounds.maxY = Math.max(contentBounds.maxY, room.bounds.max.y);
+            }
+        });
+    }
 
-    // Also consider walls if they exist
+    // Include walls in bounds
     if (blueprintData.walls) {
         blueprintData.walls.forEach(wall => {
             contentBounds.minX = Math.min(contentBounds.minX, wall.start.x, wall.end.x);
@@ -288,84 +429,398 @@ function calculateContentBounds(blueprintData) {
         });
     }
 
-    console.log("Calculated content bounds:", contentBounds);
+    // If no bounds were found, set defaults
+    if (contentBounds.minX === Infinity) {
+        contentBounds = { minX: -5, minY: -5, maxX: 5, maxY: 5 };
+    }
 }
 
 // Apply auto-scaling to fit the blueprint in the canvas
 function applyAutoScale() {
-    if (contentBounds.minX === Infinity || !canvas) return; // No content or canvas not ready
+    if (!canvas) return;
 
+    // Calculate content dimensions
     const contentWidth = contentBounds.maxX - contentBounds.minX;
     const contentHeight = contentBounds.maxY - contentBounds.minY;
 
-    if (contentWidth <= 0 || contentHeight <= 0) {
-        console.warn("Cannot auto-scale with zero or negative content dimensions.");
-        // Reset to default scale/offset if content is invalid
-        camera.scale = 10;
-        camera.x = canvas.width / 2;
-        camera.y = canvas.height / 2;
-        return;
-    }
+    // Calculate content center
+    const contentCenterX = (contentBounds.minX + contentBounds.maxX) / 2;
+    const contentCenterY = (contentBounds.minY + contentBounds.maxY) / 2;
 
-    const padding = 50; // Pixels padding around the content
-    const availableWidth = canvas.width - 2 * padding;
-    const availableHeight = canvas.height - 2 * padding;
+    // Calculate scale factor to fit content in canvas (with padding)
+    const padding = 50; // Pixels of padding around the content
+    const scaleX = (canvas.width - padding * 2) / contentWidth;
+    const scaleY = (canvas.height - padding * 2) / contentHeight;
 
-    // Calculate scale to fit content within available space
-    const scaleX = availableWidth / contentWidth;
-    const scaleY = availableHeight / contentHeight;
-    camera.scale = Math.min(scaleX, scaleY); // Use the smaller scale to fit both dimensions
+    // Use the smaller scale factor to ensure all content fits
+    camera.scale = Math.min(scaleX, scaleY, 5); // Limit scale to avoid extreme zoom
 
-    // Calculate offsets to center the content
-    const scaledContentWidth = contentWidth * camera.scale;
-    const scaledContentHeight = contentHeight * camera.scale;
-    camera.x = padding + (availableWidth - scaledContentWidth) / 2 - (contentBounds.minX * camera.scale);
-    camera.y = padding + (availableHeight - scaledContentHeight) / 2 - (contentBounds.minY * camera.scale);
-
-    console.log(`Auto-scaling applied: scale=${camera.scale.toFixed(2)}, offsetX=${camera.x.toFixed(2)}, offsetY=${camera.y.toFixed(2)}`);
+    // Center the content
+    camera.x = canvas.width / 2 - contentCenterX * camera.scale;
+    camera.y = canvas.height / 2 - contentCenterY * camera.scale;
 }
 
-function drawRoom(room, index) {
-    const bounds = room.bounds;
+function drawRoomBackground(room, index) {
+    if (!room.bounds) return;
 
-    // Convert room coords to canvas coords
-    const x1 = bounds.min.x * camera.scale + camera.x;
-    const y1 = bounds.min.y * camera.scale + camera.y;
-    const x2 = bounds.max.x * camera.scale + camera.x;
-    const y2 = bounds.max.y * camera.scale + camera.y;
+    // Use the room bounds to draw a polygon
+    const minX = worldToScreenX(room.bounds.min.x);
+    const minY = worldToScreenY(room.bounds.min.y);
+    const maxX = worldToScreenX(room.bounds.max.x);
+    const maxY = worldToScreenY(room.bounds.max.y);
 
-    // Draw room
-    ctx.fillStyle = COLORS[index % COLORS.length] + '33';  // Add transparency
-    ctx.strokeStyle = COLORS[index % COLORS.length];
-    ctx.lineWidth = 2;
+    // Select color - alternate colors for adjacent rooms
+    ctx.fillStyle = room === selectedRoom ?
+        COLORS.SELECTED :
+        COLORS.ROOMS[index % COLORS.ROOMS.length];
 
+    // Set opacity for better visibility
+    ctx.globalAlpha = 0.5;
+
+    // Draw room rectangle
     ctx.beginPath();
-    ctx.rect(x1, y1, x2 - x1, y2 - y1);
+    ctx.rect(minX, minY, maxX - minX, maxY - minY);
     ctx.fill();
-    ctx.stroke();
 
-    // Draw room name
-    ctx.fillStyle = '#212529';
-    ctx.font = '14px Arial';
-    ctx.textAlign = 'center';
-    ctx.fillText(room.name, (x1 + x2) / 2, (y1 + y2) / 2);
+    // Reset opacity
+    ctx.globalAlpha = 1.0;
 }
 
 function drawWall(wall) {
-    // Convert wall coords to canvas coords
-    const x1 = wall.start.x * camera.scale + camera.x;
-    const y1 = wall.start.y * camera.scale + camera.y;
-    const x2 = wall.end.x * camera.scale + camera.x;
-    const y2 = wall.end.y * camera.scale + camera.y;
+    if (!wall.start || !wall.end) return;
 
-    // Draw wall
-    ctx.strokeStyle = '#212529';
-    ctx.lineWidth = wall.thickness * camera.scale;
+    // Convert world coordinates to screen coordinates
+    const startX = worldToScreenX(wall.start.x);
+    const startY = worldToScreenY(wall.start.y);
+    const endX = worldToScreenX(wall.end.x);
+    const endY = worldToScreenY(wall.end.y);
 
+    // Calculate wall thickness in screen coordinates
+    const thickness = wall.thickness ? wall.thickness * camera.scale : 2;
+
+    ctx.lineWidth = thickness;
+    ctx.strokeStyle = COLORS.WALLS;
+
+    // Draw the wall line
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+}
+
+function drawDoor(door) {
+    if (!door.start || !door.end) return;
+
+    // Convert world coordinates to screen coordinates
+    const startX = worldToScreenX(door.start.x);
+    const startY = worldToScreenY(door.start.y);
+    const endX = worldToScreenX(door.end.x);
+    const endY = worldToScreenY(door.end.y);
+
+    // Calculate thickness
+    const thickness = door.thickness ? door.thickness * camera.scale : 1;
+
+    ctx.lineWidth = thickness;
+    ctx.strokeStyle = COLORS.DOORS;
+
+    // Draw the door as a line with arc for door swing
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+
+    // Draw door swing arc if direction is specified
+    if (door.swing_direction) {
+        const radius = Math.sqrt((endX - startX) ** 2 + (endY - startY) ** 2);
+        const angle = Math.atan2(endY - startY, endX - startX);
+        const swingAngle = door.swing_direction === 'left' ? Math.PI / 2 : -Math.PI / 2;
+
+        ctx.beginPath();
+        ctx.arc(startX, startY, radius, angle, angle + swingAngle, door.swing_direction === 'right');
+        ctx.stroke();
+    }
+}
+
+function drawWindow(window) {
+    if (!window.start || !window.end) return;
+
+    // Convert world coordinates to screen coordinates
+    const startX = worldToScreenX(window.start.x);
+    const startY = worldToScreenY(window.start.y);
+    const endX = worldToScreenX(window.end.x);
+    const endY = worldToScreenY(window.end.y);
+
+    // Draw the window as a dashed line
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = COLORS.WINDOWS;
+    ctx.setLineDash([5, 2]);
+
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+
+    // Reset line dash
+    ctx.setLineDash([]);
+
+    // Draw window sill
+    const dx = endX - startX;
+    const dy = endY - startY;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    const perpX = -dy / length * 5; // Perpendicular vector scaled
+    const perpY = dx / length * 5;
+
+    ctx.beginPath();
+    ctx.moveTo(startX + perpX, startY + perpY);
+    ctx.lineTo(endX + perpX, endY + perpY);
+    ctx.stroke();
+}
+
+function drawObject(object) {
+    if (!object.position || !object.dimensions) return;
+
+    const x = worldToScreenX(object.position.x);
+    const y = worldToScreenY(object.position.y);
+
+    // Scale dimensions to screen coordinates
+    const width = object.dimensions.width * camera.scale;
+    const depth = object.dimensions.depth * camera.scale;
+
+    // Determine if this object is being hovered
+    const isHovered = hoveredObject === object;
+
+    // Set color based on object type
+    ctx.fillStyle = isHovered ?
+        COLORS.SELECTED :
+        COLORS.OBJECTS[object.type] || COLORS.OBJECTS.default;
+
+    // Apply rotation if specified
+    ctx.save();
+    ctx.translate(x, y);
+    if (object.rotation) {
+        ctx.rotate(object.rotation * Math.PI / 180);
+    }
+
+    // Draw object shape
+    ctx.beginPath();
+
+    // Different shapes for different furniture types
+    switch (object.type) {
+        case 'toilet':
+            ctx.ellipse(0, 0, width/2, depth/2, 0, 0, Math.PI * 2);
+            break;
+        case 'sink':
+        case 'shower':
+            ctx.ellipse(0, 0, width/2, depth/2, 0, 0, Math.PI * 2);
+            break;
+        case 'bathtub':
+            // Rounded rectangle
+            const cornerRadius = Math.min(width, depth) / 4;
+            drawRoundedRect(-width/2, -depth/2, width, depth, cornerRadius);
+            break;
+        default:
+            // Default rectangle
+            ctx.rect(-width/2, -depth/2, width, depth);
+            break;
+    }
+
+    ctx.fill();
+
+    // Add outline for better visibility
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Draw object label if enabled or hovered
+    if (showObjectLabels || isHovered) {
+        ctx.fillStyle = '#000000';
+        ctx.font = '10px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        // Format the label
+        let label = object.type.replace(/_/g, ' ');
+        label = label.charAt(0).toUpperCase() + label.slice(1); // Capitalize
+
+        ctx.fillText(label, 0, 0);
+    }
+
+    ctx.restore();
+}
+
+// Helper function for drawing rounded rectangles
+function drawRoundedRect(x, y, width, height, radius) {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.arcTo(x + width, y, x + width, y + radius, radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.arcTo(x + width, y + height, x + width - radius, y + height, radius);
+    ctx.lineTo(x + radius, y + height);
+    ctx.arcTo(x, y + height, x, y + height - radius, radius);
+    ctx.lineTo(x, y + radius);
+    ctx.arcTo(x, y, x + radius, y, radius);
+    ctx.closePath();
+}
+
+function drawRoomLabel(room) {
+    if (!room.bounds) return;
+
+    // Calculate center position of the room
+    const centerX = worldToScreenX((room.bounds.min.x + room.bounds.max.x) / 2);
+    const centerY = worldToScreenY((room.bounds.min.y + room.bounds.max.y) / 2);
+
+    // Determine room name/label
+    let roomLabel = 'Unknown';
+    if (room.name) {
+        roomLabel = room.name;
+    } else if (room.area_id) {
+        // Prettify area_id
+        roomLabel = room.area_id.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    } else if (room.type) {
+        roomLabel = room.type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    }
+
+    // Draw background for better readability
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.font = 'bold 12px Arial';
+    const labelWidth = ctx.measureText(roomLabel).width + 6;
+    const labelHeight = 16;
+    ctx.fillRect(centerX - labelWidth/2, centerY - labelHeight/2, labelWidth, labelHeight);
+
+    // Draw text
+    ctx.fillStyle = '#000000';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(roomLabel, centerX, centerY);
+}
+
+function drawRoomDimensions(room) {
+    if (!room.bounds || !room.dimensions) return;
+
+    const minX = worldToScreenX(room.bounds.min.x);
+    const minY = worldToScreenY(room.bounds.min.y);
+    const maxX = worldToScreenX(room.bounds.max.x);
+    const maxY = worldToScreenY(room.bounds.max.y);
+
+    // Width dimension
+    const width = room.dimensions.width.toFixed(1) + 'm';
+    drawDimensionLine(minX, minY - 15, maxX, minY - 15, width);
+
+    // Length dimension
+    const length = room.dimensions.length.toFixed(1) + 'm';
+    drawDimensionLine(maxX + 15, minY, maxX + 15, maxY, length);
+
+    // Area dimension if available
+    if (room.dimensions.area) {
+        const area = room.dimensions.area.toFixed(1) + 'm²';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.font = '10px Arial';
+        const areaTextWidth = ctx.measureText(area).width + 6;
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2 + 15;
+        ctx.fillRect(centerX - areaTextWidth/2, centerY - 8, areaTextWidth, 16);
+
+        ctx.fillStyle = COLORS.MEASUREMENT;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(area, centerX, centerY);
+    }
+}
+
+function drawDimensionLine(x1, y1, x2, y2, label) {
+    // Draw dimension line
+    ctx.strokeStyle = COLORS.MEASUREMENT;
+    ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
     ctx.stroke();
+
+    // Draw arrows
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    drawArrowhead(x1, y1, angle);
+    drawArrowhead(x2, y2, angle + Math.PI);
+
+    // Draw dimension label
+    const centerX = (x1 + x2) / 2;
+    const centerY = (y1 + y2) / 2;
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.font = '10px Arial';
+    const labelWidth = ctx.measureText(label).width + 6;
+    ctx.fillRect(centerX - labelWidth/2, centerY - 8, labelWidth, 16);
+
+    ctx.fillStyle = COLORS.MEASUREMENT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, centerX, centerY);
+}
+
+function drawArrowhead(x, y, angle) {
+    const arrowLength = 10;
+    const arrowWidth = 5;
+
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(
+        x - arrowLength * Math.cos(angle - Math.PI/6),
+        y - arrowLength * Math.sin(angle - Math.PI/6)
+    );
+    ctx.lineTo(
+        x - arrowLength * Math.cos(angle + Math.PI/6),
+        y - arrowLength * Math.sin(angle + Math.PI/6)
+    );
+    ctx.closePath();
+    ctx.fillStyle = COLORS.MEASUREMENT;
+    ctx.fill();
+}
+
+function drawMeasurementGrid() {
+    // Draw a more detailed grid with measurements
+    const gridSize = 1; // 1 meter grid
+    const gridSizeScreen = gridSize * camera.scale;
+
+    // Calculate grid offset based on camera position
+    const offsetX = (camera.x % gridSizeScreen);
+    const offsetY = (camera.y % gridSizeScreen);
+
+    // Calculate world coordinates of the first visible grid line
+    const firstVisibleX = screenToWorldX(0) - (screenToWorldX(0) % gridSize);
+    const firstVisibleY = screenToWorldY(0) - (screenToWorldY(0) % gridSize);
+
+    ctx.strokeStyle = 'rgba(255, 0, 0, 0.3)';
+    ctx.lineWidth = 0.5;
+    ctx.font = '8px Arial';
+    ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+
+    // Draw vertical grid lines with measurements
+    for (let x = offsetX; x < canvas.width; x += gridSizeScreen) {
+        const worldX = screenToWorldX(x);
+
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+
+        // Draw measurement label
+        ctx.fillText(worldX.toFixed(1) + 'm', x + 2, 2);
+    }
+
+    // Draw horizontal grid lines with measurements
+    for (let y = offsetY; y < canvas.height; y += gridSizeScreen) {
+        const worldY = screenToWorldY(y);
+
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+
+        // Draw measurement label
+        ctx.fillText(worldY.toFixed(1) + 'm', 2, y + 2);
+    }
 }
 
 function updateFloorIndicator() {
@@ -376,180 +831,347 @@ function updateFloorIndicator() {
 }
 
 function changeFloor(delta) {
-    if (!blueprint || !blueprint.floors) return;
+    if (!blueprint || !blueprint.rooms) return;
 
-    const floorLevels = blueprint.floors.map(f => f.level).sort((a, b) => a - b);
-    const currentIndex = floorLevels.indexOf(currentFloor);
+    // Find all available floors
+    const floors = [...new Set(blueprint.rooms.map(room => room.floor))].sort((a, b) => a - b);
 
+    if (floors.length === 0) return;
+
+    // Find current floor index
+    const currentIndex = floors.indexOf(currentFloor);
     if (currentIndex === -1) {
-        // Current floor not found, default to first floor
-        currentFloor = floorLevels[0];
+        // Current floor not found, reset to first floor
+        currentFloor = floors[0];
     } else {
-        const newIndex = Math.max(0, Math.min(floorLevels.length - 1, currentIndex + delta));
-        currentFloor = floorLevels[newIndex];
+        // Calculate new index
+        const newIndex = Math.max(0, Math.min(floors.length - 1, currentIndex + delta));
+        currentFloor = floors[newIndex];
     }
 
+    // Update floor indicator and render blueprint
+    updateFloorIndicator();
     renderBlueprint(blueprint);
+}
+
+// Coordinate conversion functions
+function worldToScreenX(worldX) {
+    return worldX * camera.scale + camera.x;
+}
+
+function worldToScreenY(worldY) {
+    return worldY * camera.scale + camera.y;
+}
+
+function screenToWorldX(screenX) {
+    return (screenX - camera.x) / camera.scale;
+}
+
+function screenToWorldY(screenY) {
+    return (screenY - camera.y) / camera.scale;
 }
 
 // Action functions
 function generateBlueprint() {
     showLoading('Generating blueprint...');
 
-    // Make a POST request to generate the blueprint
     fetch('/api/blueprint/generate', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
-        }
+        },
+        body: JSON.stringify({})
     })
-        .then(response => {
-            if (!response.ok) throw new Error('Network response was not ok');
-            return response.json();
-        })
-        .then(data => {
-            if (data.status === 'success') {
-                displayStatusMessage('Blueprint generation started. This may take a few moments...');
-
-                // Poll for status until complete
-                pollBlueprintStatus();
-            } else {
-                displayErrorMessage(data.message || 'Failed to start blueprint generation.');
-                hideLoading();
-            }
-        })
-        .catch(error => {
-            console.error('Error generating blueprint:', error);
-            displayErrorMessage('Failed to generate blueprint. Check console for details.');
-            hideLoading();
-        });
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`Failed to start generation: ${response.statusText}`);
+        }
+        return response.json();
+    })
+    .then(data => {
+        displayStatusMessage(data.message || 'Blueprint generation started.');
+        // Start polling for blueprint
+        pollBlueprintStatus();
+    })
+    .catch(error => {
+        hideLoading();
+        displayErrorMessage(`Error starting generation: ${error.message}`);
+    });
 }
 
 function pollBlueprintStatus() {
-    fetch('/api/blueprint/status')
-        .then(response => {
-            if (!response.ok) throw new Error('Network response was not ok');
-            return response.json();
-        })
-        .then(data => {
-            const progress = Math.round(data.progress * 100);
-            displayStatusMessage(`Blueprint generation: ${data.state} (${progress}%)...`);
+    let attempts = 0;
+    const maxAttempts = 30; // Maximum number of polling attempts
+    const pollInterval = 2000; // Poll every 2 seconds
 
-            if (data.state === 'complete') {
-                // Blueprint is ready, fetch it
-                fetchBlueprint();
-            } else {
-                // Continue polling
-                setTimeout(pollBlueprintStatus, 2000);
-            }
-        })
-        .catch(error => {
-            console.error('Error polling blueprint status:', error);
-            displayErrorMessage('Failed to check blueprint status. Check console for details.');
-            hideLoading();
-        });
+    function poll() {
+        attempts++;
+
+        fetch('/api/blueprint/latest')
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch blueprint: ${response.statusText}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Check if this is a new blueprint (compare timestamps)
+                const newTimestamp = data.generated_at;
+                const oldTimestamp = blueprint ? blueprint.generated_at : null;
+
+                if (newTimestamp !== oldTimestamp) {
+                    // New blueprint available
+                    blueprint = data;
+                    hideLoading();
+                    displayStatusMessage('Blueprint generation complete!');
+                    autoScale = true; // Auto-scale for the new blueprint
+                    updateScene(data);
+                    return;
+                }
+
+                // Continue polling if max attempts not reached
+                if (attempts < maxAttempts) {
+                    setTimeout(poll, pollInterval);
+                } else {
+                    hideLoading();
+                    displayStatusMessage('Blueprint generation taking longer than expected. Please check back later.');
+                }
+            })
+            .catch(error => {
+                hideLoading();
+                displayErrorMessage(`Error checking blueprint status: ${error.message}`);
+            });
+    }
+
+    // Start polling
+    setTimeout(poll, pollInterval);
 }
 
 // Canvas interaction handlers
 function handleZoom(e) {
     e.preventDefault();
 
-    const mouseX = e.offsetX;
-    const mouseY = e.offsetY;
+    // Get mouse position in screen coordinates
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
 
-    // Convert mouse position to world coordinates
-    const worldX = (mouseX - camera.x) / camera.scale;
-    const worldY = (mouseY - camera.y) / camera.scale;
+    // Get mouse position in world coordinates before zoom
+    const worldX = screenToWorldX(mouseX);
+    const worldY = screenToWorldY(mouseY);
 
-    // Update scale
-    const delta = e.deltaY > 0 ? 1 / zoomFactor : zoomFactor;
-    camera.scale = Math.max(0.1, Math.min(20, camera.scale * delta));
+    // Apply zoom factor based on scroll direction
+    if (e.deltaY < 0) {
+        // Zoom in
+        camera.scale *= zoomFactor;
+    } else {
+        // Zoom out
+        camera.scale /= zoomFactor;
+    }
 
-    // Adjust camera position to zoom into the mouse position
+    // Limit zoom level
+    camera.scale = Math.min(Math.max(camera.scale, 0.1), 10);
+
+    // Adjust camera position to zoom toward mouse position
     camera.x = mouseX - worldX * camera.scale;
     camera.y = mouseY - worldY * camera.scale;
 
-    // Redraw
-    if (blueprint) {
-        renderBlueprint(blueprint);
-    } else {
-        renderEmptyCanvas();
-    }
+    // Re-render the blueprint
+    renderBlueprint(blueprint);
 }
 
 function startDrag(e) {
+    if (e.button !== 0) return; // Only handle left mouse button
+
     isDragging = true;
-    lastMousePos = { x: e.offsetX, y: e.offsetY };
-    canvas.style.cursor = 'grabbing';
+
+    const rect = canvas.getBoundingClientRect();
+    lastMousePos = {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+    };
 }
 
 function drag(e) {
     if (!isDragging) return;
 
-    const dx = e.offsetX - lastMousePos.x;
-    const dy = e.offsetY - lastMousePos.y;
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
 
-    camera.x += dx;
-    camera.y += dy;
+    // Calculate the movement delta
+    const deltaX = mouseX - lastMousePos.x;
+    const deltaY = mouseY - lastMousePos.y;
 
-    lastMousePos = { x: e.offsetX, y: e.offsetY };
+    // Update camera position
+    camera.x += deltaX;
+    camera.y += deltaY;
 
-    // Redraw
-    if (blueprint) {
-        renderBlueprint(blueprint);
-    } else {
-        renderEmptyCanvas();
-    }
+    // Update last mouse position
+    lastMousePos = {
+        x: mouseX,
+        y: mouseY
+    };
+
+    // Re-render the blueprint
+    renderBlueprint(blueprint);
 }
 
 function endDrag() {
     isDragging = false;
-    if (canvas) {
-        canvas.style.cursor = 'grab';
+}
+
+function handleCanvasClick(e) {
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    // Convert to world coordinates
+    const worldX = screenToWorldX(mouseX);
+    const worldY = screenToWorldY(mouseY);
+
+    // Check for room selection
+    if (blueprint && blueprint.rooms) {
+        const previousSelection = selectedRoom;
+        selectedRoom = null;
+
+        blueprint.rooms.filter(room => room.floor === currentFloor).forEach(room => {
+            // Simple bounding box check
+            if (room.bounds &&
+                worldX >= room.bounds.min.x && worldX <= room.bounds.max.x &&
+                worldY >= room.bounds.min.y && worldY <= room.bounds.max.y) {
+                selectedRoom = room;
+            }
+        });
+
+        // Re-render only if selection changed
+        if (selectedRoom !== previousSelection) {
+            renderBlueprint(blueprint);
+
+            // Show room details if a room is selected
+            if (selectedRoom) {
+                showRoomDetails(selectedRoom);
+            } else {
+                hideRoomDetails();
+            }
+        }
+    }
+
+    // If in measurement mode, display coordinates
+    if (viewMode === 'measurement') {
+        displayStatusMessage(`Position: (${worldX.toFixed(2)}m, ${worldY.toFixed(2)}m)`);
+    }
+}
+
+function handleCanvasHover(e) {
+    if (isDragging) return; // Skip hover detection during drag
+
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    // Convert to world coordinates
+    const worldX = screenToWorldX(mouseX);
+    const worldY = screenToWorldY(mouseY);
+
+    // Check for object hover
+    const previousHover = hoveredObject;
+    hoveredObject = null;
+
+    if (blueprint && blueprint.objects) {
+        blueprint.objects.filter(obj => {
+            // Find the room for this object
+            const room = blueprint.rooms.find(r => r.id === obj.room_id);
+            return room && room.floor === currentFloor;
+        }).forEach(obj => {
+            // Simple distance check for object hover
+            const dx = obj.position.x - worldX;
+            const dy = obj.position.y - worldY;
+            const distance = Math.sqrt(dx*dx + dy*dy);
+            const hoverRadius = (obj.dimensions.width + obj.dimensions.depth) / 4;
+
+            if (distance <= hoverRadius) {
+                hoveredObject = obj;
+            }
+        });
+    }
+
+    // Re-render only if hover changed
+    if (hoveredObject !== previousHover) {
+        renderBlueprint(blueprint);
+    }
+
+    // Update cursor
+    canvas.style.cursor = (hoveredObject || selectedRoom) ? 'pointer' : 'default';
+}
+
+function showRoomDetails(room) {
+    const detailsPanel = document.getElementById('room-details');
+    if (!detailsPanel) return;
+
+    // Format room information
+    let roomName = room.name || (room.area_id ? room.area_id.replace(/_/g, ' ') : 'Room');
+    roomName = roomName.charAt(0).toUpperCase() + roomName.slice(1); // Capitalize
+
+    const width = room.dimensions ? room.dimensions.width.toFixed(1) + 'm' : 'N/A';
+    const length = room.dimensions ? room.dimensions.length.toFixed(1) + 'm' : 'N/A';
+    const area = room.dimensions ? room.dimensions.area.toFixed(1) + 'm²' : 'N/A';
+
+    // Populate details panel
+    detailsPanel.innerHTML = `
+        <h3>${roomName}</h3>
+        <p><strong>Dimensions:</strong> ${width} × ${length}</p>
+        <p><strong>Area:</strong> ${area}</p>
+        <p><strong>Floor:</strong> ${room.floor || 0}</p>
+    `;
+
+    detailsPanel.style.display = 'block';
+}
+
+function hideRoomDetails() {
+    const detailsPanel = document.getElementById('room-details');
+    if (detailsPanel) {
+        detailsPanel.style.display = 'none';
     }
 }
 
 // UI helpers
 function showLoading(message) {
     if (loadingSpinner) {
-        loadingSpinner.classList.remove('d-none');
-    }
-
-    if (message && statusMessage) {
-        statusMessage.textContent = message;
-        statusMessage.classList.remove('d-none');
+        loadingSpinner.style.display = 'flex';
+        const messageElement = loadingSpinner.querySelector('.message');
+        if (messageElement) {
+            messageElement.textContent = message;
+        }
     }
 }
 
 function hideLoading() {
     if (loadingSpinner) {
-        loadingSpinner.classList.add('d-none');
+        loadingSpinner.style.display = 'none';
     }
 }
 
 function displayStatusMessage(message, duration = 3000) {
-    if (!statusMessage) return;
+    if (statusMessage) {
+        statusMessage.textContent = message;
+        statusMessage.className = 'status-message';
+        statusMessage.style.display = 'block';
 
-    statusMessage.textContent = message;
-    statusMessage.className = 'alert alert-info mt-3';
-    statusMessage.classList.remove('d-none');
-
-    setTimeout(() => {
-        statusMessage.classList.add('d-none');
-    }, duration);
+        setTimeout(() => {
+            statusMessage.style.display = 'none';
+        }, duration);
+    }
 }
 
 function displayErrorMessage(message, duration = 5000) {
-    // Simple implementation: update the status element with error styling
-    console.error("Displaying Error:", message); // Log error to console too
-    const statusEl = document.getElementById('status-message'); // Use the existing status element
-    if (statusEl) {
-        statusEl.textContent = `Error: ${message}`;
-        statusEl.className = 'alert alert-danger mt-3';
-        statusEl.classList.remove('d-none');
+    if (statusMessage) {
+        statusMessage.textContent = message;
+        statusMessage.className = 'status-message error';
+        statusMessage.style.display = 'block';
 
         setTimeout(() => {
-            statusEl.classList.add('d-none');
+            statusMessage.style.display = 'none';
         }, duration);
     }
 }
