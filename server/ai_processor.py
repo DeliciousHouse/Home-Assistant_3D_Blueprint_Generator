@@ -128,7 +128,74 @@ class AIProcessor:
             "lamp": {"width": 0.3, "depth": 0.3, "height": 1.5}
         }
 
-    # Existing methods...
+    def _create_tables(self):
+        """
+        Ensure necessary database tables exist for AI model storage and training data.
+
+        Note: Most of our tables are already created in the db.py module when initializing
+        the SQLite database. This method is mainly a placeholder for future AI-specific tables.
+        """
+        try:
+            logger.info("Ensuring AI model tables exist")
+            conn = get_sqlite_connection()
+            if not conn:
+                logger.error("Failed to connect to database for AI tables initialization")
+                return False
+
+            # Tables should already be created in db.py's init_sqlite_db function.
+            # This is just a simple check to make sure critical tables exist.
+            cursor = conn.cursor()
+
+            # Check if the ai_models table exists
+            cursor.execute('''
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='ai_models'
+            ''')
+
+            if not cursor.fetchone():
+                logger.warning("AI models table not found, it should be created by db.py")
+
+            conn.close()
+            logger.info("AI tables verification completed")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error creating AI tables: {str(e)}")
+            return False
+
+    def _load_models(self):
+        """
+        Load machine learning models from disk if they exist.
+        """
+        try:
+            # Load RSSI-to-distance model if it exists
+            rssi_model_path = MODEL_DIR / "rssi_distance_model.joblib"
+            if rssi_model_path.exists():
+                logger.info("Loading RSSI-to-distance model")
+                self.rssi_distance_model = joblib.load(rssi_model_path)
+
+            # Load room clustering model if it exists
+            clustering_model_path = MODEL_DIR / "room_clustering_model.joblib"
+            if clustering_model_path.exists():
+                logger.info("Loading room clustering model")
+                self.room_clustering_model = joblib.load(clustering_model_path)
+
+            # Load wall prediction model if it exists
+            wall_model_path = MODEL_DIR / "wall_prediction_model.joblib"
+            if wall_model_path.exists():
+                logger.info("Loading wall prediction model")
+                self.wall_prediction_model = joblib.load(wall_model_path)
+
+            # Load blueprint refinement model if it exists
+            refinement_model_path = MODEL_DIR / "blueprint_refinement_model.zip"
+            if refinement_model_path.exists() and self.config.get('ai_settings', {}).get('enable_refinement', False):
+                logger.info("Loading blueprint refinement model")
+                # Refinement model uses Stable-Baselines3 PPO format
+                self.blueprint_refinement_model = PPO.load(refinement_model_path)
+
+        except Exception as e:
+            logger.error(f"Error loading AI models: {str(e)}")
+            # Continue without the models - we'll use fallback methods
 
     def predict_objects(self, rooms: List[Dict]) -> List[Dict]:
         """
