@@ -173,5 +173,110 @@ class HAClient:
             logger.error(f"Error getting area predictions: {str(e)}")
             return {}
 
+    def get_distances(self) -> Dict[str, Dict[str, Dict[str, float]]]:
+        """
+        Get distances between tracked devices and scanners from Home Assistant.
+
+        Returns:
+            Dictionary mapping device_id to a dict of scanner_id to distance info.
+            Format: {
+                'device_id': {
+                    'scanner_id': {'distance': 5.2, 'rssi': -70},
+                    'scanner_id2': {'distance': 3.1, 'rssi': -65}
+                }
+            }
+        """
+        try:
+            # Get distance sensors
+            distance_sensors = self.get_distance_sensors()
+
+            # Extract device distances
+            device_distances = {}
+
+            for sensor in distance_sensors:
+                entity_id = sensor.get('entity_id', '')
+                state = sensor.get('state')
+                attributes = sensor.get('attributes', {})
+
+                # Skip sensors with no state or invalid state
+                if not state or state == 'unknown' or state == 'unavailable':
+                    continue
+
+                # Try to extract device and scanner IDs from the entity ID
+                # Format could be like: sensor.device_id_to_scanner_id_distance
+                parts = entity_id.split('.')
+                if len(parts) < 2:
+                    continue
+
+                name_parts = parts[1].split('_')
+
+                # Look for common patterns in entity IDs
+                device_id = None
+                scanner_id = None
+                distance = None
+                rssi = None
+
+                # Try to get device/scanner from attributes first
+                if 'device_id' in attributes:
+                    device_id = attributes['device_id']
+                if 'scanner_id' in attributes:
+                    scanner_id = attributes['scanner_id']
+
+                # If not in attributes, try to parse from entity ID
+                if not (device_id and scanner_id):
+                    # Look for patterns like device_to_scanner_distance
+                    for i, part in enumerate(name_parts):
+                        if part == 'to' and i > 0 and i < len(name_parts) - 1:
+                            device_id = '_'.join(name_parts[:i])
+                            scanner_id = '_'.join(name_parts[i+1:-1])
+                            break
+
+                # If we still can't determine device/scanner, skip this entity
+                if not device_id or not scanner_id:
+                    continue
+
+                # Try to get distance value
+                try:
+                    # First try to use the state as distance
+                    distance = float(state)
+                except (ValueError, TypeError):
+                    # If state isn't a valid distance, check attributes
+                    if 'distance' in attributes:
+                        try:
+                            distance = float(attributes['distance'])
+                        except (ValueError, TypeError):
+                            pass
+
+                # Try to get RSSI if available
+                if 'rssi' in attributes:
+                    try:
+                        rssi = float(attributes['rssi'])
+                    except (ValueError, TypeError):
+                        pass
+                elif 'signal_strength' in attributes:
+                    try:
+                        rssi = float(attributes['signal_strength'])
+                    except (ValueError, TypeError):
+                        pass
+
+                # Skip if no distance found
+                if distance is None:
+                    continue
+
+                # Add to results
+                if device_id not in device_distances:
+                    device_distances[device_id] = {}
+
+                device_distances[device_id][scanner_id] = {'distance': distance}
+                if rssi is not None:
+                    device_distances[device_id][scanner_id]['rssi'] = rssi
+
+            logger.info(f"HA_Client: Found distance data for {len(device_distances)} devices.")
+            return device_distances
+
+        except Exception as e:
+            logger.error(f"Error getting distances: {str(e)}")
+            return {}
+
 # For compatibility with existing code
 HomeAssistantClient = HAClient
