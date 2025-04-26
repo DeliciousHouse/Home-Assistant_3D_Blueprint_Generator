@@ -332,8 +332,20 @@ class AIProcessor:
             # Create list of all unique device IDs
             all_devices = set()
             for reading in distance_data:
-                all_devices.add(reading['device_id'])
-                all_devices.add(reading['other_id'])
+                # Handle different possible key formats in the data
+                tracked_device_id = reading.get('tracked_device_id')
+                scanner_id = reading.get('scanner_id')
+
+                # If the data follows the expected format
+                if tracked_device_id and scanner_id:
+                    all_devices.add(tracked_device_id)
+                    all_devices.add(scanner_id)
+                # Try alternative key names
+                elif 'device_id' in reading and 'other_id' in reading:
+                    all_devices.add(reading['device_id'])
+                    all_devices.add(reading['other_id'])
+                else:
+                    logger.warning(f"Unrecognized distance reading format: {reading}")
 
             # Sort them for consistent ordering
             device_list = sorted(list(all_devices))
@@ -355,16 +367,26 @@ class AIProcessor:
             # Fill distance matrix with known measurements
             for reading in distance_data:
                 try:
-                    device_idx = device_list.index(reading['device_id'])
-                    other_idx = device_list.index(reading['other_id'])
+                    # Handle different possible key formats
+                    if 'tracked_device_id' in reading and 'scanner_id' in reading:
+                        device_a = reading['tracked_device_id']
+                        device_b = reading['scanner_id']
+                        distance = reading['distance']
+                    elif 'device_id' in reading and 'other_id' in reading:
+                        device_a = reading['device_id']
+                        device_b = reading['other_id']
+                        distance = reading['distance']
+                    else:
+                        continue  # Skip readings with unrecognized format
 
-                    # Get distance in meters
-                    distance = float(reading['distance'])
+                    # Find indices for these devices
+                    device_idx_a = device_list.index(device_a)
+                    device_idx_b = device_list.index(device_b)
 
                     # Set the distance in both directions (symmetric matrix)
-                    distance_matrix[device_idx, other_idx] = distance
-                    distance_matrix[other_idx, device_idx] = distance
-                except (ValueError, KeyError) as e:
+                    distance_matrix[device_idx_a, device_idx_b] = distance
+                    distance_matrix[device_idx_b, device_idx_a] = distance
+                except (ValueError, KeyError, TypeError) as e:
                     logger.warning(f"Error processing distance reading: {e}")
                     continue
 
@@ -403,3 +425,283 @@ class AIProcessor:
         except Exception as e:
             logger.error(f"Error in relative positioning: {str(e)}", exc_info=True)
             return {}
+
+    def generate_rooms_from_points(self, device_coords_by_area: Dict[str, List[Dict]]) -> List[Dict]:
+        """
+        Generate room structures from grouped device coordinates.
+
+        Parameters:
+            device_coords_by_area: Dictionary mapping area IDs to lists of device coordinates
+
+        Returns:
+            List of room definitions with geometry
+        """
+        logger.info(f"Generating rooms from points in {len(device_coords_by_area)} areas")
+
+        rooms = []
+        room_id = 1
+
+        for area_id, devices in device_coords_by_area.items():
+            try:
+                # Skip areas with too few points
+                if len(devices) < 3:
+                    logger.warning(f"Area {area_id} has only {len(devices)} points, which is too few for room generation")
+                    continue
+
+                # Extract x,y coordinates from devices
+                points = np.array([[d['x'], d['y']] for d in devices])
+
+                # Calculate the center point
+                center_x = np.mean(points[:, 0])
+                center_y = np.mean(points[:, 1])
+
+                # Calculate z-coordinate (average of available z values or default to 0)
+                z_values = [d.get('z', 0) for d in devices]
+                center_z = sum(z_values) / len(z_values) if z_values else 0
+
+                # Generate room bounds
+                # Option 1: Simple min/max bounds
+                min_x = np.min(points[:, 0])
+                max_x = np.max(points[:, 0])
+                min_y = np.min(points[:, 1])
+                max_y = np.max(points[:, 1])
+
+                # Add some padding to ensure devices aren't exactly at the walls
+                padding = 0.5  # 50cm of padding
+                min_x -= padding
+                min_y -= padding
+                max_x += padding
+                max_y += padding
+
+                # Calculate room dimensions
+                width = max_x - min_x
+                length = max_y - min_y
+                height = 2.4  # Default ceiling height
+                area = width * length
+
+                # Get device IDs - handle different possible field names
+                device_list = []
+                for device in devices:
+                    if 'device_id' in device:
+                        device_list.append(device['device_id'])
+                    elif 'tracked_device_id' in device:
+                        device_list.append(device['tracked_device_id'])
+                    else:
+                        # If no valid ID field, use unknown placeholder
+                        logger.warning(f"Device in area {area_id} has no recognizable ID field")
+                        device_list.append(f"unknown_{len(device_list)}")
+
+                # Create room definition
+                room = {
+                    'id': f"room_{room_id}",
+                    'name': area_id.replace('_', ' ').title(),
+                    'area_id': area_id,
+                    'center': {'x': center_x, 'y': center_y, 'z': center_z},
+                    'bounds': {
+                        'min': {'x': min_x, 'y': min_y, 'z': 0},
+                        'max': {'x': max_x, 'y': max_y, 'z': height}
+                    },
+                    'dimensions': {
+                        'width': width,
+                        'length': length,
+                        'height': height,
+                        'area': area
+                    },
+                    'floor': 0,  # Default floor
+                    'devices': device_list
+                }
+
+                rooms.append(room)
+                room_id += 1
+
+                logger.info(f"Generated room for {area_id} with {len(devices)} devices")
+
+            except Exception as e:
+                logger.error(f"Error generating room for area {area_id}: {str(e)}", exc_info=True)
+
+        logger.info(f"Successfully generated {len(rooms)} rooms")
+        return rooms
+
+    def generate_walls_between_rooms(self, rooms: List[Dict]) -> List[Dict]:
+        """
+        Generate walls between adjacent rooms.
+
+        Parameters:
+            rooms: List of room definitions
+
+        Returns:
+            List of wall definitions
+        """
+        logger.info(f"Generating walls between {len(rooms)} rooms")
+
+        walls = []
+        wall_id = 1
+
+        # Group rooms by floor
+        rooms_by_floor = {}
+        for room in rooms:
+            floor = room.get('floor', 0)
+            if floor not in rooms_by_floor:
+                rooms_by_floor[floor] = []
+            rooms_by_floor[floor].append(room)
+
+        # Process each floor separately
+        for floor, floor_rooms in rooms_by_floor.items():
+            # Skip floors with less than 2 rooms
+            if len(floor_rooms) < 2:
+                continue
+
+            # For each room, check adjacency with other rooms on the same floor
+            for i, room1 in enumerate(floor_rooms):
+                for room2 in floor_rooms[i+1:]:
+                    # Check if rooms are adjacent
+                    if self._are_rooms_adjacent(room1, room2):
+                        # Calculate wall segments between the rooms
+                        new_walls = self._calculate_wall_segments(room1, room2, wall_id)
+                        walls.extend(new_walls)
+                        wall_id += len(new_walls)
+
+        # Add external walls for each room
+        for room in rooms:
+            external_walls = self._generate_external_walls(room, wall_id)
+            walls.extend(external_walls)
+            wall_id += len(external_walls)
+
+        logger.info(f"Generated {len(walls)} walls")
+        return walls
+
+    def _are_rooms_adjacent(self, room1: Dict, room2: Dict) -> bool:
+        """Check if two rooms are adjacent to each other."""
+        # Get room bounds
+        r1_min_x = room1['bounds']['min']['x']
+        r1_max_x = room1['bounds']['max']['x']
+        r1_min_y = room1['bounds']['min']['y']
+        r1_max_y = room1['bounds']['max']['y']
+
+        r2_min_x = room2['bounds']['min']['x']
+        r2_max_x = room2['bounds']['max']['x']
+        r2_min_y = room2['bounds']['min']['y']
+        r2_max_y = room2['bounds']['max']['y']
+
+        # Check for x-overlap
+        x_overlap = (r1_min_x <= r2_max_x and r1_max_x >= r2_min_x)
+
+        # Check for y-overlap
+        y_overlap = (r1_min_y <= r2_max_y and r1_max_y >= r2_min_y)
+
+        # Rooms are adjacent if they overlap in one dimension and are close in the other
+        max_gap = 0.1  # Maximum gap between rooms (10cm)
+
+        # Adjacent along x-axis
+        x_adjacent = y_overlap and (
+            abs(r1_max_x - r2_min_x) <= max_gap or
+            abs(r1_min_x - r2_max_x) <= max_gap
+        )
+
+        # Adjacent along y-axis
+        y_adjacent = x_overlap and (
+            abs(r1_max_y - r2_min_y) <= max_gap or
+            abs(r1_min_y - r2_max_y) <= max_gap
+        )
+
+        return x_adjacent or y_adjacent
+
+    def _calculate_wall_segments(self, room1: Dict, room2: Dict, start_id: int) -> List[Dict]:
+        """Calculate wall segments between adjacent rooms."""
+        # Basic implementation - just place a wall at the average position between rooms
+        wall_height = 2.4  # Default wall height
+        wall_thickness = 0.15  # Default wall thickness
+
+        # Find the shared edge
+        r1_min_x = room1['bounds']['min']['x']
+        r1_max_x = room1['bounds']['max']['x']
+        r1_min_y = room1['bounds']['min']['y']
+        r1_max_y = room1['bounds']['max']['y']
+
+        r2_min_x = room2['bounds']['min']['x']
+        r2_max_x = room2['bounds']['max']['x']
+        r2_min_y = room2['bounds']['min']['y']
+        r2_max_y = room2['bounds']['max']['y']
+
+        walls = []
+
+        # Check for vertical wall (rooms adjacent horizontally)
+        if abs(r1_max_x - r2_min_x) < 0.2 or abs(r1_min_x - r2_max_x) < 0.2:
+            wall_x = (r1_max_x + r2_min_x) / 2 if r1_max_x < r2_max_x else (r1_min_x + r2_max_x) / 2
+
+            # Find y-overlap
+            start_y = max(r1_min_y, r2_min_y)
+            end_y = min(r1_max_y, r2_max_y)
+
+            walls.append({
+                'id': f"wall_{start_id}",
+                'start': {'x': wall_x, 'y': start_y},
+                'end': {'x': wall_x, 'y': end_y},
+                'thickness': wall_thickness,
+                'height': wall_height
+            })
+
+        # Check for horizontal wall (rooms adjacent vertically)
+        elif abs(r1_max_y - r2_min_y) < 0.2 or abs(r1_min_y - r2_max_y) < 0.2:
+            wall_y = (r1_max_y + r2_min_y) / 2 if r1_max_y < r2_max_y else (r1_min_y + r2_max_y) / 2
+
+            # Find x-overlap
+            start_x = max(r1_min_x, r2_min_x)
+            end_x = min(r1_max_x, r2_max_x)
+
+            walls.append({
+                'id': f"wall_{start_id}",
+                'start': {'x': start_x, 'y': wall_y},
+                'end': {'x': end_x, 'y': wall_y},
+                'thickness': wall_thickness,
+                'height': wall_height
+            })
+
+        return walls
+
+    def _generate_external_walls(self, room: Dict, start_id: int) -> List[Dict]:
+        """Generate external walls for a room."""
+        min_x = room['bounds']['min']['x']
+        max_x = room['bounds']['max']['x']
+        min_y = room['bounds']['min']['y']
+        max_y = room['bounds']['max']['y']
+
+        wall_height = room.get('dimensions', {}).get('height', 2.4)
+        wall_thickness = 0.15
+
+        walls = [
+            {
+                'id': f"wall_{start_id}",
+                'start': {'x': min_x, 'y': min_y},
+                'end': {'x': max_x, 'y': min_y},
+                'thickness': wall_thickness,
+                'height': wall_height,
+                'is_external': True
+            },
+            {
+                'id': f"wall_{start_id + 1}",
+                'start': {'x': max_x, 'y': min_y},
+                'end': {'x': max_x, 'y': max_y},
+                'thickness': wall_thickness,
+                'height': wall_height,
+                'is_external': True
+            },
+            {
+                'id': f"wall_{start_id + 2}",
+                'start': {'x': max_x, 'y': max_y},
+                'end': {'x': min_x, 'y': max_y},
+                'thickness': wall_thickness,
+                'height': wall_height,
+                'is_external': True
+            },
+            {
+                'id': f"wall_{start_id + 3}",
+                'start': {'x': min_x, 'y': max_y},
+                'end': {'x': min_x, 'y': min_y},
+                'thickness': wall_thickness,
+                'height': wall_height,
+                'is_external': True
+            }
+        ]
+
+        return walls
