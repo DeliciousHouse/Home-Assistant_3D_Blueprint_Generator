@@ -426,152 +426,139 @@ class AIProcessor:
             logger.error(f"Error in relative positioning: {str(e)}", exc_info=True)
             return {}
 
-    def generate_rooms_from_points(self, device_coords_by_area: Dict[str, List[Dict]]) -> List[Dict]:
+    def generate_rooms_from_points(self, device_coords_by_area: Dict[str, List[Dict[str, Any]]], all_ha_areas: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         """
-        Generate room structures from grouped device coordinates.
+        Generate rooms based on device positions grouped by area.
+        Now also includes all Home Assistant areas even if they don't have device positions.
 
-        Parameters:
-            device_coords_by_area: Dictionary mapping area IDs to lists of device coordinates
+        Args:
+            device_coords_by_area: Dictionary mapping area_id to list of device coordinates
+            all_ha_areas: Optional list of all Home Assistant areas
 
         Returns:
-            List of room definitions with geometry
+            List of room dictionaries
         """
-        logger.info(f"Generating rooms from points in {len(device_coords_by_area)} areas")
+        try:
+            # Create a dictionary to map area_ids to area names from all_ha_areas
+            area_id_to_name = {}
+            if all_ha_areas:
+                for area in all_ha_areas:
+                    area_id = area.get('area_id')
+                    if area_id:
+                        area_id_to_name[area_id] = area.get('name', area_id)
+                logger.info(f"Using {len(area_id_to_name)} area names from Home Assistant")
 
-        # Get config settings
-        min_room_area = self.config.get('blueprint_validation', {}).get('min_room_area', 4)
-        min_room_dimension = self.config.get('blueprint_validation', {}).get('min_room_dimension', 1.5)
+            # First, generate rooms based on device coordinates
+            rooms = []
+            floor_counter = 1  # Default all rooms to floor 1 initially
 
-        # Get the minimum points per room from config
-        min_points_per_room = self.config.get('generation_settings', {}).get('min_points_per_room', 1)
-        logger.debug(f"Using min_points_per_room={min_points_per_room} from configuration")
+            logger.info(f"Generating rooms from points in {len(device_coords_by_area)} areas")
 
-        rooms = []
-        room_id = 1
-
-        # Create floor mapping based on area name patterns
-        # Floor 0 = outside areas, Floor 1 = main/ground floor, Floor 2 = upstairs
-        floor_mapping = {
-            # Default floor assignments based on area name patterns
-            'outside': 0,
-            'balcony': 0,
-            'patio': 0,
-            'garden': 0,
-            'yard': 0,
-            'garage': 0,
-            'driveway': 0,
-            'upstairs': 2,
-            'upper': 2,
-            'second': 2,
-            'attic': 2,
-            'loft': 2,
-        }
-
-        for area_id, devices in device_coords_by_area.items():
-            try:
-                # Skip areas with too few points based on config
-                if len(devices) < min_points_per_room:
-                    logger.warning(f"Area {area_id} has only {len(devices)} points, which is less than min_points_per_room={min_points_per_room}")
+            # First pass - create rooms that have device positions
+            for area_id, device_coords in device_coords_by_area.items():
+                # Skip empty areas (shouldn't happen, but just in case)
+                if not device_coords:
                     continue
 
-                # Extract x,y coordinates from devices
-                points = np.array([[d['x'], d['y']] for d in devices])
+                # Calculate room center based on device positions
+                center_x = sum(d['x'] for d in device_coords) / len(device_coords)
+                center_y = sum(d['y'] for d in device_coords) / len(device_coords)
+                center_z = sum(d['z'] for d in device_coords) / len(device_coords)
 
-                # Calculate the center point
-                center_x = np.mean(points[:, 0])
-                center_y = np.mean(points[:, 1])
+                # Calculate room dimensions based on device spread
+                x_values = [d['x'] for d in device_coords]
+                y_values = [d['y'] for d in device_coords]
+                z_values = [d['z'] for d in device_coords]
 
-                # Calculate z-coordinate (average of available z values or default to 0)
-                z_values = [d.get('z', 0) for d in devices]
-                center_z = sum(z_values) / len(z_values) if z_values else 0
+                min_x, max_x = min(x_values), max(x_values)
+                min_y, max_y = min(y_values), max(y_values)
 
-                # Generate room bounds
-                if len(devices) >= 3:
-                    # With 3+ points, use the actual points to determine bounds
-                    min_x = np.min(points[:, 0])
-                    max_x = np.max(points[:, 0])
-                    min_y = np.min(points[:, 1])
-                    max_y = np.max(points[:, 1])
+                # Set minimum room size to 2.5 meters for small rooms
+                width = max(max_x - min_x + 2.0, 2.5)  # Add margin and enforce minimum size
+                length = max(max_y - min_y + 2.0, 2.5)
 
-                    # Add some padding to ensure devices aren't exactly at the walls
-                    padding = 0.5  # 50cm of padding
-                    min_x -= padding
-                    min_y -= padding
-                    max_x += padding
-                    max_y += padding
-                else:
-                    # With 1-2 points, generate a reasonable sized room centered on the point(s)
-                    # Default room size (minimum dimensions to create a usable room)
-                    default_size = max(min_room_dimension, 2.5)  # At least 2.5 meters (slightly bigger than previous)
+                # Set room height to standard 2.4m
+                height = 2.4
 
-                    # Set bounds around the center
-                    min_x = center_x - default_size/2
-                    max_x = center_x + default_size/2
-                    min_y = center_y - default_size/2
-                    max_y = center_y + default_size/2
+                # Get area name from mapping or use area_id if not found
+                room_name = area_id_to_name.get(area_id, area_id)
 
-                # Calculate room dimensions
-                width = max_x - min_x
-                length = max_y - min_y
-                height = 2.4  # Default ceiling height
-                area = width * length
-
-                # Ensure minimum room dimensions
-                if width < min_room_dimension:
-                    diff = min_room_dimension - width
-                    min_x -= diff/2
-                    max_x += diff/2
-                    width = min_room_dimension
-
-                if length < min_room_dimension:
-                    diff = min_room_dimension - length
-                    min_y -= diff/2
-                    max_y += diff/2
-                    length = min_room_dimension
-
-                # Recalculate area with adjusted dimensions
-                area = width * length
-
-                # Determine floor number based on area name
-                area_id_lower = area_id.lower()
-                floor = 1  # Default to ground floor/main floor
-
-                # Check if the area name contains any known floor indicators
-                for name_pattern, floor_num in floor_mapping.items():
-                    if name_pattern in area_id_lower:
-                        floor = floor_num
-                        break
-
-                # Create room definition
+                # Create room dictionary
                 room = {
-                    'id': f"room_{room_id}",
-                    'name': area_id.replace('_', ' ').title(),
+                    'id': str(uuid.uuid4()),
+                    'name': room_name,
+                    'type': self._predict_room_type(room_name),
                     'area_id': area_id,
+                    'floor': floor_counter,
                     'center': {'x': center_x, 'y': center_y, 'z': center_z},
-                    'bounds': {
-                        'min': {'x': min_x, 'y': min_y, 'z': 0},
-                        'max': {'x': max_x, 'y': max_y, 'z': height}
-                    },
-                    'dimensions': {
-                        'width': width,
-                        'length': length,
-                        'height': height,
-                        'area': area
-                    },
-                    'floor': floor,  # Use our determined floor number
-                    'devices': [d.get('device_id', 'unknown') for d in devices if 'device_id' in d]
+                    'dimensions': {'width': width, 'length': length, 'height': height},
+                    'devices': [{'id': d['device_id'], 'x': d['x'], 'y': d['y'], 'z': d['z']} for d in device_coords]
                 }
 
                 rooms.append(room)
-                room_id += 1
+                logger.info(f"Generated room for {room_name} with {len(device_coords)} devices on floor {floor_counter}")
 
-                logger.info(f"Generated room for {area_id} with {len(devices)} devices on floor {floor}")
+            # If we have Home Assistant areas, add empty rooms for areas without device positions
+            added_rooms = 0
+            if all_ha_areas:
+                # Create a set of area_ids we've already processed
+                processed_areas = set(device_coords_by_area.keys())
 
-            except Exception as e:
-                logger.error(f"Error generating room for area {area_id}: {str(e)}")
+                # Get the average position of existing rooms to use as a reference
+                avg_x, avg_y, avg_z = 0, 0, 0
+                if rooms:
+                    avg_x = sum(room['center']['x'] for room in rooms) / len(rooms)
+                    avg_y = sum(room['center']['y'] for room in rooms) / len(rooms)
+                    avg_z = sum(room['center']['z'] for room in rooms) / len(rooms)
 
-        logger.info(f"Successfully generated {len(rooms)} rooms")
-        return rooms
+                # Place rooms without devices in a spiral pattern around this center
+                spiral_distance = 5.0  # Base distance between rooms (meters)
+                angle_increment = 45  # Degrees between each room placement
+                current_angle = 0
+                current_distance = spiral_distance
+
+                # Add rooms for areas that don't have device positions
+                for area in all_ha_areas:
+                    area_id = area.get('area_id')
+                    if not area_id or area_id in processed_areas:
+                        continue  # Skip already processed areas
+
+                    area_name = area.get('name', area_id)
+
+                    # Calculate position in a spiral pattern
+                    angle_rad = math.radians(current_angle)
+                    x = avg_x + current_distance * math.cos(angle_rad)
+                    y = avg_y + current_distance * math.sin(angle_rad)
+
+                    # Create a room with default dimensions
+                    room = {
+                        'id': str(uuid.uuid4()),
+                        'name': area_name,
+                        'type': self._predict_room_type(area_name),
+                        'area_id': area_id,
+                        'floor': floor_counter,
+                        'center': {'x': x, 'y': y, 'z': avg_z},
+                        'dimensions': {'width': 3.0, 'length': 3.0, 'height': 2.4},  # Default size
+                        'devices': []  # No devices in this room yet
+                    }
+
+                    rooms.append(room)
+                    added_rooms += 1
+
+                    # Update spiral parameters for next room
+                    current_angle = (current_angle + angle_increment) % 360
+                    if current_angle < angle_increment:  # Completed a full circle
+                        current_distance += spiral_distance  # Move outward for the next circle
+
+                if added_rooms > 0:
+                    logger.info(f"Added {added_rooms} additional rooms without devices from Home Assistant areas")
+
+            logger.info(f"Successfully generated {len(rooms)} rooms")
+            return rooms
+
+        except Exception as e:
+            logger.error(f"Error generating rooms from points: {str(e)}", exc_info=True)
+            return []
 
     def generate_walls_between_rooms(self, rooms: List[Dict]) -> List[Dict]:
         """

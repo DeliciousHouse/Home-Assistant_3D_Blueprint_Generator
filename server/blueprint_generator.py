@@ -92,131 +92,126 @@ class BlueprintGenerator:
         self.ai_processor = AIProcessor()
         logger.info("AI processor initialized successfully")
 
-    def generate_blueprint(self):
-        """Generate blueprint using relative positioning and area anchoring."""
-        logger.info("Starting blueprint generation (Relative Positioning Method)...")
-        self.status = {"state": "processing", "progress": 0.0}
-        job_start_time = datetime.now()
-
+    def generate_blueprint(self) -> bool:
+        """Generate a 3D blueprint of the environment."""
         try:
-            # Step 1: Get recent distance readings
-            distance_window = self.generation_config.get('distance_window_minutes', 15)
-            distance_data = get_recent_distances(distance_window)
-            logger.info(f"Retrieved {len(distance_data)} distance readings for processing")
+            logger.info("Starting blueprint generation process...")
 
-            # Step 2: Get area predictions for anchoring
-            area_window = self.generation_config.get('area_window_minutes', 10)
-            area_predictions = get_recent_area_predictions(area_window)
-            logger.info(f"Retrieved {len(area_predictions)} area predictions for anchoring")
+            # Retrieve MDS positions from AI processor
+            device_positions, anchor_positions = self.ai_processor.get_relative_positions()
+            if not device_positions:
+                logger.error("Failed to generate device positions")
+                return False
 
-            # Step 3: Calculate relative positions using MDS
-            dimensions = self.generation_config.get('mds_dimensions', 2)
-            relative_positions = self.ai_processor.run_relative_positioning(distance_data, dimensions)
-            logger.info(f"Generated relative positions for {len(relative_positions)} devices")
-            logger.debug(f"Relative Positions (MDS Output): {json.dumps(relative_positions, indent=2)}")
+            logger.info(f"Generated relative positions for {len(device_positions)} devices")
 
-            # Step 4: Group TRACKED devices by area/room
+            # Process the positions and prepare for room generation
             device_coords_by_area = {}
-            logger.debug(f"Grouping {len(relative_positions)} relative positions by area...")
-            logger.debug(f"Area predictions available for devices: {list(area_predictions.keys())}")
 
+            # Skip specific entities to exclude from the tracked devices list
+            skip_entities = set()
+            for entity_id, pos_data in anchor_positions.items():
+                if pos_data.get('is_reference', False):
+                    skip_entities.add(entity_id)
+
+            # Process all device positions
             tracked_device_count = 0
-            scanner_or_ref_count = 0
-            devices_without_area = 0
-            devices_added_to_area = 0
+            excluded_count = len(skip_entities)
+            no_area_count = 0
+            device_count_by_area = {}
 
-            for device_id, coords in relative_positions.items():
-                logger.debug(f"Processing entity: '{device_id}'")
-                if device_id.startswith('scanner_') or device_id.startswith('reference_point_'):
-                    logger.debug(f"  Skipping '{device_id}' (scanner/reference point).")
-                    scanner_or_ref_count += 1
+            # Get recent area predictions for these devices
+            from server.db import get_recent_area_predictions
+            area_predictions = get_recent_area_predictions()
+            logger.debug(f"Found {len(area_predictions)} recent area predictions")
+
+            # Process device positions and assign them to areas
+            for device_id, coords in device_positions.items():
+                tracked_device_count += 1
+
+                # Skip if this is in our exclude list
+                if device_id in skip_entities:
                     continue
 
-                tracked_device_count += 1
+                # Get the area prediction for this device
                 area_id = area_predictions.get(device_id)
 
+                # If we have an area prediction, add the device to the area
                 if area_id:
-                    logger.debug(f"  Device '{device_id}' kept. Predicted area: '{area_id}'")
                     if area_id not in device_coords_by_area:
                         device_coords_by_area[area_id] = []
-                    device_coords_by_area[area_id].append({
-                        'device_id': device_id,
+                        device_count_by_area[area_id] = 0
+
+                    # Add the device coordinates to this area
+                    device_data = {
                         'x': coords.get('x', 0),
                         'y': coords.get('y', 0),
-                        'z': coords.get('z', 0)
-                    })
-                    devices_added_to_area += 1
+                        'z': coords.get('z', 0),
+                        'device_id': device_id
+                    }
+                    device_coords_by_area[area_id].append(device_data)
+                    device_count_by_area[area_id] += 1
                 else:
-                    logger.debug(f"  Device '{device_id}' kept, but has no area prediction.")
-                    devices_without_area += 1
+                    no_area_count += 1
 
-            logger.info(f"Processed {len(relative_positions)} total entities from MDS.")
-            logger.info(f"  Skipped {scanner_or_ref_count} scanners/reference points.")
+            logger.info(f"Processed {tracked_device_count + excluded_count} total entities from MDS.")
+            logger.info(f"  Skipped {excluded_count} scanners/reference points.")
             logger.info(f"  Considered {tracked_device_count} as potential tracked devices.")
-            logger.info(f"  {devices_without_area} tracked devices had no area prediction.")
-            logger.info(f"  {devices_added_to_area} tracked devices were added to {len(device_coords_by_area)} areas.")
-            logger.debug(f"Device Coordinates Grouped by Area: {json.dumps(device_coords_by_area, indent=2)}")
+            logger.info(f"  {no_area_count} tracked devices had no area prediction.")
 
-            logger.debug("--- Final device counts per area for room generation --- ")
-            for area, devices in device_coords_by_area.items():
-                 logger.debug(f"  Area '{area}': {len(devices)} devices")
-            if not device_coords_by_area:
-                 logger.warning("No devices were successfully grouped into areas with coordinates.")
+            # Calculate devices with area predictions
+            devices_with_area = tracked_device_count - no_area_count
+            logger.info(f"  {devices_with_area} tracked devices were added to {len(device_coords_by_area)} areas.")
 
-            # Step 5: Generate rooms from points
-            rooms = self.ai_processor.generate_rooms_from_points(device_coords_by_area)
-
-            # Step 6: Generate walls between rooms
+            # Fetch all Home Assistant areas to ensure we include even areas without devices
             try:
-                walls = self.ai_processor.generate_walls_between_rooms(rooms)
-                logger.info(f"Generated {len(walls)} walls")
+                # Use the already initialized HA client instead of creating a new one
+                all_areas = self.ha_client.get_areas()
+                logger.info(f"Retrieved {len(all_areas)} areas from Home Assistant")
             except Exception as e:
-                logger.error(f"Failed to generate walls: {e}", exc_info=True)
-                walls = self._generate_basic_walls(rooms)
-                logger.info(f"Generated {len(walls)} basic walls from room bounds")
+                logger.error(f"Error fetching Home Assistant areas: {str(e)}")
+                all_areas = []  # Use empty list instead of None so the empty areas still get processed
 
-            # Step 7: Group rooms into floors
+            # Generate rooms from the grouped points
+            rooms = self.ai_processor.generate_rooms_from_points(device_coords_by_area, all_areas)
+            if not rooms:
+                logger.error("Failed to generate rooms from points")
+                return False
+
+            # Generate walls between rooms
+            walls = self.ai_processor.generate_walls(rooms)
+            logger.info(f"Generated {len(walls)} walls")
+
+            # Group rooms into floors
             floors = self._group_rooms_into_floors(rooms)
+            logger.info(f"Grouped {len(rooms)} rooms into {len(floors)} floors")
 
-            # Step 8: Predict objects (furniture, fixtures) in rooms
-            try:
-                objects = self.ai_processor.predict_objects(rooms)
-                logger.info(f"Predicted {len(objects)} objects")
-            except Exception as e:
-                logger.error(f"Failed to predict objects: {e}", exc_info=True)
-                objects = []
+            # Predict objects (furniture, fixtures, etc.) for each room
+            objects = self.ai_processor.predict_objects(rooms)
+            logger.info(f"Predicted {len(objects)} objects")
 
-            # Step 9: Create the final blueprint
+            # Build the complete blueprint
             blueprint = {
-                'version': '1.0',
                 'generated_at': datetime.now().isoformat(),
                 'rooms': rooms,
                 'walls': walls,
                 'floors': floors,
-                'objects': objects,
-                'metadata': {
-                    'room_count': len(rooms),
-                    'device_count': len(relative_positions),
-                    'wall_count': len(walls),
-                    'object_count': len(objects),
-                    'generation_time_seconds': (datetime.now() - job_start_time).total_seconds()
-                }
+                'objects': objects
             }
 
-            # Save the blueprint
-            if self._save_blueprint(blueprint):
-                self.latest_generated_blueprint = blueprint
-                self.status = {"state": "completed", "progress": 1.0}
-                logger.info("Blueprint generation completed successfully")
-                return True
+            # Save to database
+            from server.db import save_blueprint_to_sqlite
+            success = save_blueprint_to_sqlite(blueprint)
+            if success:
+                logger.info(f"Successfully saved blueprint with {len(rooms)} rooms")
             else:
-                logger.error("Failed to save blueprint")
-                self.status = {"state": "failed", "progress": 0.0}
-                return False
+                logger.error("Failed to save blueprint to database")
+
+            logger.info("Blueprint generation completed successfully")
+            return True
 
         except Exception as e:
-            logger.error(f"Error generating blueprint: {str(e)}", exc_info=True)
-            self.status = {"state": "failed", "progress": 0.0}
+            logger.error(f"Blueprint generation failed: {str(e)}", exc_info=True)
             return False
 
     def _generate_basic_walls(self, rooms: List[Dict]) -> List[Dict]:
