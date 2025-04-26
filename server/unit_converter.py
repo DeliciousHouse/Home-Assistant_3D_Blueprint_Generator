@@ -40,7 +40,7 @@ def meters_to_feet_inches(meters: float) -> Tuple[int, float]:
     total_inches = meters * METERS_TO_INCHES
     feet = int(total_inches // 12)
     inches = total_inches % 12
-    return feet, inches
+    return (feet, inches)
 
 def feet_inches_to_meters(feet: int, inches: float) -> float:
     """Convert feet and inches to meters."""

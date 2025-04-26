@@ -332,15 +332,15 @@ class AIProcessor:
             # Create list of all unique device IDs
             all_devices = set()
             for reading in distance_data:
-                # Handle different possible key formats in the data
+                # Check for the correct key format based on database schema
+                # The data should have tracked_device_id and scanner_id
                 tracked_device_id = reading.get('tracked_device_id')
                 scanner_id = reading.get('scanner_id')
 
-                # If the data follows the expected format
                 if tracked_device_id and scanner_id:
                     all_devices.add(tracked_device_id)
                     all_devices.add(scanner_id)
-                # Try alternative key names
+                # Fallback for alternative key names if needed
                 elif 'device_id' in reading and 'other_id' in reading:
                     all_devices.add(reading['device_id'])
                     all_devices.add(reading['other_id'])
@@ -352,7 +352,7 @@ class AIProcessor:
             n_devices = len(device_list)
 
             if n_devices < 3:
-                logger.error("Need at least 3 devices for relative positioning")
+                logger.error(f"Need at least 3 devices for relative positioning (found {n_devices})")
                 return {}
 
             logger.info(f"Creating distance matrix for {n_devices} devices")
@@ -367,7 +367,7 @@ class AIProcessor:
             # Fill distance matrix with known measurements
             for reading in distance_data:
                 try:
-                    # Handle different possible key formats
+                    # Get the device IDs using the correct keys
                     if 'tracked_device_id' in reading and 'scanner_id' in reading:
                         device_a = reading['tracked_device_id']
                         device_b = reading['scanner_id']
@@ -479,18 +479,6 @@ class AIProcessor:
                 height = 2.4  # Default ceiling height
                 area = width * length
 
-                # Get device IDs - handle different possible field names
-                device_list = []
-                for device in devices:
-                    if 'device_id' in device:
-                        device_list.append(device['device_id'])
-                    elif 'tracked_device_id' in device:
-                        device_list.append(device['tracked_device_id'])
-                    else:
-                        # If no valid ID field, use unknown placeholder
-                        logger.warning(f"Device in area {area_id} has no recognizable ID field")
-                        device_list.append(f"unknown_{len(device_list)}")
-
                 # Create room definition
                 room = {
                     'id': f"room_{room_id}",
@@ -508,7 +496,7 @@ class AIProcessor:
                         'area': area
                     },
                     'floor': 0,  # Default floor
-                    'devices': device_list
+                    'devices': [d.get('device_id', 'unknown') for d in devices if 'device_id' in d]
                 }
 
                 rooms.append(room)
@@ -517,7 +505,7 @@ class AIProcessor:
                 logger.info(f"Generated room for {area_id} with {len(devices)} devices")
 
             except Exception as e:
-                logger.error(f"Error generating room for area {area_id}: {str(e)}", exc_info=True)
+                logger.error(f"Error generating room for area {area_id}: {str(e)}")
 
         logger.info(f"Successfully generated {len(rooms)} rooms")
         return rooms

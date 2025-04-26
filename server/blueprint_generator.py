@@ -140,8 +140,7 @@ class BlueprintGenerator:
                     if area_id not in device_coords_by_area:
                         device_coords_by_area[area_id] = []
                     device_coords_by_area[area_id].append({
-                        'device_id': device_id,  # Ensure consistent key name
-                        'tracked_device_id': device_id,  # Add both key formats for compatibility
+                        'device_id': device_id,
                         'x': coords.get('x', 0),
                         'y': coords.get('y', 0),
                         'z': coords.get('z', 0)
@@ -166,7 +165,6 @@ class BlueprintGenerator:
 
             # Step 5: Generate rooms from points
             rooms = self.ai_processor.generate_rooms_from_points(device_coords_by_area)
-            logger.info(f"Generated {len(rooms)} rooms from device coordinates")
 
             # Step 6: Generate walls between rooms
             try:
