@@ -32,7 +32,7 @@
       "area_window_minutes": 10,
       "mds_dimensions": 2,
       "use_adjacency": true,
-      "min_points_per_room": 1
+      "min_points_per_room": 0
   },
    "ai_settings": {
       "enable_refinement": true
