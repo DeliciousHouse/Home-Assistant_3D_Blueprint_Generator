@@ -21,7 +21,7 @@ let showDimensions = false; // Option to display room dimensions
 let selectedRoom = null; // Track selected room for highlighting
 let hoveredObject = null; // Track hovered object for tooltips
 let viewMode = 'standard'; // standard, measurement, or furniture
-let unitSystem = 'metric'; // Default to metric ('metric' or 'imperial')
+let unitSystem = 'imperial'; // Default to metric ('metric' or 'imperial')
 
 // Unit conversion utilities
 const METERS_TO_FEET = 3.28084;
@@ -215,25 +215,13 @@ function setupEventListeners() {
     const unitSystemToggle = document.getElementById('toggle-unit-system');
     if (unitSystemToggle) {
         unitSystemToggle.addEventListener('click', () => {
-            // Toggle between 'metric' and 'imperial'
-            unitSystem = unitSystem === 'metric' ? 'imperial' : 'metric';
-
-            // Update button text
+            unitSystem = (unitSystem === 'metric') ? 'imperial' : 'metric';
             const unitDisplay = document.getElementById('unit-display');
             if (unitDisplay) {
-                unitDisplay.textContent = unitSystem.charAt(0).toUpperCase() + unitSystem.slice(1);
+                unitDisplay.textContent = unitSystem === 'metric' ? 'Metric' : 'Imperial';
             }
-
-            // Update UI
-            unitSystemToggle.classList.toggle('active', unitSystem === 'imperial');
-
-            // Re-render with new units
-            renderBlueprint(blueprint);
-
-            // If a room is selected, update its details panel
-            if (selectedRoom) {
-                showRoomDetails(selectedRoom);
-            }
+            renderBlueprint(blueprint); // Re-render with new units
+            if (selectedRoom) showRoomDetails(selectedRoom);
         });
     }
 

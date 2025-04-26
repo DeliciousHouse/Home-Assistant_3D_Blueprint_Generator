@@ -13,7 +13,7 @@
   },
   "blueprint_validation": {
     "min_room_area": 4,
-    "max_room_area": 100,
+    "max_room_area": 20,
     "min_room_dimension": 1.5,
     "max_room_dimension": 15,
     "min_wall_thickness": 0.1,
@@ -40,5 +40,5 @@
    "room_detection": {
       "use_areas": true
    },
-   "log_level": "info"
+   "log_level": "debug"
 }
