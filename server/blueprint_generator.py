@@ -406,11 +406,12 @@ def ensure_reference_positions():
 
     logger.info("Insufficient reference positions found, creating initial reference points")
 
+    # Updated positions - master_bedroom now correctly positioned to the LEFT of kitchen
     default_positions = {
         "reference_point_1": {"x": 0, "y": 0, "z": 0, "area_id": "lounge"},
         "reference_point_2": {"x": 5, "y": 0, "z": 0, "area_id": "kitchen"},
-        "reference_point_3": {"x": 0, "y": 5, "z": 0, "area_id": "master_bedroom"},
-        "reference_point_4": {"x": 5, "y": 5, "z": 0, "area_id": "office"}
+        "reference_point_3": {"x": -5, "y": 0, "z": 0, "area_id": "master_bedroom"},  # Changed position to negative X
+        "reference_point_4": {"x": 0, "y": 5, "z": 0, "area_id": "office"}
     }
 
     for device_id, position in default_positions.items():

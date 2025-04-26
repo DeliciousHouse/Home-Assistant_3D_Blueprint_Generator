@@ -360,11 +360,12 @@ class HAClient:
     def _generate_mock_areas(self) -> List[Dict[str, Any]]:
         """Generate mock areas for offline development."""
         areas = [
-            {"area_id": "living_room", "name": "Living Room"},
+            {"area_id": "lounge", "name": "Living Room"},
             {"area_id": "kitchen", "name": "Kitchen"},
-            {"area_id": "bedroom", "name": "Bedroom"},
+            {"area_id": "master_bedroom", "name": "Master Bedroom"},
             {"area_id": "bathroom", "name": "Bathroom"},
-            {"area_id": "hallway", "name": "Hallway"}
+            {"area_id": "hallway", "name": "Hallway"},
+            {"area_id": "office", "name": "Office"}
         ]
         logger.debug(f"Generated {len(areas)} mock areas for offline mode")
         return areas
@@ -432,11 +433,16 @@ class HAClient:
 
     def _generate_mock_area_predictions(self) -> Dict[str, Optional[str]]:
         """Generate mock area predictions for offline development."""
-        areas = [area["area_id"] for area in self._generate_mock_areas()]
-
-        predictions = {}
-        for device_id in range(1, 4):
-            predictions[f"device_{device_id}"] = random.choice(areas)
+        # Instead of random assignments, use consistent area assignments
+        # to ensure all important areas are represented in the blueprint
+        predictions = {
+            "device_1": "master_bedroom",
+            "device_2": "kitchen",
+            "device_3": "lounge",
+            "device_4": "bathroom",
+            "device_5": "hallway",
+            "device_6": "office"
+        }
 
         logger.debug(f"Generated {len(predictions)} mock area predictions")
         return predictions
