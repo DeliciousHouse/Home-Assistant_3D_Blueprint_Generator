@@ -310,3 +310,96 @@ class AIProcessor:
 
         logger.info(f"Predicted {len(objects)} objects across all rooms")
         return objects
+
+    def run_relative_positioning(self, distance_data: List[Dict], dimensions: int = 2) -> Dict[str, Dict[str, float]]:
+        """
+        Uses Multidimensional Scaling (MDS) to compute relative positions of devices from distance data.
+
+        Parameters:
+            distance_data: List of distance readings between devices
+            dimensions: Number of dimensions for the output (usually 2 or 3)
+
+        Returns:
+            Dictionary mapping device IDs to their coordinates {device_id: {x: val, y: val, z: val}}
+        """
+        try:
+            logger.info(f"Running relative positioning using {len(distance_data)} distance measurements")
+
+            if not distance_data:
+                logger.error("No distance data provided for relative positioning")
+                return {}
+
+            # Create list of all unique device IDs
+            all_devices = set()
+            for reading in distance_data:
+                all_devices.add(reading['device_id'])
+                all_devices.add(reading['other_id'])
+
+            # Sort them for consistent ordering
+            device_list = sorted(list(all_devices))
+            n_devices = len(device_list)
+
+            if n_devices < 3:
+                logger.error("Need at least 3 devices for relative positioning")
+                return {}
+
+            logger.info(f"Creating distance matrix for {n_devices} devices")
+
+            # Create an empty distance matrix (fill with large values initially)
+            max_distance = 50  # A large default distance
+            distance_matrix = np.ones((n_devices, n_devices)) * max_distance
+
+            # Fill in the diagonal with zeros (distance to self is 0)
+            np.fill_diagonal(distance_matrix, 0)
+
+            # Fill distance matrix with known measurements
+            for reading in distance_data:
+                try:
+                    device_idx = device_list.index(reading['device_id'])
+                    other_idx = device_list.index(reading['other_id'])
+
+                    # Get distance in meters
+                    distance = float(reading['distance'])
+
+                    # Set the distance in both directions (symmetric matrix)
+                    distance_matrix[device_idx, other_idx] = distance
+                    distance_matrix[other_idx, device_idx] = distance
+                except (ValueError, KeyError) as e:
+                    logger.warning(f"Error processing distance reading: {e}")
+                    continue
+
+            # Apply MDS to get relative positions
+            mds = MDS(n_components=dimensions, dissimilarity='precomputed',
+                      random_state=42, normalized_stress='auto')
+
+            try:
+                positions = mds.fit_transform(distance_matrix)
+                logger.info("MDS calculation successful")
+            except Exception as e:
+                logger.error(f"MDS calculation failed: {e}")
+                # Fallback to simpler approach
+                positions = np.random.rand(n_devices, dimensions) * 10
+                logger.warning("Using random positions as fallback")
+
+            # Create output dictionary mapping device IDs to coordinates
+            result = {}
+            for i, device_id in enumerate(device_list):
+                if dimensions == 2:
+                    result[device_id] = {
+                        'x': float(positions[i, 0]),
+                        'y': float(positions[i, 1]),
+                        'z': 0.0
+                    }
+                else:  # 3D
+                    result[device_id] = {
+                        'x': float(positions[i, 0]),
+                        'y': float(positions[i, 1]),
+                        'z': float(positions[i, 2]) if dimensions > 2 else 0.0
+                    }
+
+            logger.info(f"Relative positioning completed successfully for {len(result)} devices")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in relative positioning: {str(e)}", exc_info=True)
+            return {}

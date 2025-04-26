@@ -87,7 +87,46 @@ function setupEventListeners() {
     // Button event listeners
     const generateBtn = document.getElementById('generate-btn');
     if (generateBtn) {
-        generateBtn.addEventListener('click', generateBlueprint);
+        generateBtn.addEventListener('click', function() {
+            // Show loading spinner
+            document.getElementById('loading-spinner').style.display = 'flex';
+
+            // Add status message
+            showStatus('Generating blueprint... This may take a minute.');
+
+            // Make API call to generate a new blueprint
+            fetch('/api/blueprint/generate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'  // Ensure this header is set correctly
+                },
+                body: JSON.stringify({})  // Empty JSON object as body
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Hide loading spinner
+                document.getElementById('loading-spinner').style.display = 'none';
+
+                // Handle success
+                showStatus('Blueprint generated successfully!', 'success');
+
+                // Load the new blueprint
+                loadBlueprint();
+            })
+            .catch(error => {
+                // Hide loading spinner
+                document.getElementById('loading-spinner').style.display = 'none';
+
+                // Show error message
+                console.error('Error generating blueprint:', error);
+                showStatus('Error generating blueprint. Please try again.', 'error');
+            });
+        });
     }
 
     // Floor navigation
