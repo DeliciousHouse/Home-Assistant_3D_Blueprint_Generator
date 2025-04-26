@@ -449,6 +449,24 @@ class AIProcessor:
         rooms = []
         room_id = 1
 
+        # Create floor mapping based on area name patterns
+        # Floor 0 = outside areas, Floor 1 = main/ground floor, Floor 2 = upstairs
+        floor_mapping = {
+            # Default floor assignments based on area name patterns
+            'outside': 0,
+            'balcony': 0,
+            'patio': 0,
+            'garden': 0,
+            'yard': 0,
+            'garage': 0,
+            'driveway': 0,
+            'upstairs': 2,
+            'upper': 2,
+            'second': 2,
+            'attic': 2,
+            'loft': 2,
+        }
+
         for area_id, devices in device_coords_by_area.items():
             try:
                 # Skip areas with too few points based on config
@@ -484,7 +502,7 @@ class AIProcessor:
                 else:
                     # With 1-2 points, generate a reasonable sized room centered on the point(s)
                     # Default room size (minimum dimensions to create a usable room)
-                    default_size = max(min_room_dimension, 2.0)  # At least 2 meters or the min dimension
+                    default_size = max(min_room_dimension, 2.5)  # At least 2.5 meters (slightly bigger than previous)
 
                     # Set bounds around the center
                     min_x = center_x - default_size/2
@@ -514,6 +532,16 @@ class AIProcessor:
                 # Recalculate area with adjusted dimensions
                 area = width * length
 
+                # Determine floor number based on area name
+                area_id_lower = area_id.lower()
+                floor = 1  # Default to ground floor/main floor
+
+                # Check if the area name contains any known floor indicators
+                for name_pattern, floor_num in floor_mapping.items():
+                    if name_pattern in area_id_lower:
+                        floor = floor_num
+                        break
+
                 # Create room definition
                 room = {
                     'id': f"room_{room_id}",
@@ -530,21 +558,14 @@ class AIProcessor:
                         'height': height,
                         'area': area
                     },
-                    'floor': 0,  # Default floor
+                    'floor': floor,  # Use our determined floor number
                     'devices': [d.get('device_id', 'unknown') for d in devices if 'device_id' in d]
                 }
-
-                # Try to determine floor level from z-coordinates
-                if len(z_values) > 0:
-                    avg_z = sum(z_values) / len(z_values)
-                    # Rough estimate: floor = z / 3 (assuming ~3m per floor)
-                    estimated_floor = round(avg_z / 3)
-                    room['floor'] = estimated_floor
 
                 rooms.append(room)
                 room_id += 1
 
-                logger.info(f"Generated room for {area_id} with {len(devices)} devices")
+                logger.info(f"Generated room for {area_id} with {len(devices)} devices on floor {floor}")
 
             except Exception as e:
                 logger.error(f"Error generating room for area {area_id}: {str(e)}")

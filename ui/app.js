@@ -921,10 +921,10 @@ function drawMeasurementGrid() {
 function updateFloorIndicator() {
     const floorIndicator = document.getElementById('current-floor');
     if (floorIndicator) {
-        // Convert numeric floor to human-friendly name
+        // Convert numeric floor to human-friendly name based on Home Assistant floor mappings
         let floorName;
         if (currentFloor === 0) {
-            floorName = "Ground Floor";
+            floorName = "Outside";
         } else if (currentFloor === 1) {
             floorName = "First Floor";
         } else if (currentFloor === 2) {
@@ -932,26 +932,10 @@ function updateFloorIndicator() {
         } else if (currentFloor < 0) {
             floorName = `Basement ${Math.abs(currentFloor)}`;
         } else {
-            floorName = `${currentFloor.toString()}${getOrdinalSuffix(currentFloor)} Floor`;
+            floorName = `Floor ${currentFloor}`;
         }
         floorIndicator.textContent = floorName;
     }
-}
-
-// Helper function to get ordinal suffix (1st, 2nd, 3rd, etc.)
-function getOrdinalSuffix(num) {
-    const j = num % 10;
-    const k = num % 100;
-    if (j === 1 && k !== 11) {
-        return "st";
-    }
-    if (j === 2 && k !== 12) {
-        return "nd";
-    }
-    if (j === 3 && k !== 13) {
-        return "rd";
-    }
-    return "th";
 }
 
 function changeFloor(delta) {
