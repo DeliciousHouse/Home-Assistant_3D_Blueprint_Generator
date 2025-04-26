@@ -438,14 +438,22 @@ class AIProcessor:
         """
         logger.info(f"Generating rooms from points in {len(device_coords_by_area)} areas")
 
+        # Get config settings
+        min_room_area = self.config.get('blueprint_validation', {}).get('min_room_area', 4)
+        min_room_dimension = self.config.get('blueprint_validation', {}).get('min_room_dimension', 1.5)
+
+        # Get the minimum points per room from config
+        min_points_per_room = self.config.get('generation_settings', {}).get('min_points_per_room', 1)
+        logger.debug(f"Using min_points_per_room={min_points_per_room} from configuration")
+
         rooms = []
         room_id = 1
 
         for area_id, devices in device_coords_by_area.items():
             try:
-                # Skip areas with too few points
-                if len(devices) < 3:
-                    logger.warning(f"Area {area_id} has only {len(devices)} points, which is too few for room generation")
+                # Skip areas with too few points based on config
+                if len(devices) < min_points_per_room:
+                    logger.warning(f"Area {area_id} has only {len(devices)} points, which is less than min_points_per_room={min_points_per_room}")
                     continue
 
                 # Extract x,y coordinates from devices
@@ -460,23 +468,50 @@ class AIProcessor:
                 center_z = sum(z_values) / len(z_values) if z_values else 0
 
                 # Generate room bounds
-                # Option 1: Simple min/max bounds
-                min_x = np.min(points[:, 0])
-                max_x = np.max(points[:, 0])
-                min_y = np.min(points[:, 1])
-                max_y = np.max(points[:, 1])
+                if len(devices) >= 3:
+                    # With 3+ points, use the actual points to determine bounds
+                    min_x = np.min(points[:, 0])
+                    max_x = np.max(points[:, 0])
+                    min_y = np.min(points[:, 1])
+                    max_y = np.max(points[:, 1])
 
-                # Add some padding to ensure devices aren't exactly at the walls
-                padding = 0.5  # 50cm of padding
-                min_x -= padding
-                min_y -= padding
-                max_x += padding
-                max_y += padding
+                    # Add some padding to ensure devices aren't exactly at the walls
+                    padding = 0.5  # 50cm of padding
+                    min_x -= padding
+                    min_y -= padding
+                    max_x += padding
+                    max_y += padding
+                else:
+                    # With 1-2 points, generate a reasonable sized room centered on the point(s)
+                    # Default room size (minimum dimensions to create a usable room)
+                    default_size = max(min_room_dimension, 2.0)  # At least 2 meters or the min dimension
+
+                    # Set bounds around the center
+                    min_x = center_x - default_size/2
+                    max_x = center_x + default_size/2
+                    min_y = center_y - default_size/2
+                    max_y = center_y + default_size/2
 
                 # Calculate room dimensions
                 width = max_x - min_x
                 length = max_y - min_y
                 height = 2.4  # Default ceiling height
+                area = width * length
+
+                # Ensure minimum room dimensions
+                if width < min_room_dimension:
+                    diff = min_room_dimension - width
+                    min_x -= diff/2
+                    max_x += diff/2
+                    width = min_room_dimension
+
+                if length < min_room_dimension:
+                    diff = min_room_dimension - length
+                    min_y -= diff/2
+                    max_y += diff/2
+                    length = min_room_dimension
+
+                # Recalculate area with adjusted dimensions
                 area = width * length
 
                 # Create room definition
@@ -498,6 +533,13 @@ class AIProcessor:
                     'floor': 0,  # Default floor
                     'devices': [d.get('device_id', 'unknown') for d in devices if 'device_id' in d]
                 }
+
+                # Try to determine floor level from z-coordinates
+                if len(z_values) > 0:
+                    avg_z = sum(z_values) / len(z_values)
+                    # Rough estimate: floor = z / 3 (assuming ~3m per floor)
+                    estimated_floor = round(avg_z / 3)
+                    room['floor'] = estimated_floor
 
                 rooms.append(room)
                 room_id += 1
