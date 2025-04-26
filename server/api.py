@@ -40,13 +40,21 @@ ha_client = HomeAssistantClient()
 @app.route('/')
 def index():
     """Serve the main UI page or redirect to it."""
-    # Redirect to index.html in the ui directory
-    return redirect('/index.html')
+    # Check if we're accessed via ingress or direct URL
+    # Ingress requests typically have a different path structure with multi-level paths
+    if request.path == '/':
+        return send_from_directory(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ui'), 'index.html')
+    else:
+        # If this is a more complex path, redirect to the root
+        return redirect('/')
 
 @app.route('/<path:filename>')
 def serve_static(filename):
     """Serve static files from the UI directory."""
     ui_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ui')
+    # Handle the case where index.html is explicitly requested
+    if filename == 'index.html':
+        return send_from_directory(ui_path, filename)
     return send_from_directory(ui_path, filename)
 
 @app.route('/api/health', methods=['GET'])
