@@ -75,6 +75,26 @@
             font-weight: bold;
             margin-right: 10px;
         }
+        #unit-toggle {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 5px;
+            z-index: 100;
+            cursor: pointer;
+            border: 1px solid #555;
+            display: flex;
+            align-items: center;
+        }
+        #unit-toggle:hover {
+            background: rgba(50, 50, 50, 0.8);
+        }
+        #unit-toggle-icon {
+            margin-right: 5px;
+        }
     </style>
 </head>
 <body>
@@ -89,6 +109,10 @@
         <!-- Floor buttons will be generated here -->
     </div>
     <div id="object-info"></div>
+    <div id="unit-toggle">
+        <span id="unit-toggle-icon">📏</span>
+        <span id="current-unit">Metric (m)</span>
+    </div>
 
     <script>
         // Blueprint data from server
@@ -100,6 +124,47 @@
             objects: []
         };
         let selectedObject = null;
+        let unitSystem = 'metric'; // Default unit system
+
+        // Unit conversion constants
+        const METERS_TO_FEET = 3.28084;
+        const SQUARE_METERS_TO_SQUARE_FEET = 10.7639;
+
+        // Unit conversion utility functions
+        function metersToFeet(meters) {
+            return meters * METERS_TO_FEET;
+        }
+
+        function squareMetersToSquareFeet(squareMeters) {
+            return squareMeters * SQUARE_METERS_TO_SQUARE_FEET;
+        }
+
+        function formatDistance(meters) {
+            if (unitSystem === 'metric') {
+                return `${meters.toFixed(2)} m`;
+            } else {
+                const feet = metersToFeet(meters);
+                if (feet < 1) {
+                    return `${(feet * 12).toFixed(1)} in`;
+                }
+                const wholeFeet = Math.floor(feet);
+                const inches = Math.round((feet - wholeFeet) * 12);
+                if (inches === 0) {
+                    return `${wholeFeet} ft`;
+                } else {
+                    return `${wholeFeet}' ${inches}"`;
+                }
+            }
+        }
+
+        function formatArea(squareMeters) {
+            if (unitSystem === 'metric') {
+                return `${squareMeters.toFixed(2)} m²`;
+            } else {
+                const squareFeet = squareMetersToSquareFeet(squareMeters);
+                return `${squareFeet.toFixed(2)} ft²`;
+            }
+        }
 
         // Standard material colors
         const COLORS = {
@@ -203,6 +268,18 @@
         // Raycaster for object selection
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
+
+        // Set up unit toggle
+        document.getElementById('unit-toggle').addEventListener('click', function() {
+            unitSystem = unitSystem === 'metric' ? 'imperial' : 'metric';
+            document.getElementById('current-unit').textContent =
+                unitSystem === 'metric' ? 'Metric (m)' : 'Imperial (ft)';
+
+            // Update any displayed information
+            if (selectedObject) {
+                showObjectInfo(selectedObject);
+            }
+        });
 
         // Main rendering function
         renderBlueprint();
@@ -454,7 +531,7 @@
 
                 const width = obj.dimensions.width;
                 const height = obj.dimensions.height;
-                const length = obj.dimensions.length;
+                const length = obj.dimensions.depth || obj.dimensions.length;
 
                 // Create object based on type
                 let objectGeometry;
@@ -497,6 +574,11 @@
                 const z = obj.position.y;
 
                 objectMesh.position.set(x, y, z);
+
+                // Apply rotation if specified
+                if (obj.rotation) {
+                    objectMesh.rotation.y = obj.rotation * Math.PI / 180;
+                }
 
                 scene.add(objectMesh);
                 meshes.objects.push(objectMesh);
@@ -560,29 +642,29 @@
                     <h3>Room: ${data.name || data.id}</h3>
                     <p>Type: ${data.type || 'Standard'}</p>
                     <p>Floor: ${data.floor || 'Ground'}</p>
-                    <p>Dimensions: ${data.dimensions.width.toFixed(1)}m ×
-                                  ${data.dimensions.length.toFixed(1)}m ×
-                                  ${data.dimensions.height.toFixed(1)}m</p>
-                    <p>Area: ${(data.dimensions.width * data.dimensions.length).toFixed(2)} m²</p>
+                    <p>Dimensions: ${formatDistance(data.dimensions.width)} ×
+                                  ${formatDistance(data.dimensions.length)} ×
+                                  ${formatDistance(data.dimensions.height)}</p>
+                    <p>Area: ${formatArea(data.dimensions.width * data.dimensions.length)}</p>
                 `;
             } else if (object.userData.type === 'object') {
                 html = `
                     <h3>Object: ${data.type.replace('_', ' ')}</h3>
                     <p>Room: ${data.room_id}</p>
-                    <p>Size: ${data.dimensions.width.toFixed(1)}m ×
-                              ${data.dimensions.length.toFixed(1)}m ×
-                              ${data.dimensions.height.toFixed(1)}m</p>
-                    <p>Position: (${data.position.x.toFixed(1)},
-                                 ${data.position.y.toFixed(1)},
-                                 ${data.position.z ? data.position.z.toFixed(1) : '0.0'})</p>
+                    <p>Size: ${formatDistance(data.dimensions.width)} ×
+                              ${formatDistance(data.dimensions.depth || data.dimensions.length)} ×
+                              ${formatDistance(data.dimensions.height)}</p>
+                    <p>Position: (${formatDistance(data.position.x)},
+                                 ${formatDistance(data.position.y)},
+                                 ${formatDistance(data.position.z || 0)})</p>
                 `;
             } else if (object.userData.type === 'wall') {
                 html = `
                     <h3>Wall</h3>
                     <p>ID: ${data.id}</p>
-                    <p>Height: ${data.height ? data.height.toFixed(1) : '2.5'}m</p>
-                    <p>Thickness: ${data.thickness ? data.thickness.toFixed(2) : '0.15'}m</p>
-                    <p>Length: ${calculateDistance(data.start, data.end).toFixed(2)}m</p>
+                    <p>Height: ${formatDistance(data.height || 2.5)}</p>
+                    <p>Thickness: ${formatDistance(data.thickness || 0.15)}</p>
+                    <p>Length: ${formatDistance(calculateDistance(data.start, data.end))}</p>
                 `;
             }
 

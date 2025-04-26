@@ -21,6 +21,48 @@ let showDimensions = false; // Option to display room dimensions
 let selectedRoom = null; // Track selected room for highlighting
 let hoveredObject = null; // Track hovered object for tooltips
 let viewMode = 'standard'; // standard, measurement, or furniture
+let unitSystem = 'metric'; // Default to metric ('metric' or 'imperial')
+
+// Unit conversion utilities
+const METERS_TO_FEET = 3.28084;
+const SQUARE_METERS_TO_SQUARE_FEET = 10.7639;
+
+function metersToFeet(meters) {
+    return meters * METERS_TO_FEET;
+}
+
+function squareMetersToSquareFeet(squareMeters) {
+    return squareMeters * SQUARE_METERS_TO_SQUARE_FEET;
+}
+
+function formatDistance(meters) {
+    if (unitSystem === 'metric') {
+        return `${meters.toFixed(1)}m`;
+    } else {
+        const feet = metersToFeet(meters);
+        // For values less than 1 foot, show in inches
+        if (feet < 1) {
+            return `${(feet * 12).toFixed(1)}"`;
+        }
+        // Format as feet and inches for more precision
+        const wholeFeet = Math.floor(feet);
+        const inches = Math.round((feet - wholeFeet) * 12);
+        if (inches === 0) {
+            return `${wholeFeet}'`;
+        } else {
+            return `${wholeFeet}'${inches}"`;
+        }
+    }
+}
+
+function formatArea(squareMeters) {
+    if (unitSystem === 'metric') {
+        return `${squareMeters.toFixed(1)}m²`;
+    } else {
+        const squareFeet = squareMetersToSquareFeet(squareMeters);
+        return `${squareFeet.toFixed(1)}ft²`;
+    }
+}
 
 // Constants
 const COLORS = {
@@ -166,6 +208,32 @@ function setupEventListeners() {
             showDimensions = !showDimensions;
             dimensionsToggle.classList.toggle('active', showDimensions);
             renderBlueprint(blueprint);
+        });
+    }
+
+    // Unit system toggle
+    const unitSystemToggle = document.getElementById('toggle-unit-system');
+    if (unitSystemToggle) {
+        unitSystemToggle.addEventListener('click', () => {
+            // Toggle between 'metric' and 'imperial'
+            unitSystem = unitSystem === 'metric' ? 'imperial' : 'metric';
+
+            // Update button text
+            const unitDisplay = document.getElementById('unit-display');
+            if (unitDisplay) {
+                unitDisplay.textContent = unitSystem.charAt(0).toUpperCase() + unitSystem.slice(1);
+            }
+
+            // Update UI
+            unitSystemToggle.classList.toggle('active', unitSystem === 'imperial');
+
+            // Re-render with new units
+            renderBlueprint(blueprint);
+
+            // If a room is selected, update its details panel
+            if (selectedRoom) {
+                showRoomDetails(selectedRoom);
+            }
         });
     }
 
@@ -743,16 +811,16 @@ function drawRoomDimensions(room) {
     const maxY = worldToScreenY(room.bounds.max.y);
 
     // Width dimension
-    const width = room.dimensions.width.toFixed(1) + 'm';
+    const width = formatDistance(room.dimensions.width);
     drawDimensionLine(minX, minY - 15, maxX, minY - 15, width);
 
     // Length dimension
-    const length = room.dimensions.length.toFixed(1) + 'm';
+    const length = formatDistance(room.dimensions.length);
     drawDimensionLine(maxX + 15, minY, maxX + 15, maxY, length);
 
     // Area dimension if available
     if (room.dimensions.area) {
-        const area = room.dimensions.area.toFixed(1) + 'm²';
+        const area = formatArea(room.dimensions.area);
         ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
         ctx.font = '10px Arial';
         const areaTextWidth = ctx.measureText(area).width + 6;
@@ -845,7 +913,7 @@ function drawMeasurementGrid() {
         ctx.stroke();
 
         // Draw measurement label
-        ctx.fillText(worldX.toFixed(1) + 'm', x + 2, 2);
+        ctx.fillText(formatDistance(worldX), x + 2, 2);
     }
 
     // Draw horizontal grid lines with measurements
@@ -858,7 +926,7 @@ function drawMeasurementGrid() {
         ctx.stroke();
 
         // Draw measurement label
-        ctx.fillText(worldY.toFixed(1) + 'm', 2, y + 2);
+        ctx.fillText(formatDistance(worldY), 2, y + 2);
     }
 }
 
@@ -1098,7 +1166,7 @@ function handleCanvasClick(e) {
 
     // If in measurement mode, display coordinates
     if (viewMode === 'measurement') {
-        displayStatusMessage(`Position: (${worldX.toFixed(2)}m, ${worldY.toFixed(2)}m)`);
+        displayStatusMessage(`Position: (${formatDistance(worldX)}, ${formatDistance(worldY)})`);
     }
 }
 
@@ -1152,9 +1220,9 @@ function showRoomDetails(room) {
     let roomName = room.name || (room.area_id ? room.area_id.replace(/_/g, ' ') : 'Room');
     roomName = roomName.charAt(0).toUpperCase() + roomName.slice(1); // Capitalize
 
-    const width = room.dimensions ? room.dimensions.width.toFixed(1) + 'm' : 'N/A';
-    const length = room.dimensions ? room.dimensions.length.toFixed(1) + 'm' : 'N/A';
-    const area = room.dimensions ? room.dimensions.area.toFixed(1) + 'm²' : 'N/A';
+    const width = room.dimensions ? formatDistance(room.dimensions.width) : 'N/A';
+    const length = room.dimensions ? formatDistance(room.dimensions.length) : 'N/A';
+    const area = room.dimensions ? formatArea(room.dimensions.area) : 'N/A';
 
     // Populate details panel
     detailsPanel.innerHTML = `
