@@ -44,8 +44,8 @@ from .db import (
 
 from .config_loader import load_config
 
-# Define model directory path
-MODEL_DIR = Path("/data/models")
+# Define model directory path - using relative path inside the project instead of /data
+MODEL_DIR = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'models')))
 
 logger = logging.getLogger(__name__)
 

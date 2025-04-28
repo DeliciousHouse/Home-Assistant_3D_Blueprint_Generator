@@ -19,21 +19,18 @@ except ImportError:
     try:
         from config_loader import load_config
     except ImportError:
-        def load_config(path=None): return {}
-        logger = logging.getLogger(__name__)
-        logger.warning("Could not import config_loader. Using empty config.")
+        def load_config(path=None):
+            logger = logging.getLogger(__name__)
+            logger.warning("Could not import config_loader. Using empty config.")
+            return {}
 
 logger = logging.getLogger(__name__)
 app_config = load_config()
 
-# Update the default path to use the proper Home Assistant data directory
-# /data is the persistent data directory in Home Assistant add-ons
-# Fallback to /config for compatibility with previous versions
-SQLITE_DB_PATH = os.environ.get('DB_PATH', '/data/blueprint_generator_db')
-if not os.path.exists(os.path.dirname(SQLITE_DB_PATH)):
-    fallback_path = '/config/home_generative_agent_db'
-    logger.warning(f"Primary DB path {SQLITE_DB_PATH} not available. Falling back to {fallback_path}")
-    SQLITE_DB_PATH = fallback_path
+# Update the path to use a local project directory instead of system directories
+PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+SQLITE_DB_PATH = os.path.join(PROJECT_DIR, 'data', 'blueprint_generator_db')
+os.makedirs(os.path.dirname(SQLITE_DB_PATH), exist_ok=True)
 
 logger.info(f"Using SQLite database path: {SQLITE_DB_PATH}")
 
