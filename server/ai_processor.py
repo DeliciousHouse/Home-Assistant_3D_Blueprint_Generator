@@ -426,6 +426,117 @@ class AIProcessor:
             logger.error(f"Error in relative positioning: {str(e)}", exc_info=True)
             return {}
 
+    def get_relative_positions(self) -> Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
+        """
+        Calculate the relative positions of devices and anchors (scanners) using Multidimensional Scaling (MDS).
+
+        Returns:
+            Tuple of two dictionaries:
+            1. Device positions: {device_id: {'x': x, 'y': y, 'z': z}}
+            2. Anchor positions: {scanner_id: {'x': x, 'y': y, 'z': z}}
+        """
+        logger.info("Calculating relative positions using MDS...")
+
+        try:
+            from .db import get_recent_distances
+
+            # Get recent distance measurements
+            distance_window = self.config.get('generation_settings', {}).get('distance_window_minutes', 15)
+            distances = get_recent_distances(time_window_minutes=distance_window)
+
+            if not distances:
+                logger.warning("No distance data available for positioning")
+                return {}, {}
+
+            # Organize distance data
+            distance_matrix = {}
+            devices = set()
+            scanners = set()
+
+            for record in distances:
+                device_id = record['tracked_device_id']
+                scanner_id = record['scanner_id']
+                distance = record['distance']
+
+                devices.add(device_id)
+                scanners.add(scanner_id)
+
+                if device_id not in distance_matrix:
+                    distance_matrix[device_id] = {}
+
+                distance_matrix[device_id][scanner_id] = distance
+
+            # Prepare for MDS
+            all_nodes = list(devices) + list(scanners)
+            n_nodes = len(all_nodes)
+
+            if n_nodes <= 1:
+                logger.warning("Insufficient nodes for positioning (need at least 2)")
+                return {}, {}
+
+            # Create node index mapping
+            node_indices = {node: i for i, node in enumerate(all_nodes)}
+
+            # Create dissimilarity matrix for MDS
+            dissimilarity = np.zeros((n_nodes, n_nodes))
+            for i in range(n_nodes):
+                for j in range(n_nodes):
+                    if i == j:
+                        continue
+
+                    node_i = all_nodes[i]
+                    node_j = all_nodes[j]
+
+                    # If we have a direct measurement between these nodes
+                    if node_i in distance_matrix and node_j in distance_matrix[node_i]:
+                        dissimilarity[i, j] = distance_matrix[node_i][node_j]
+                    elif node_j in distance_matrix and node_i in distance_matrix[node_j]:
+                        dissimilarity[i, j] = distance_matrix[node_j][node_i]
+                    else:
+                        # If we don't have a direct measurement, use a large value
+                        dissimilarity[i, j] = 1000.0
+
+            # Fill in missing values using shortest path algorithm (Floyd-Warshall)
+            for k in range(n_nodes):
+                for i in range(n_nodes):
+                    for j in range(n_nodes):
+                        if dissimilarity[i, j] > dissimilarity[i, k] + dissimilarity[k, j]:
+                            dissimilarity[i, j] = dissimilarity[i, k] + dissimilarity[k, j]
+
+            # Apply MDS
+            mds_dimensions = self.config.get('generation_settings', {}).get('mds_dimensions', 2)
+            if mds_dimensions > 3:
+                mds_dimensions = 3  # Cap at 3D
+
+            seed = 42  # For reproducibility
+            mds = MDS(n_components=mds_dimensions, dissimilarity='precomputed', random_state=seed, n_init=10)
+            positions = mds.fit_transform(dissimilarity)
+
+            # Map positions back to devices and scanners
+            device_positions = {}
+            anchor_positions = {}
+
+            for node, idx in node_indices.items():
+                pos = positions[idx]
+                pos_dict = {'x': float(pos[0]), 'y': float(pos[1])}
+
+                if mds_dimensions >= 3:
+                    pos_dict['z'] = float(pos[2])
+                else:
+                    pos_dict['z'] = 0.0
+
+                if node in devices:
+                    device_positions[node] = pos_dict
+                else:
+                    anchor_positions[node] = pos_dict
+
+            logger.info(f"MDS positioning complete. Found {len(device_positions)} devices and {len(anchor_positions)} anchors.")
+            return device_positions, anchor_positions
+
+        except Exception as e:
+            logger.error(f"Error calculating relative positions: {str(e)}", exc_info=True)
+            return {}, {}
+
     def generate_rooms_from_points(self, device_coords_by_area: Dict[str, List[Dict[str, Any]]], all_ha_areas: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         """
         Generate rooms based on device positions grouped by area.
