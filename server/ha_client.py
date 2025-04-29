@@ -283,7 +283,7 @@ class HAClient:
             return self._generate_mock_bluetooth()
         elif 'device_tracker' in endpoint:
             return self._generate_mock_device_trackers()
-        elif 'areas' in endpoint:
+        elif 'areas' in endpoint or 'config/area_registry' in endpoint:
             return self._generate_mock_areas()
         else:
             # Generic response for other endpoints
@@ -471,18 +471,56 @@ class HAClient:
     def get_areas(self):
         """Get all areas from Home Assistant."""
         try:
-            # HA API provides areas endpoint
+            # HA API provides multiple possible area endpoints, try them in order
+            # First try modern areas endpoint
             areas = self._api_call('areas')
 
             if areas:
-                logger.info(f"Retrieved {len(areas)} areas from Home Assistant API")
+                logger.info(f"Retrieved {len(areas)} areas from Home Assistant API (areas endpoint)")
                 return areas
+
+            # Try area registry endpoint - which is more commonly available
+            areas = self._api_call('config/area_registry')
+
+            if areas:
+                logger.info(f"Retrieved {len(areas)} areas from Home Assistant API (area registry endpoint)")
+                return areas
+
+            # Try getting device trackers and extracting areas from their attributes
+            logger.debug("Trying to extract areas from device tracker attributes")
+            device_trackers = self.get_device_trackers()
+            area_ids = {}
+            for tracker in device_trackers:
+                area_id = tracker.get('attributes', {}).get('area_id')
+                area_name = tracker.get('attributes', {}).get('area_name') or area_id
+                if area_id:
+                    area_ids[area_id] = {"area_id": area_id, "name": area_name, "derived": True}
+
+            if area_ids:
+                logger.info(f"Extracted {len(area_ids)} areas from device tracker attributes")
+                return list(area_ids.values())
 
             logger.warning("Failed to get areas from API, using mock areas")
             return self._generate_mock_areas()
         except Exception as e:
             logger.error(f"Error getting areas: {str(e)}")
             return self._generate_mock_areas()
+
+    def get_devices(self):
+        """Get all devices from Home Assistant."""
+        try:
+            # Try device registry endpoint
+            devices = self._api_call('config/device_registry')
+
+            if devices:
+                logger.info(f"Retrieved {len(devices)} devices from Home Assistant API")
+                return devices
+
+            logger.warning("Failed to get devices from API, using mock data")
+            return []
+        except Exception as e:
+            logger.error(f"Error getting devices: {str(e)}")
+            return []
 
 # For compatibility with existing code
 HomeAssistantClient = HAClient

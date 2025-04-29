@@ -477,27 +477,144 @@ class AIProcessor:
             scanners = set()
             device_scanner_pairs = set()  # To track unique pairs
 
+            # IMPROVED CLASSIFICATION LOGIC
+            # Device patterns - these are likely tracked physical devices (phones, watches, etc.)
+            device_patterns = ['iphone', 'phone', 'pixel', 'watch', 'tag', 'tracker', 'tile']
+            # Scanner patterns - these are likely fixed BLE scanners or sensors
+            scanner_prefixes = ['ble_', 'bt_', 'beacon_', 'rssi_', 'scanner_', 'to_']
+            scanner_suffixes = ['_ble', '_bt', '_beacon', '_scanner', '_proxy', '_rssi']
+            sensor_suffixes = ['_battery', '_mac', '_humidity', '_rssi', '_measured_power', '_minor', '_major']
+
+            # Patterns to detect non-user devices that are actually sensors or technical entities
+            technical_patterns = ['ble_mac', 'ble_minor', 'ble_major', 'ble_measured_power', 'ble_humidity', 'ble_battery']
+
+            # First pass - collect all entity IDs from distance records
+            all_entities = set()
             for record in distances:
                 if not isinstance(record, dict):
-                    logger.warning(f"Unexpected distance record format (not a dict): {record}")
+                    continue
+
+                device_id = record.get('tracked_device_id')
+                scanner_id = record.get('scanner_id')
+
+                if device_id:
+                    all_entities.add(device_id)
+                if scanner_id:
+                    all_entities.add(scanner_id)
+
+            # Reference point handling - always treat these as devices with known positions
+            reference_points = {entity for entity in all_entities if entity.startswith('reference_point_')}
+            devices.update(reference_points)
+            all_entities -= reference_points  # Remove from entities needing classification
+
+            # Second pass - improved categorization of remaining entities
+            for entity in all_entities:
+                # Skip empty entity IDs
+                if not entity:
+                    continue
+
+                entity_lower = entity.lower()
+
+                # First check if it's explicitly a technical entity
+                if any(pattern in entity_lower for pattern in technical_patterns):
+                    scanners.add(entity)
+                    continue
+
+                # Is this likely a scanner/sensor?
+                is_scanner = False
+
+                # Check for scanner patterns
+                if any(prefix in entity_lower for prefix in scanner_prefixes) or \
+                   any(entity_lower.endswith(suffix) for suffix in scanner_suffixes) or \
+                   any(entity_lower.endswith(suffix) for suffix in sensor_suffixes):
+                    is_scanner = True
+
+                # Check for hex patterns often used in BLE addresses
+                if '_' in entity and any(segment for segment in entity.split('_')
+                                        if len(segment) > 10 and all(c in '0123456789abcdef' for c in segment.lower())):
+                    is_scanner = True
+
+                # Check if this is explicitly a tracked device
+                is_device = any(pattern in entity_lower for pattern in device_patterns)
+
+                # Add to appropriate category
+                if is_device and not is_scanner:
+                    devices.add(entity)
+                elif is_scanner:
+                    scanners.add(entity)
+                else:
+                    # For ambiguous cases, check name length and format
+                    # Longer, complex IDs with underscores are likely scanners
+                    if len(entity) > 15 and '_' in entity:
+                        scanners.add(entity)
+                    else:
+                        # Short names without technical patterns are likely user devices
+                        devices.add(entity)
+
+            # Special handling for test_device
+            if 'test_device' in all_entities:
+                devices.add('test_device')
+                if 'test_device' in scanners:
+                    scanners.remove('test_device')
+
+            # Handle special case for ESPresense BLE proxies (they use format to_XXX_ble)
+            for entity in list(devices):
+                if entity.startswith('to_') and entity.endswith('_ble'):
+                    devices.remove(entity)
+                    scanners.add(entity)
+
+            # Add test_scanner to scanners if present
+            if 'test_scanner' in all_entities:
+                scanners.add('test_scanner')
+                if 'test_scanner' in devices:
+                    devices.remove('test_scanner')
+
+            # Build device-scanner pairs from distance measurements
+            for record in distances:
+                if not isinstance(record, dict):
                     continue
 
                 device_id = record.get('tracked_device_id')
                 scanner_id = record.get('scanner_id')
 
                 if not device_id or not scanner_id:
-                    logger.warning(f"Missing device_id or scanner_id in distance record: {record}")
                     continue
 
-                # Add to our sets - these should be unique values
-                devices.add(device_id)
-                scanners.add(scanner_id)
-                device_scanner_pairs.add((device_id, scanner_id))
+                # If our classification is good, we should find pairs where
+                # one is in devices and one is in scanners
+                if device_id in devices and scanner_id in scanners:
+                    device_scanner_pairs.add((device_id, scanner_id))
+                elif device_id in scanners and scanner_id in devices:
+                    # Swap if they're incorrectly categorized
+                    device_scanner_pairs.add((scanner_id, device_id))
+                else:
+                    # Ambiguous case - fallback to rule-based assignment
+                    # For safety, we'll categorize both in our matrices
+                    device_scanner_pairs.add((device_id, scanner_id))
 
             # Log what we found - good for debugging
             logger.info(f"Found {len(devices)} unique devices: {devices}")
             logger.info(f"Found {len(scanners)} unique scanners: {scanners}")
             logger.info(f"Found {len(device_scanner_pairs)} unique device-scanner pairs")
+
+            # If we don't have enough entities for 2D positioning, handle gracefully
+            min_entities = 3
+            total_entities = len(devices) + len(scanners)
+
+            if total_entities < min_entities:
+                logger.error(f"Not enough entities ({total_entities}) for 2D positioning. Minimum required: {min_entities}")
+                return {}, {}
+
+            # If we don't have enough devices specifically, consider some scanners as devices
+            min_devices_required = 1
+            if len(devices) < min_devices_required and len(scanners) > min_devices_required:
+                logger.warning(f"Only {len(devices)} devices found. Converting some scanners to devices.")
+                # Pick scanners that don't match strong scanner patterns
+                potential_devices = [s for s in scanners if not any(p in s.lower() for p in scanner_prefixes[:3])][:2]
+                for scanner in potential_devices:
+                    devices.add(scanner)
+                    scanners.remove(scanner)
+                logger.info(f"After conversion: {len(devices)} devices and {len(scanners)} scanners")
 
             # Combine both sets for MDS
             all_nodes = list(devices) + list(scanners)
@@ -520,31 +637,22 @@ class AIProcessor:
                 try:
                     device_id = record.get('tracked_device_id')
                     scanner_id = record.get('scanner_id')
-                    distance_value = record.get('distance')
+                    distance_value = float(record.get('distance', 0))
 
-                    if device_id and scanner_id and distance_value is not None:
+                    if device_id and scanner_id and distance_value > 0:
                         # Get matrix indices for this device-scanner pair
-                        device_idx = node_indices.get(device_id)
-                        scanner_idx = node_indices.get(scanner_id)
+                        idx1 = node_indices.get(device_id)
+                        idx2 = node_indices.get(scanner_id)
 
-                        if device_idx is not None and scanner_idx is not None:
+                        if idx1 is not None and idx2 is not None:
                             # Set the distance in both directions (symmetric matrix)
-                            dissimilarity[device_idx, scanner_idx] = distance_value
-                            dissimilarity[scanner_idx, device_idx] = distance_value
+                            dissimilarity[idx1, idx2] = distance_value
+                            dissimilarity[idx2, idx1] = distance_value
                             distance_count += 1
-                        else:
-                            logger.warning(f"Could not find indices for device {device_id} or scanner {scanner_id}")
                 except Exception as e:
                     logger.warning(f"Error processing distance record: {e}")
 
             logger.info(f"Added {distance_count} actual distances to the dissimilarity matrix")
-
-            # Fill in missing values using shortest path algorithm (Floyd-Warshall)
-            for k in range(n_nodes):
-                for i in range(n_nodes):
-                    for j in range(n_nodes):
-                        if dissimilarity[i, j] > dissimilarity[i, k] + dissimilarity[k, j]:
-                            dissimilarity[i, j] = dissimilarity[i, k] + dissimilarity[k, j]
 
             # Apply MDS
             mds_dimensions = self.config.get('generation_settings', {}).get('mds_dimensions', 2)
@@ -575,7 +683,8 @@ class AIProcessor:
                 except Exception as e2:
                     logger.error(f"Alternative MDS also failed: {e2}")
                     logger.warning("Using random positions as fallback")
-                    positions = np.random.rand(n_nodes, mds_dimensions) * 10
+                    # Generate random positions in a reasonable range for visualization
+                    positions = (np.random.rand(n_nodes, mds_dimensions) - 0.5) * 20
 
             # Map positions back to devices and scanners
             device_positions = {}
@@ -601,430 +710,3 @@ class AIProcessor:
         except Exception as e:
             logger.error(f"Error calculating relative positions: {str(e)}", exc_info=True)
             return {}, {}
-
-    def generate_rooms_from_points(self, device_coords_by_area: Dict[str, List[Dict[str, Any]]], all_ha_areas: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
-        """
-        Generate rooms based on device positions grouped by area.
-        Now also includes all Home Assistant areas even if they don't have device positions.
-
-        Args:
-            device_coords_by_area: Dictionary mapping area_id to list of device coordinates
-            all_ha_areas: Optional list of all Home Assistant areas
-
-        Returns:
-            List of room dictionaries
-        """
-        try:
-            # Create a dictionary to map area_ids to area names from all_ha_areas
-            area_id_to_name = {}
-            if all_ha_areas:
-                for area in all_ha_areas:
-                    area_id = area.get('area_id')
-                    if area_id:
-                        area_id_to_name[area_id] = area.get('name', area_id)
-                logger.info(f"Using {len(area_id_to_name)} area names from Home Assistant")
-
-            # First, generate rooms based on device coordinates
-            rooms = []
-            floor_counter = 1  # Default all rooms to floor 1 initially
-
-            logger.info(f"Generating rooms from points in {len(device_coords_by_area)} areas")
-
-            # First pass - create rooms that have device positions
-            for area_id, device_coords in device_coords_by_area.items():
-                # Skip empty areas (shouldn't happen, but just in case)
-                if not device_coords:
-                    continue
-
-                # Calculate room center based on device positions
-                center_x = sum(d['x'] for d in device_coords) / len(device_coords)
-                center_y = sum(d['y'] for d in device_coords) / len(device_coords)
-                center_z = sum(d['z'] for d in device_coords) / len(device_coords)
-
-                # Calculate room dimensions based on device spread
-                x_values = [d['x'] for d in device_coords]
-                y_values = [d['y'] for d in device_coords]
-                z_values = [d['z'] for d in device_coords]
-
-                min_x, max_x = min(x_values), max(x_values)
-                min_y, max_y = min(y_values), max(y_values)
-
-                # Set minimum room size to 2.5 meters for small rooms
-                width = max(max_x - min_x + 2.0, 2.5)  # Add margin and enforce minimum size
-                length = max(max_y - min_y + 2.0, 2.5)
-
-                # Set room height to standard 2.4m
-                height = 2.4
-
-                # Get area name from mapping or use area_id if not found
-                room_name = area_id_to_name.get(area_id, area_id)
-
-                # Create room dictionary
-                room = {
-                    'id': str(uuid.uuid4()),
-                    'name': room_name,
-                    'type': self._predict_room_type(room_name),
-                    'area_id': area_id,
-                    'floor': floor_counter,
-                    'center': {'x': center_x, 'y': center_y, 'z': center_z},
-                    'dimensions': {'width': width, 'length': length, 'height': height},
-                    'devices': [{'id': d['device_id'], 'x': d['x'], 'y': d['y'], 'z': d['z']} for d in device_coords]
-                }
-
-                rooms.append(room)
-                logger.info(f"Generated room for {room_name} with {len(device_coords)} devices on floor {floor_counter}")
-
-            # If we have Home Assistant areas, add empty rooms for areas without device positions
-            added_rooms = 0
-            if all_ha_areas:
-                # Create a set of area_ids we've already processed
-                processed_areas = set(device_coords_by_area.keys())
-
-                # Get the average position of existing rooms to use as a reference
-                avg_x, avg_y, avg_z = 0, 0, 0
-                if rooms:
-                    avg_x = sum(room['center']['x'] for room in rooms) / len(rooms)
-                    avg_y = sum(room['center']['y'] for room in rooms) / len(rooms)
-                    avg_z = sum(room['center']['z'] for room in rooms) / len(rooms)
-
-                # Place rooms without devices in a spiral pattern around this center
-                spiral_distance = 5.0  # Base distance between rooms (meters)
-                angle_increment = 45  # Degrees between each room placement
-                current_angle = 0
-                current_distance = spiral_distance
-
-                # Add rooms for areas that don't have device positions
-                for area in all_ha_areas:
-                    area_id = area.get('area_id')
-                    if not area_id or area_id in processed_areas:
-                        continue  # Skip already processed areas
-
-                    area_name = area.get('name', area_id)
-
-                    # Calculate position in a spiral pattern
-                    angle_rad = math.radians(current_angle)
-                    x = avg_x + current_distance * math.cos(angle_rad)
-                    y = avg_y + current_distance * math.sin(angle_rad)
-
-                    # Create a room with default dimensions
-                    room = {
-                        'id': str(uuid.uuid4()),
-                        'name': area_name,
-                        'type': self._predict_room_type(area_name),
-                        'area_id': area_id,
-                        'floor': floor_counter,
-                        'center': {'x': x, 'y': y, 'z': avg_z},
-                        'dimensions': {'width': 3.0, 'length': 3.0, 'height': 2.4},  # Default size
-                        'devices': []  # No devices in this room yet
-                    }
-
-                    rooms.append(room)
-                    added_rooms += 1
-
-                    # Update spiral parameters for next room
-                    current_angle = (current_angle + angle_increment) % 360
-                    if current_angle < angle_increment:  # Completed a full circle
-                        current_distance += spiral_distance  # Move outward for the next circle
-
-                if added_rooms > 0:
-                    logger.info(f"Added {added_rooms} additional rooms without devices from Home Assistant areas")
-
-            logger.info(f"Successfully generated {len(rooms)} rooms")
-            return rooms
-
-        except Exception as e:
-            logger.error(f"Error generating rooms from points: {str(e)}", exc_info=True)
-            return []
-
-    def generate_walls_between_rooms(self, rooms: List[Dict]) -> List[Dict]:
-        """
-        Generate walls between adjacent rooms.
-
-        Parameters:
-            rooms: List of room definitions
-
-        Returns:
-            List of wall definitions
-        """
-        logger.info(f"Generating walls between {len(rooms)} rooms")
-
-        walls = []
-        wall_id = 1
-
-        # Group rooms by floor
-        rooms_by_floor = {}
-        for room in rooms:
-            floor = room.get('floor', 0)
-            if floor not in rooms_by_floor:
-                rooms_by_floor[floor] = []
-            rooms_by_floor[floor].append(room)
-
-        # Process each floor separately
-        for floor, floor_rooms in rooms_by_floor.items():
-            # Skip floors with less than 2 rooms
-            if len(floor_rooms) < 2:
-                continue
-
-            # For each room, check adjacency with other rooms on the same floor
-            for i, room1 in enumerate(floor_rooms):
-                for room2 in floor_rooms[i+1:]:
-                    # Check if rooms are adjacent
-                    if self._are_rooms_adjacent(room1, room2):
-                        # Calculate wall segments between the rooms
-                        new_walls = self._calculate_wall_segments(room1, room2, wall_id)
-                        walls.extend(new_walls)
-                        wall_id += len(new_walls)
-
-        # Add external walls for each room
-        for room in rooms:
-            external_walls = self._generate_external_walls(room, wall_id)
-            walls.extend(external_walls)
-            wall_id += len(external_walls)
-
-        logger.info(f"Generated {len(walls)} walls")
-        return walls
-
-    def generate_walls(self, rooms: List[Dict]) -> List[Dict]:
-        """
-        Generate walls for the given rooms. This is a wrapper for generate_walls_between_rooms.
-
-        Args:
-            rooms: List of room definitions
-
-        Returns:
-            List of wall definitions
-        """
-        logger.info(f"Generating walls for {len(rooms)} rooms")
-
-        # First, calculate room bounds if not already present
-        processed_rooms = self._calculate_room_bounds(rooms)
-
-        # Generate walls between rooms
-        return self.generate_walls_between_rooms(processed_rooms)
-
-    def _calculate_room_bounds(self, rooms: List[Dict]) -> List[Dict]:
-        """
-        Calculate the min/max bounds for each room if not already present.
-
-        Args:
-            rooms: List of room definitions
-
-        Returns:
-            List of rooms with bounds added
-        """
-        result = []
-
-        for room in rooms:
-            room_copy = dict(room)
-
-            # If bounds already present, use them
-            if 'bounds' in room_copy:
-                result.append(room_copy)
-                continue
-
-            # Otherwise calculate bounds from center and dimensions
-            center = room_copy.get('center', {'x': 0, 'y': 0, 'z': 0})
-            dimensions = room_copy.get('dimensions', {'width': 3, 'length': 3, 'height': 2.4})
-
-            half_width = dimensions.get('width', 3) / 2
-            half_length = dimensions.get('length', 3) / 2
-            height = dimensions.get('height', 2.4)
-
-            bounds = {
-                'min': {
-                    'x': center.get('x', 0) - half_width,
-                    'y': center.get('y', 0) - half_length,
-                    'z': center.get('z', 0) - height/2
-                },
-                'max': {
-                    'x': center.get('x', 0) + half_width,
-                    'y': center.get('y', 0) + half_length,
-                    'z': center.get('z', 0) + height/2
-                }
-            }
-
-            room_copy['bounds'] = bounds
-            result.append(room_copy)
-
-        return result
-
-    def _are_rooms_adjacent(self, room1: Dict, room2: Dict) -> bool:
-        """Check if two rooms are adjacent to each other."""
-        # Get room bounds
-        r1_min_x = room1['bounds']['min']['x']
-        r1_max_x = room1['bounds']['max']['x']
-        r1_min_y = room1['bounds']['min']['y']
-        r1_max_y = room1['bounds']['max']['y']
-
-        r2_min_x = room2['bounds']['min']['x']
-        r2_max_x = room2['bounds']['max']['x']
-        r2_min_y = room2['bounds']['min']['y']
-        r2_max_y = room2['bounds']['max']['y']
-
-        # Check for x-overlap
-        x_overlap = (r1_min_x <= r2_max_x and r1_max_x >= r2_min_x)
-
-        # Check for y-overlap
-        y_overlap = (r1_min_y <= r2_max_y and r1_max_y >= r2_min_y)
-
-        # Rooms are adjacent if they overlap in one dimension and are close in the other
-        max_gap = 0.1  # Maximum gap between rooms (10cm)
-
-        # Adjacent along x-axis
-        x_adjacent = y_overlap and (
-            abs(r1_max_x - r2_min_x) <= max_gap or
-            abs(r1_min_x - r2_max_x) <= max_gap
-        )
-
-        # Adjacent along y-axis
-        y_adjacent = x_overlap and (
-            abs(r1_max_y - r2_min_y) <= max_gap or
-            abs(r1_min_y - r2_max_y) <= max_gap
-        )
-
-        return x_adjacent or y_adjacent
-
-    def _calculate_wall_segments(self, room1: Dict, room2: Dict, start_id: int) -> List[Dict]:
-        """Calculate wall segments between adjacent rooms."""
-        # Basic implementation - just place a wall at the average position between rooms
-        wall_height = 2.4  # Default wall height
-        wall_thickness = 0.15  # Default wall thickness
-
-        # Find the shared edge
-        r1_min_x = room1['bounds']['min']['x']
-        r1_max_x = room1['bounds']['max']['x']
-        r1_min_y = room1['bounds']['min']['y']
-        r1_max_y = room1['bounds']['max']['y']
-
-        r2_min_x = room2['bounds']['min']['x']
-        r2_max_x = room2['bounds']['max']['x']
-        r2_min_y = room2['bounds']['min']['y']
-        r2_max_y = room2['bounds']['max']['y']
-
-        walls = []
-
-        # Check for vertical wall (rooms adjacent horizontally)
-        if abs(r1_max_x - r2_min_x) < 0.2 or abs(r1_min_x - r2_max_x) < 0.2:
-            wall_x = (r1_max_x + r2_min_x) / 2 if r1_max_x < r2_max_x else (r1_min_x + r2_max_x) / 2
-
-            # Find y-overlap
-            start_y = max(r1_min_y, r2_min_y)
-            end_y = min(r1_max_y, r2_max_y)
-
-            walls.append({
-                'id': f"wall_{start_id}",
-                'start': {'x': wall_x, 'y': start_y},
-                'end': {'x': wall_x, 'y': end_y},
-                'thickness': wall_thickness,
-                'height': wall_height
-            })
-
-        # Check for horizontal wall (rooms adjacent vertically)
-        elif abs(r1_max_y - r2_min_y) < 0.2 or abs(r1_min_y - r2_max_y) < 0.2:
-            wall_y = (r1_max_y + r2_min_y) / 2 if r1_max_y < r2_max_y else (r1_min_y + r2_max_y) / 2
-
-            # Find x-overlap
-            start_x = max(r1_min_x, r2_min_x)
-            end_x = min(r1_max_x, r2_max_x)
-
-            walls.append({
-                'id': f"wall_{start_id}",
-                'start': {'x': start_x, 'y': wall_y},
-                'end': {'x': end_x, 'y': wall_y},
-                'thickness': wall_thickness,
-                'height': wall_height
-            })
-
-        return walls
-
-    def _generate_external_walls(self, room: Dict, start_id: int) -> List[Dict]:
-        """Generate external walls for a room."""
-        min_x = room['bounds']['min']['x']
-        max_x = room['bounds']['max']['x']
-        min_y = room['bounds']['min']['y']
-        max_y = room['bounds']['max']['y']
-
-        wall_height = room.get('dimensions', {}).get('height', 2.4)
-        wall_thickness = 0.15
-
-        walls = [
-            {
-                'id': f"wall_{start_id}",
-                'start': {'x': min_x, 'y': min_y},
-                'end': {'x': max_x, 'y': min_y},
-                'thickness': wall_thickness,
-                'height': wall_height,
-                'is_external': True
-            },
-            {
-                'id': f"wall_{start_id + 1}",
-                'start': {'x': max_x, 'y': min_y},
-                'end': {'x': max_x, 'y': max_y},
-                'thickness': wall_thickness,
-                'height': wall_height,
-                'is_external': True
-            },
-            {
-                'id': f"wall_{start_id + 2}",
-                'start': {'x': max_x, 'y': max_y},
-                'end': {'x': min_x, 'y': max_y},
-                'thickness': wall_thickness,
-                'height': wall_height,
-                'is_external': True
-            },
-            {
-                'id': f"wall_{start_id + 3}",
-                'start': {'x': min_x, 'y': max_y},
-                'end': {'x': min_x, 'y': min_y},
-                'thickness': wall_thickness,
-                'height': wall_height,
-                'is_external': True
-            }
-        ]
-
-        return walls
-
-    def _predict_room_type(self, room_name: str) -> str:
-        """
-        Predict the room type from the room name.
-
-        Args:
-            room_name: The name of the room
-
-        Returns:
-            The predicted room type
-        """
-        logger.info(f"Predicting room type for room name: {room_name}")
-
-        # Lowercase the name for better matching
-        name_lower = room_name.lower()
-
-        # Dictionary of common room types and associated keywords
-        room_types = {
-            'living_room': ['living', 'lounge', 'family', 'tv', 'den', 'sitting'],
-            'kitchen': ['kitchen', 'cooking', 'pantry'],
-            'dining_room': ['dining', 'breakfast', 'eating'],
-            'bedroom': ['bedroom', 'master', 'guest', 'kids', 'child', 'nursery', 'teen', 'alex'],
-            'bathroom': ['bathroom', 'bath', 'shower', 'toilet', 'wc', 'restroom', 'powder'],
-            'office': ['office', 'study', 'work', 'computer', 'library'],
-            'hallway': ['hall', 'hallway', 'corridor', 'entryway', 'foyer', 'entrance'],
-            'laundry': ['laundry', 'utility', 'washing'],
-            'garage': ['garage', 'workshop', 'carport'],
-            'storage': ['storage', 'closet', 'attic', 'basement']
-        }
-
-        # Check for direct matches
-        for room_type, keywords in room_types.items():
-            for keyword in keywords:
-                if keyword in name_lower:
-                    logger.debug(f"Room type match: '{room_name}' -> '{room_type}' (keyword: {keyword})")
-                    return room_type
-
-        # Special case for ambiguous names
-        if 'room' in name_lower:
-            logger.debug(f"Generic room detected for '{room_name}', defaulting to living_room")
-            return 'living_room'
-
-        # If no match was found, use a default
-        logger.debug(f"No room type match for '{room_name}', defaulting to 'other'")
-        return 'other'

@@ -373,8 +373,16 @@ class BluetoothProcessor:
                 distances_by_device[device_id] = []
             distances_by_device[device_id].append(measurement)
 
-        # For each device, predict area
+        logger.debug(f"Processing area predictions for {len(distances_by_device)} devices")
+
+        # Method 1: Predict areas based on closest reference point (with known area)
+        devices_processed = set()
         for device_id, measurements in distances_by_device.items():
+            # Skip non-meaningful device IDs that are probably scanners themselves
+            if any(pattern in device_id.lower() for pattern in ['ble_', 'bt_', 'beacon_', 'rssi_', 'scanner_']):
+                logger.debug(f"Skipping likely non-device ID: {device_id}")
+                continue
+
             # Find closest reference point
             closest_scanner = None
             closest_distance = float('inf')
@@ -387,31 +395,90 @@ class BluetoothProcessor:
                     closest_distance = distance
                     closest_scanner = scanner_id
 
+            # If we found a close scanner that has an area assigned
             if closest_scanner and closest_scanner in ref_to_area:
                 area_id = ref_to_area[closest_scanner]
+                logger.debug(f"Device {device_id} is closest to scanner {closest_scanner} in area {area_id}")
 
                 # Save area observation
-                success = save_area_observation(device_id, area_id)
-                if success:
+                if save_area_observation(device_id, area_id):
                     areas_logged += 1
+                    devices_processed.add(device_id)
 
-        # Also process areas from device trackers
+        # Method 2: Extract areas directly from device trackers
         for tracker in device_trackers:
             entity_id = tracker.get('entity_id', '')
             if not entity_id.startswith('device_tracker.'):
                 continue
 
             device_id = entity_id.replace('device_tracker.', '')
+
+            # Don't process the same device twice
+            if device_id in devices_processed:
+                continue
+
             attributes = tracker.get('attributes', {})
 
             # Get area ID if present
             area_id = attributes.get('area_id')
 
             if area_id:
+                logger.debug(f"Device {device_id} has area_id {area_id} in tracker attributes")
                 # Save area observation
                 success = save_area_observation(device_id, area_id)
                 if success:
                     areas_logged += 1
+                    devices_processed.add(device_id)
+
+        # If no areas logged but we have devices, try to derive areas from general patterns in entity IDs
+        if areas_logged == 0 and distances_by_device:
+            logger.warning("No areas directly determined from scanners or device attributes. Attempting heuristic mapping...")
+
+            # Method 3: Try to derive areas from entity naming patterns
+            assigned_count = 0
+            from .ha_client import HAClient
+
+            # Get the list of available areas from Home Assistant
+            ha_client = HAClient()
+            areas = ha_client.get_areas()
+            area_names = {area.get('area_id'): area.get('name', '').lower() for area in areas}
+
+            for device_id in distances_by_device.keys():
+                if device_id in devices_processed:
+                    continue
+
+                # Try to map a device to an area based on name matching
+                device_name = device_id.lower()
+                matched_area = None
+
+                # Look for area name matches in the device ID
+                for area_id, area_name in area_names.items():
+                    # Skip empty area names
+                    if not area_name:
+                        continue
+
+                    # Clean up area name for matching
+                    clean_area_name = area_name.replace(' ', '_').lower()
+
+                    if clean_area_name in device_name:
+                        matched_area = area_id
+                        logger.debug(f"Matched device {device_id} to area {area_id} based on name")
+                        break
+
+                # If found a matching area, record it
+                if matched_area:
+                    if save_area_observation(device_id, matched_area):
+                        areas_logged += 1
+                        assigned_count += 1
+
+            if assigned_count > 0:
+                logger.info(f"Heuristically assigned {assigned_count} devices to areas based on naming patterns")
+
+        # Log the results
+        if areas_logged > 0:
+            logger.info(f"Processed {areas_logged} area predictions for devices")
+        else:
+            logger.warning("No area predictions could be made")
 
         return areas_logged
 
