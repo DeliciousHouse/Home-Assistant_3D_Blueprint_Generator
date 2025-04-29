@@ -443,7 +443,16 @@ def get_latest_blueprint_from_sqlite() -> Optional[Dict[str, Any]]:
     result = _execute_sqlite_read(query, fetch_one=True)
     if result and result.get('data'):
         try:
-            blueprint_data = json.loads(result['data'])
+            # Check if the data string starts with a comment and remove it
+            data_str = result['data']
+            if data_str.startswith('//'):
+                # Find the end of the comment line
+                newline_pos = data_str.find('\n')
+                if newline_pos > 0:
+                    data_str = data_str[newline_pos + 1:].strip()
+
+            # Parse the cleaned JSON data
+            blueprint_data = json.loads(data_str)
             logger.info(f"Retrieved blueprint from {result.get('created_at', 'unknown date')}")
             return blueprint_data
         except json.JSONDecodeError as e:

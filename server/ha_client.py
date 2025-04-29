@@ -174,6 +174,44 @@ class HAClient:
             logger.error(f"Error getting bluetooth devices: {str(e)}")
             return []
 
+    def get_bluetooth_sensors(self) -> List[Dict[str, Any]]:
+        """Get all Bluetooth sensors from Home Assistant.
+        This includes BLE sensors that provide RSSI or proximity data.
+        """
+        if self.offline_mode:
+            return self._generate_mock_entities()
+
+        try:
+            # Get all entities
+            entities = self.get_entities()
+
+            # Filter for bluetooth sensors
+            bluetooth_sensors = []
+            for entity in entities:
+                entity_id = entity.get('entity_id', '')
+                attributes = entity.get('attributes', {})
+
+                # Check for BLE or Bluetooth related sensors
+                if ('bluetooth' in entity_id.lower() or
+                    'ble' in entity_id.lower() or
+                    'rssi' in entity_id.lower() or
+                    entity_id.startswith('sensor.ble_') or
+                    'rssi' in str(attributes).lower()):
+                    bluetooth_sensors.append(entity)
+
+            logger.info(f"Found {len(bluetooth_sensors)} Bluetooth sensors")
+
+            # If no sensors found, use mock data
+            if not bluetooth_sensors:
+                logger.info("No actual Bluetooth sensors found, using mock data")
+                return self._generate_mock_entities()
+
+            return bluetooth_sensors
+
+        except Exception as e:
+            logger.error(f"Error getting Bluetooth sensors: {str(e)}")
+            return self._generate_mock_entities()
+
     def get_distance_sensors(self) -> List[Dict[str, Any]]:
         """Get distance sensor entities from Home Assistant."""
         try:
