@@ -1,6 +1,6 @@
 # config.yaml
 name: 3D Blueprint Generator
-version: "2.89"
+version: "2.90"
 slug: blueprint_generator
 description: "Generate 3D home blueprints from Bluetooth sensor data"
 arch:
@@ -38,11 +38,12 @@ ports:
 ports_description:
   '8000/tcp': 'Web interface'
 
-# Give the add-on access to Home Assistant API - updated permissions
+# Home Assistant API access - comprehensive permissions
 auth_api: true
 homeassistant_api: true
-hassio_api: true  # Access to Supervisor API
+hassio_api: true
 hassio_role: default
+supervisor_api: true
 
 # UI Configuration
 ingress: true

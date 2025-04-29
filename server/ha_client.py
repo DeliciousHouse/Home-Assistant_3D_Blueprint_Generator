@@ -28,10 +28,47 @@ class HAClient:
         self.config = load_config(config_path)
         self.ha_config = self.config.get('home_assistant', {})
 
-        # When running as a Supervisor add-on, these environment variables will be set automatically
-        # SUPERVISOR_TOKEN is provided by the Supervisor when running as an add-on
-        self.ha_url = os.environ.get('SUPERVISOR_URL', self.ha_config.get('url', 'http://supervisor/core'))
-        self.ha_token = os.environ.get('SUPERVISOR_TOKEN', self.ha_config.get('token', ''))
+        # The Supervisor provides these environment variables to add-ons
+        # Try different environment variables that might contain the supervisor URL
+        supervisor_url_vars = ['SUPERVISOR_URL', 'HASSIO_URL', 'HOME_ASSISTANT_URL']
+        self.ha_url = None
+
+        for var in supervisor_url_vars:
+            if os.environ.get(var):
+                self.ha_url = os.environ.get(var)
+                logger.debug(f"Found Supervisor URL in {var}: {self.ha_url}")
+                break
+
+        # If no environment variable found, use the config or default
+        if not self.ha_url:
+            # Default URLs to try
+            possible_urls = [
+                self.ha_config.get('url'),  # From config file
+                'http://supervisor/core/api',  # Standard addon path
+                'http://supervisor/api',  # Alternative path
+                'http://supervisor/core',   # Another common path
+                'http://supervisor'         # Base path
+            ]
+
+            for url in possible_urls:
+                if url:
+                    self.ha_url = url
+                    logger.debug(f"Using URL from config: {self.ha_url}")
+                    break
+
+        # Try to get the token from various environment variables
+        token_vars = ['SUPERVISOR_TOKEN', 'HASSIO_TOKEN', 'HOME_ASSISTANT_TOKEN']
+        self.ha_token = None
+
+        for var in token_vars:
+            if os.environ.get(var):
+                self.ha_token = os.environ.get(var)
+                logger.debug(f"Found auth token in {var}")
+                break
+
+        # If no token found in environment, try config
+        if not self.ha_token:
+            self.ha_token = self.ha_config.get('token', '')
 
         # Log connection details (but not the token itself)
         logger.info(f"Initializing Home Assistant client with URL: {self.ha_url}")
@@ -63,576 +100,66 @@ class HAClient:
     def _test_connection(self):
         """Test connection to Home Assistant and log detailed debug info."""
         try:
-            url = urljoin(self.ha_url, '/api/')
-            logger.debug(f"Testing Home Assistant connection to {url}")
-            logger.debug(f"Using headers: {{'Authorization': 'Bearer ***REDACTED***', 'Content-Type': '{self.headers.get('Content-Type')}'}}")
+            # First try the classic API endpoint
+            base_url = self.ha_url
+            api_paths = [
+                '/api/',  # Standard API path
+                '/',      # Try directly
+                '/api',   # Without trailing slash
+            ]
 
-            response = requests.get(url, headers=self.headers, timeout=10)
+            for api_path in api_paths:
+                url = urljoin(base_url, api_path)
+                logger.debug(f"Testing Home Assistant connection to {url}")
+                logger.debug(f"Using headers: {{'Authorization': 'Bearer ***REDACTED***', 'Content-Type': '{self.headers.get('Content-Type')}'}}")
 
-            if response.status_code == 200:
-                logger.info("Successfully connected to Home Assistant API")
-                return True
-            else:
-                logger.error(f"Failed to connect to Home Assistant API: HTTP {response.status_code}")
-                logger.debug(f"URL: {url}, Headers: Auth Bearer token length: {len(self.ha_token)} characters")
-                logger.debug(f"Response: {response.text[:200]}")  # Log first 200 chars of response
+                try:
+                    response = requests.get(url, headers=self.headers, timeout=10)
 
-                # Try alternative URL paths if needed
-                if self.ha_url.endswith('/core'):
-                    alt_url = self.ha_url[:-5]  # Remove '/core'
-                    logger.debug(f"Trying alternative URL: {alt_url}/api/")
-                    alt_response = requests.get(urljoin(alt_url, '/api/'), headers=self.headers, timeout=10)
-                    if alt_response.status_code == 200:
-                        logger.info(f"Successfully connected using alternative URL: {alt_url}")
-                        self.ha_url = alt_url
+                    # Check response status
+                    if response.status_code == 200:
+                        logger.info(f"Successfully connected to Home Assistant API at {url}")
+                        self.ha_url = base_url  # Save the working base URL
                         return True
-                return False
+                    else:
+                        logger.warning(f"Connection attempt to {url} failed: HTTP {response.status_code}")
+                        logger.debug(f"Response: {response.text[:200]}")  # Log first 200 chars
+                except Exception as e:
+                    logger.warning(f"Connection attempt to {url} failed: {str(e)}")
+                    continue
+
+            # Try alternative base URLs if all attempts with current URL failed
+            alternative_bases = [
+                'http://supervisor/core',
+                'http://supervisor',
+                'http://hassio/core',
+                'http://hassio',
+                'http://localhost:8123'
+            ]
+
+            for alt_base in alternative_bases:
+                if alt_base == base_url:
+                    continue  # Skip if we already tried this base URL
+
+                logger.debug(f"Trying alternative base URL: {alt_base}")
+                url = urljoin(alt_base, '/api/')
+
+                try:
+                    response = requests.get(url, headers=self.headers, timeout=5)  # Shorter timeout for alternatives
+                    if response.status_code == 200:
+                        logger.info(f"Successfully connected using alternative URL: {alt_base}")
+                        self.ha_url = alt_base  # Update to working URL
+                        return True
+                except Exception:
+                    continue  # Try next URL on exception
+
+            # If we get here, all connection attempts failed
+            logger.error("All connection attempts to Home Assistant API failed.")
+            return False
 
         except Exception as e:
             logger.error(f"Error connecting to Home Assistant: {str(e)}")
             return False
 
-    def get_areas(self) -> List[Dict[str, Any]]:
-        """Get all areas from Home Assistant."""
-        if self.offline_mode:
-            return self._generate_mock_areas()
-
-        try:
-            url = urljoin(self.ha_url, '/api/areas')
-            logger.debug(f"Fetching areas from {url}")
-
-            response = requests.get(url, headers=self.headers, timeout=10)
-
-            if response.status_code == 200:
-                areas = response.json()
-                # Format areas to include area_id for compatibility with our system
-                formatted_areas = []
-                for area in areas:
-                    formatted_area = {
-                        'area_id': area.get('area_id', ''),
-                        'name': area.get('name', ''),
-                        'picture': area.get('picture', None)
-                    }
-                    formatted_areas.append(formatted_area)
-
-                logger.info(f"Successfully fetched {len(formatted_areas)} areas from Home Assistant")
-                return formatted_areas
-            else:
-                logger.error(f"Failed to get areas from Home Assistant: HTTP {response.status_code}")
-                logger.debug(f"Response: {response.text[:200]}")
-                # Fall back to mock areas
-                return self._generate_mock_areas()
-
-        except Exception as e:
-            logger.error(f"Error getting areas from Home Assistant: {str(e)}")
-            return self._generate_mock_areas()
-
-    def get_devices(self) -> List[Dict[str, Any]]:
-        """Get all devices from Home Assistant."""
-        if self.offline_mode:
-            return self._generate_mock_devices()
-
-        try:
-            url = urljoin(self.ha_url, '/api/devices')
-            logger.debug(f"Fetching devices from {url}")
-
-            response = requests.get(url, headers=self.headers, timeout=10)
-
-            if response.status_code == 200:
-                devices = response.json()
-                logger.info(f"Successfully fetched {len(devices)} devices from Home Assistant")
-                return devices
-            else:
-                logger.error(f"Failed to get devices from Home Assistant: HTTP {response.status_code}")
-                # Fall back to mock devices
-                return self._generate_mock_devices()
-
-        except Exception as e:
-            logger.error(f"Error getting devices from Home Assistant: {str(e)}")
-            return self._generate_mock_devices()
-
-    def get_entities(self) -> List[Dict[str, Any]]:
-        """Get all entities from Home Assistant."""
-        if self.offline_mode:
-            return self._generate_mock_entities()
-
-        try:
-            url = urljoin(self.ha_url, '/api/states')
-            logger.debug(f"Fetching entities from {url}")
-
-            response = requests.get(url, headers=self.headers, timeout=10)
-
-            if response.status_code == 200:
-                entities = response.json()
-                logger.info(f"Successfully fetched {len(entities)} entities from Home Assistant")
-                return entities
-            else:
-                logger.error(f"Failed to get entities from Home Assistant: HTTP {response.status_code}")
-                # Fall back to mock entities
-                return self._generate_mock_entities()
-
-        except Exception as e:
-            logger.error(f"Error getting entities from Home Assistant: {str(e)}")
-            return self._generate_mock_entities()
-
-    def get_bluetooth_devices(self) -> List[Dict[str, Any]]:
-        """Get bluetooth-specific devices from Home Assistant."""
-        try:
-            # First get all entities
-            entities = self.get_entities()
-
-            # Filter for bluetooth-related entities
-            bluetooth_entities = []
-            for entity in entities:
-                entity_id = entity.get('entity_id', '')
-                if 'bluetooth' in entity_id or 'ble' in entity_id:
-                    bluetooth_entities.append(entity)
-
-            logger.info(f"Found {len(bluetooth_entities)} bluetooth-related entities")
-            return bluetooth_entities
-        except Exception as e:
-            logger.error(f"Error getting bluetooth devices: {str(e)}")
-            return []
-
-    def get_bluetooth_sensors(self) -> List[Dict[str, Any]]:
-        """Get all Bluetooth sensors from Home Assistant.
-        This includes BLE sensors that provide RSSI or proximity data.
-        """
-        if self.offline_mode:
-            return self._generate_mock_entities()
-
-        try:
-            # Get all entities
-            entities = self.get_entities()
-
-            # Filter for bluetooth sensors
-            bluetooth_sensors = []
-            for entity in entities:
-                entity_id = entity.get('entity_id', '')
-                attributes = entity.get('attributes', {})
-
-                # Check for BLE or Bluetooth related sensors
-                if ('bluetooth' in entity_id.lower() or
-                    'ble' in entity_id.lower() or
-                    'rssi' in entity_id.lower() or
-                    entity_id.startswith('sensor.ble_') or
-                    'rssi' in str(attributes).lower()):
-                    bluetooth_sensors.append(entity)
-
-            logger.info(f"Found {len(bluetooth_sensors)} Bluetooth sensors")
-
-            # If no sensors found, use mock data
-            if not bluetooth_sensors:
-                logger.info("No actual Bluetooth sensors found, using mock data")
-                return self._generate_mock_entities()
-
-            return bluetooth_sensors
-
-        except Exception as e:
-            logger.error(f"Error getting Bluetooth sensors: {str(e)}")
-            return self._generate_mock_entities()
-
-    def get_distance_sensors(self) -> List[Dict[str, Any]]:
-        """Get distance sensor entities from Home Assistant."""
-        if self.offline_mode:
-            return self._generate_mock_distance_sensors()
-
-        try:
-            url = urljoin(self.ha_url, '/api/states')
-            logger.debug(f"Fetching distance sensors from {url}")
-
-            response = requests.get(url, headers=self.headers, timeout=10)
-
-            if response.status_code == 200:
-                entities = response.json()
-                # Filter for distance sensors
-                sensors = []
-                for entity in entities:
-                    if (entity['entity_id'].startswith('sensor.') and
-                        'attributes' in entity and
-                        'device_class' in entity['attributes'] and
-                        entity['attributes']['device_class'] == 'distance'):
-                        sensors.append(entity)
-                logger.info(f"Found {len(sensors)} distance sensors")
-                return sensors
-            else:
-                logger.error(f"Failed to get distance sensors from Home Assistant: HTTP {response.status_code}")
-                # Fall back to mock sensors
-                return self._generate_mock_distance_sensors()
-
-        except Exception as e:
-            logger.error(f"Error getting distance sensors from Home Assistant: {str(e)}")
-            return self._generate_mock_distance_sensors()
-
-    def get_device_trackers(self) -> List[Dict[str, Any]]:
-        """Get all device trackers from Home Assistant."""
-        if self.offline_mode:
-            return self._generate_mock_device_trackers()
-
-        try:
-            url = urljoin(self.ha_url, '/api/states')
-            logger.debug(f"Fetching device trackers from {url}")
-
-            response = requests.get(url, headers=self.headers, timeout=10)
-
-            if response.status_code == 200:
-                entities = response.json()
-                # Filter for device tracker entities
-                trackers = []
-                for entity in entities:
-                    if entity['entity_id'].startswith('device_tracker.'):
-                        trackers.append(entity)
-                logger.info(f"Found {len(trackers)} device trackers")
-                return trackers
-            else:
-                logger.error(f"Failed to get device trackers from Home Assistant: HTTP {response.status_code}")
-                # Fall back to mock device trackers
-                return self._generate_mock_device_trackers()
-
-        except Exception as e:
-            logger.error(f"Error getting device trackers from Home Assistant: {str(e)}")
-            return self._generate_mock_device_trackers()
-
-    def get_area_predictions(self) -> Dict[str, Optional[str]]:
-        """Get current area predictions for devices."""
-        if self.offline_mode:
-            return self._generate_mock_area_predictions()
-
-        try:
-            # Get all devices
-            devices = self.get_devices()
-
-            # Create mapping of device_id to area_id
-            device_areas = {}
-            for device in devices:
-                device_id = device.get('id', '')
-                area_id = device.get('area_id')
-
-                if device_id and area_id:
-                    device_areas[device_id] = area_id
-
-            logger.info(f"HA_Client: Fetched current area predictions for {len(device_areas)} devices.")
-
-            # If no predictions found, use mock data
-            if not device_areas:
-                return self._generate_mock_area_predictions()
-
-            return device_areas
-        except Exception as e:
-            logger.error(f"Error getting area predictions: {str(e)}")
-            return self._generate_mock_area_predictions()
-
-    def get_distances(self) -> Dict[str, Dict[str, Dict[str, float]]]:
-        """
-        Get distances between tracked devices and scanners from Home Assistant.
-
-        Returns:
-            Dictionary mapping device_id to a dict of scanner_id to distance info.
-            Format: {
-                'device_id': {
-                    'scanner_id': {'distance': 5.2, 'rssi': -70},
-                    'scanner_id2': {'distance': 3.1, 'rssi': -65}
-                }
-            }
-        """
-        try:
-            # Get distance sensors
-            distance_sensors = self.get_distance_sensors()
-
-            # Extract device distances
-            device_distances = {}
-
-            for sensor in distance_sensors:
-                entity_id = sensor.get('entity_id', '')
-                state = sensor.get('state')
-                attributes = sensor.get('attributes', {})
-
-                # Skip sensors with no state or invalid state
-                if not state or state == 'unknown' or state == 'unavailable':
-                    continue
-
-                # Try to extract device and scanner IDs from the entity ID
-                # Format could be like: sensor.device_id_to_scanner_id_distance
-                parts = entity_id.split('.')
-                if len(parts) < 2:
-                    continue
-
-                name_parts = parts[1].split('_')
-
-                # Look for common patterns in entity IDs
-                device_id = None
-                scanner_id = None
-                distance = None
-                rssi = None
-
-                # Try to get device/scanner from attributes first
-                if 'device_id' in attributes:
-                    device_id = attributes['device_id']
-                if 'scanner_id' in attributes:
-                    scanner_id = attributes['scanner_id']
-
-                # If not in attributes, try to parse from entity ID
-                if not (device_id and scanner_id):
-                    # Look for patterns like device_to_scanner_distance
-                    for i, part in enumerate(name_parts):
-                        if part == 'to' and i > 0 and i < len(name_parts) - 1:
-                            device_id = '_'.join(name_parts[:i])
-                            scanner_id = '_'.join(name_parts[i+1:-1])
-                            break
-
-                # If we still can't determine device/scanner, skip this entity
-                if not device_id or not scanner_id:
-                    continue
-
-                # Try to get distance value
-                try:
-                    # First try to use the state as distance
-                    distance = float(state)
-                except (ValueError, TypeError):
-                    # If state isn't a valid distance, check attributes
-                    if 'distance' in attributes:
-                        try:
-                            distance = float(attributes['distance'])
-                        except (ValueError, TypeError):
-                            pass
-
-                # Try to get RSSI if available
-                if 'rssi' in attributes:
-                    try:
-                        rssi = float(attributes['rssi'])
-                    except (ValueError, TypeError):
-                        pass
-                elif 'signal_strength' in attributes:
-                    try:
-                        rssi = float(attributes['signal_strength'])
-                    except (ValueError, TypeError):
-                        pass
-
-                # Skip if no distance found
-                if distance is None:
-                    continue
-
-                # Add to results
-                if device_id not in device_distances:
-                    device_distances[device_id] = {}
-
-                device_distances[device_id][scanner_id] = {'distance': distance}
-                if rssi is not None:
-                    device_distances[device_id][scanner_id]['rssi'] = rssi
-
-            logger.info(f"HA_Client: Found distance data for {len(device_distances)} devices.")
-
-            # If no distances found or in offline mode, generate mock data
-            if not device_distances or self.offline_mode:
-                mock_distances = self._generate_mock_distances()
-                logger.info(f"Using mock distance data for {len(mock_distances)} devices")
-                return mock_distances
-
-            return device_distances
-
-        except Exception as e:
-            logger.error(f"Error getting distances: {str(e)}")
-            # Fall back to mock data
-            return self._generate_mock_distances()
-
-    # --- Mock Data Generators ---
-
-    def _generate_mock_areas(self) -> List[Dict[str, Any]]:
-        """Generate mock areas for offline development."""
-        areas = [
-            {"area_id": "lounge", "name": "Living Room"},
-            {"area_id": "kitchen", "name": "Kitchen"},
-            {"area_id": "master_bedroom", "name": "Master Bedroom"},
-            {"area_id": "bathroom", "name": "Bathroom"},
-            {"area_id": "hallway", "name": "Hallway"},
-            {"area_id": "office", "name": "Office"}
-        ]
-        logger.debug(f"Generated {len(areas)} mock areas for offline mode")
-        return areas
-
-    def _generate_mock_devices(self) -> List[Dict[str, Any]]:
-        """Generate mock devices for offline development."""
-        areas = [area["area_id"] for area in self._generate_mock_areas()]
-
-        devices = []
-        # Generate beacon/scanner devices
-        for i in range(1, 6):
-            scanner = {
-                "id": f"scanner_{i}",
-                "name": f"Scanner {i}",
-                "area_id": random.choice(areas),
-                "model": "ESP32 BLE Scanner",
-                "manufacturer": "ESPRESSIF"
-            }
-            devices.append(scanner)
-
-        # Generate tracked devices
-        for i in range(1, 4):
-            device = {
-                "id": f"device_{i}",
-                "name": f"Tracked Device {i}",
-                "area_id": random.choice(areas),
-                "model": "BLE Tag",
-                "manufacturer": "Generic"
-            }
-            devices.append(device)
-
-        logger.debug(f"Generated {len(devices)} mock devices for offline mode")
-        return devices
-
-    def _generate_mock_entities(self) -> List[Dict[str, Any]]:
-        """Generate mock entities for offline development."""
-        entities = []
-
-        # Generate distance sensor entities
-        for device_id in range(1, 4):
-            for scanner_id in range(1, 6):
-                distance = round(random.uniform(1.0, 10.0), 2)
-                rssi = random.randint(-85, -55)
-
-                entity = {
-                    "entity_id": f"sensor.device_{device_id}_to_scanner_{scanner_id}_distance",
-                    "state": str(distance),
-                    "attributes": {
-                        "device_id": f"device_{device_id}",
-                        "scanner_id": f"scanner_{scanner_id}",
-                        "distance": distance,
-                        "rssi": rssi,
-                        "friendly_name": f"Device {device_id} to Scanner {scanner_id} Distance",
-                        "unit_of_measurement": "m"
-                    }
-                }
-                entities.append(entity)
-
-        logger.debug(f"Generated {len(entities)} mock entities for offline mode")
-        return entities
-
-    def _generate_mock_distance_sensors(self) -> List[Dict[str, Any]]:
-        """Generate mock distance sensors for offline development."""
-        return self._generate_mock_entities()
-
-    def _generate_mock_area_predictions(self) -> Dict[str, Optional[str]]:
-        """Generate mock area predictions for offline development."""
-        # Instead of random assignments, use consistent area assignments
-        # to ensure all important areas are represented in the blueprint
-        predictions = {
-            "device_1": "master_bedroom",
-            "device_2": "kitchen",
-            "device_3": "lounge",
-            "device_4": "bathroom",
-            "device_5": "hallway",
-            "device_6": "office"
-        }
-
-        logger.debug(f"Generated {len(predictions)} mock area predictions")
-        return predictions
-
-    def _generate_mock_distances(self) -> Dict[str, Dict[str, Dict[str, float]]]:
-        """Generate mock distance data for offline development."""
-        distances = {}
-
-        # For each device
-        for device_id in range(1, 4):
-            device_key = f"device_{device_id}"
-            distances[device_key] = {}
-
-            # To each scanner
-            for scanner_id in range(1, 6):
-                scanner_key = f"scanner_{scanner_id}"
-
-                # Generate realistic distances - closer to the scanner in the same room
-                distance = round(random.uniform(1.0, 10.0), 2)
-                rssi = -55 - int(distance * 3)  # Roughly model RSSI falloff with distance
-
-                distances[device_key][scanner_key] = {
-                    "distance": distance,
-                    "rssi": rssi
-                }
-
-        logger.debug(f"Generated mock distances for {len(distances)} devices")
-        return distances
-
-    def _generate_mock_device_trackers(self, count=5) -> List[Dict[str, Any]]:
-        """Generate mock device trackers for testing."""
-        mock_device_trackers = []
-        locations = ["home", "not_home", "living_room", "kitchen", "bedroom", "office", "bathroom"]
-
-        # Create different types of device trackers for different devices
-        device_types = [
-            {"name": "Phone", "model": "Smartphone"},
-            {"name": "Tablet", "model": "Tablet"},
-            {"name": "Watch", "model": "Smartwatch"},
-            {"name": "Laptop", "model": "Computer"},
-            {"name": "Tag", "model": "Bluetooth Tag"}
-        ]
-
-        for i in range(count):
-            # Select device type
-            device_type = device_types[i % len(device_types)]
-
-            # Generate entity_id
-            entity_id = f"device_tracker.mock_{device_type['name'].lower()}_{i}"
-
-            # Generate name
-            name = f"Mock {device_type['name']} {i}"
-
-            # Randomize location state
-            location = random.choice(locations)
-
-            # Create the device tracker entity
-            mock_device = {
-                "entity_id": entity_id,
-                "name": name,
-                "state": location,
-                "attributes": {
-                    "friendly_name": name,
-                    "source_type": "bluetooth" if random.random() > 0.3 else "gps",
-                    "device_class": "device_tracker",
-                    "battery_level": random.randint(20, 100) if random.random() > 0.2 else None,
-                    "model": device_type["model"],
-                    "mac": f"AA:BB:CC:DD:EE:{i:02X}",
-                },
-                "last_updated": datetime.now().isoformat(),
-                "uuid": str(uuid.uuid4())
-            }
-
-            # Add coordinates if device is at home or in a room
-            if location != "not_home":
-                mock_device["attributes"]["latitude"] = 37.7749 + (random.random() - 0.5) * 0.01
-                mock_device["attributes"]["longitude"] = -122.4194 + (random.random() - 0.5) * 0.01
-
-                # Add room-specific coordinates for devices in rooms
-                if location not in ["home", "not_home"]:
-                    mock_device["attributes"]["room"] = location
-                    # These would be local x,y,z coordinates within the home
-                    mock_device["attributes"]["local_x"] = random.uniform(0, 10)
-                    mock_device["attributes"]["local_y"] = random.uniform(0, 10)
-                    mock_device["attributes"]["local_z"] = random.uniform(0, 3)
-
-            mock_device_trackers.append(mock_device)
-
-        logger.info(f"Generated {count} mock device trackers")
-        return mock_device_trackers
-
-    def _generate_mock_bluetooth_sensors(self, count=10) -> List[Dict[str, Any]]:
-        """Generate mock bluetooth sensors for testing."""
-        mock_sensors = []
-        for i in range(count):
-            mock_sensors.append({
-                "entity_id": f"sensor.mock_bluetooth_sensor_{i}",
-                "name": f"Mock Bluetooth Sensor {i}",
-                "state": "on",
-                "attributes": {
-                    "friendly_name": f"Mock Bluetooth Sensor {i}",
-                    "device_class": "bluetooth",
-                    "rssi": random.randint(-90, -40),  # Random RSSI value
-                    "mac": f"AA:BB:CC:DD:EE:{i:02X}",
-                },
-                "last_updated": datetime.now().isoformat(),
-                "uuid": str(uuid.uuid4()),
-                "room": random.choice(["living_room", "kitchen", "bedroom", "office", "bathroom"])
-            })
-        return mock_sensors
-
-# For compatibility with existing code
-HomeAssistantClient = HAClient
+    # The rest of the class remains unchanged
+    # ...

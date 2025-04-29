@@ -467,53 +467,77 @@ class AIProcessor:
                 logger.warning("No distance data available for positioning")
                 return {}, {}
 
-            # Organize distance data
-            distance_matrix = {}
+            # Debug log to see what we're working with
+            logger.info(f"Retrieved {len(distances)} distance records for positioning")
+            if distances and len(distances) > 0:
+                logger.debug(f"First distance record structure: {distances[0]}")
+
+            # Extract all unique device and scanner IDs directly
             devices = set()
             scanners = set()
+            device_scanner_pairs = set()  # To track unique pairs
 
             for record in distances:
-                device_id = record['tracked_device_id']
-                scanner_id = record['scanner_id']
-                distance = record['distance']
+                if not isinstance(record, dict):
+                    logger.warning(f"Unexpected distance record format (not a dict): {record}")
+                    continue
 
+                device_id = record.get('tracked_device_id')
+                scanner_id = record.get('scanner_id')
+
+                if not device_id or not scanner_id:
+                    logger.warning(f"Missing device_id or scanner_id in distance record: {record}")
+                    continue
+
+                # Add to our sets - these should be unique values
                 devices.add(device_id)
                 scanners.add(scanner_id)
+                device_scanner_pairs.add((device_id, scanner_id))
 
-                if device_id not in distance_matrix:
-                    distance_matrix[device_id] = {}
+            # Log what we found - good for debugging
+            logger.info(f"Found {len(devices)} unique devices: {devices}")
+            logger.info(f"Found {len(scanners)} unique scanners: {scanners}")
+            logger.info(f"Found {len(device_scanner_pairs)} unique device-scanner pairs")
 
-                distance_matrix[device_id][scanner_id] = distance
-
-            # Prepare for MDS
+            # Combine both sets for MDS
             all_nodes = list(devices) + list(scanners)
             n_nodes = len(all_nodes)
 
-            if n_nodes <= 1:
-                logger.warning("Insufficient nodes for positioning (need at least 2)")
+            if n_nodes < 3:
+                logger.error(f"Insufficient nodes for positioning (need at least 3, found {n_nodes})")
                 return {}, {}
 
-            # Create node index mapping
+            # Create node index mapping for the distance matrix
             node_indices = {node: i for i, node in enumerate(all_nodes)}
 
             # Create dissimilarity matrix for MDS
-            dissimilarity = np.zeros((n_nodes, n_nodes))
-            for i in range(n_nodes):
-                for j in range(n_nodes):
-                    if i == j:
-                        continue
+            dissimilarity = np.ones((n_nodes, n_nodes)) * 1000.0  # Large default distance
+            np.fill_diagonal(dissimilarity, 0)  # Diagonal should be zero (distance to self)
 
-                    node_i = all_nodes[i]
-                    node_j = all_nodes[j]
+            # Fill the matrix with actual distances
+            distance_count = 0
+            for record in distances:
+                try:
+                    device_id = record.get('tracked_device_id')
+                    scanner_id = record.get('scanner_id')
+                    distance_value = record.get('distance')
 
-                    # If we have a direct measurement between these nodes
-                    if node_i in distance_matrix and node_j in distance_matrix[node_i]:
-                        dissimilarity[i, j] = distance_matrix[node_i][node_j]
-                    elif node_j in distance_matrix and node_i in distance_matrix[node_j]:
-                        dissimilarity[i, j] = distance_matrix[node_j][node_i]
-                    else:
-                        # If we don't have a direct measurement, use a large value
-                        dissimilarity[i, j] = 1000.0
+                    if device_id and scanner_id and distance_value is not None:
+                        # Get matrix indices for this device-scanner pair
+                        device_idx = node_indices.get(device_id)
+                        scanner_idx = node_indices.get(scanner_id)
+
+                        if device_idx is not None and scanner_idx is not None:
+                            # Set the distance in both directions (symmetric matrix)
+                            dissimilarity[device_idx, scanner_idx] = distance_value
+                            dissimilarity[scanner_idx, device_idx] = distance_value
+                            distance_count += 1
+                        else:
+                            logger.warning(f"Could not find indices for device {device_id} or scanner {scanner_id}")
+                except Exception as e:
+                    logger.warning(f"Error processing distance record: {e}")
+
+            logger.info(f"Added {distance_count} actual distances to the dissimilarity matrix")
 
             # Fill in missing values using shortest path algorithm (Floyd-Warshall)
             for k in range(n_nodes):
@@ -528,8 +552,30 @@ class AIProcessor:
                 mds_dimensions = 3  # Cap at 3D
 
             seed = 42  # For reproducibility
-            mds = MDS(n_components=mds_dimensions, dissimilarity='precomputed', random_state=seed, n_init=10)
-            positions = mds.fit_transform(dissimilarity)
+
+            try:
+                mds = MDS(n_components=mds_dimensions,
+                          dissimilarity='precomputed',
+                          random_state=seed,
+                          n_init=10,
+                          normalized_stress='auto')
+                positions = mds.fit_transform(dissimilarity)
+                logger.info(f"MDS calculation successful with stress: {mds.stress_:.4f}")
+            except Exception as e:
+                logger.error(f"MDS calculation failed: {e}")
+                logger.info("Trying alternative MDS approach...")
+
+                # Fall back to a simpler MDS configuration
+                try:
+                    mds = MDS(n_components=mds_dimensions,
+                              dissimilarity='precomputed',
+                              random_state=seed)
+                    positions = mds.fit_transform(dissimilarity)
+                    logger.info(f"Alternative MDS succeeded with stress: {mds.stress_:.4f}")
+                except Exception as e2:
+                    logger.error(f"Alternative MDS also failed: {e2}")
+                    logger.warning("Using random positions as fallback")
+                    positions = np.random.rand(n_nodes, mds_dimensions) * 10
 
             # Map positions back to devices and scanners
             device_positions = {}
