@@ -854,3 +854,48 @@ class AIProcessor:
         ]
 
         return walls
+
+    def _predict_room_type(self, room_name: str) -> str:
+        """
+        Predict the room type from the room name.
+
+        Args:
+            room_name: The name of the room
+
+        Returns:
+            The predicted room type
+        """
+        logger.info(f"Predicting room type for room name: {room_name}")
+
+        # Lowercase the name for better matching
+        name_lower = room_name.lower()
+
+        # Dictionary of common room types and associated keywords
+        room_types = {
+            'living_room': ['living', 'lounge', 'family', 'tv', 'den', 'sitting'],
+            'kitchen': ['kitchen', 'cooking', 'pantry'],
+            'dining_room': ['dining', 'breakfast', 'eating'],
+            'bedroom': ['bedroom', 'master', 'guest', 'kids', 'child', 'nursery', 'teen', 'alex'],
+            'bathroom': ['bathroom', 'bath', 'shower', 'toilet', 'wc', 'restroom', 'powder'],
+            'office': ['office', 'study', 'work', 'computer', 'library'],
+            'hallway': ['hall', 'hallway', 'corridor', 'entryway', 'foyer', 'entrance'],
+            'laundry': ['laundry', 'utility', 'washing'],
+            'garage': ['garage', 'workshop', 'carport'],
+            'storage': ['storage', 'closet', 'attic', 'basement']
+        }
+
+        # Check for direct matches
+        for room_type, keywords in room_types.items():
+            for keyword in keywords:
+                if keyword in name_lower:
+                    logger.debug(f"Room type match: '{room_name}' -> '{room_type}' (keyword: {keyword})")
+                    return room_type
+
+        # Special case for ambiguous names
+        if 'room' in name_lower:
+            logger.debug(f"Generic room detected for '{room_name}', defaulting to living_room")
+            return 'living_room'
+
+        # If no match was found, use a default
+        logger.debug(f"No room type match for '{room_name}', defaulting to 'other'")
+        return 'other'
