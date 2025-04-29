@@ -95,125 +95,122 @@ class BlueprintGenerator:
         logger.info("AI processor initialized successfully")
 
     def generate_blueprint(self) -> bool:
-        """Generate a 3D blueprint of the environment."""
+        """Generate a full 3D blueprint."""
         try:
+            from .db import get_recent_distances, get_recent_area_predictions
+            from .ai_processor import AIProcessor
+
             logger.info("Starting blueprint generation process...")
 
-            # Retrieve MDS positions from AI processor
-            device_positions, anchor_positions = self.ai_processor.get_relative_positions()
-            if not device_positions:
-                logger.error("Failed to generate device positions")
+            # Initialize AI processor
+            ai_processor = AIProcessor()
+
+            # Fetch distance data
+            distance_window = self.config.get('generation_settings', {}).get('distance_window_minutes', 15)
+            distance_data = get_recent_distances(time_window_minutes=distance_window)
+
+            if not distance_data:
+                logger.error("No distance data available for blueprint generation")
                 return False
 
-            logger.info(f"Generated relative positions for {len(device_positions)} devices")
+            logger.info(f"Retrieved {len(distance_data)} distance records for blueprint generation")
 
-            # Process the positions and prepare for room generation
-            device_coords_by_area = {}
+            # Get area predictions
+            area_window = self.config.get('generation_settings', {}).get('area_window_minutes', 10)
+            area_predictions = get_recent_area_predictions(time_window_minutes=area_window)
 
-            # Skip specific entities to exclude from the tracked devices list
-            skip_entities = set()
-            for entity_id, pos_data in anchor_positions.items():
-                if pos_data.get('is_reference', False):
-                    skip_entities.add(entity_id)
+            logger.info(f"Retrieved area predictions for {len(area_predictions)} devices")
 
-            # Process all device positions
-            tracked_device_count = 0
-            excluded_count = len(skip_entities)
-            no_area_count = 0
-            device_count_by_area = {}
+            # Step 1: Calculate relative positions using MDS
+            # Use the improved get_relative_positions method instead of run_relative_positioning
+            device_positions, scanner_positions = ai_processor.get_relative_positions()
 
-            # Get recent area predictions for these devices
-            from server.db import get_recent_area_predictions
-            area_predictions = get_recent_area_predictions()
-            logger.debug(f"Found {len(area_predictions)} recent area predictions")
+            if not device_positions and not scanner_positions:
+                logger.error("Failed to calculate relative positions")
+                return False
 
-            # Process device positions and assign them to areas
-            for device_id, coords in device_positions.items():
-                tracked_device_count += 1
+            logger.info(f"Calculated relative positions for {len(device_positions)} devices and {len(scanner_positions)} scanners")
 
-                # Skip if this is in our exclude list
-                if device_id in skip_entities:
-                    continue
-
-                # Get the area prediction for this device
-                area_id = area_predictions.get(device_id)
-
-                # If we have an area prediction, add the device to the area
-                if area_id:
-                    if area_id not in device_coords_by_area:
-                        device_coords_by_area[area_id] = []
-                        device_count_by_area[area_id] = 0
-
-                    # Add the device coordinates to this area
-                    device_data = {
-                        'x': coords.get('x', 0),
-                        'y': coords.get('y', 0),
-                        'z': coords.get('z', 0),
-                        'device_id': device_id
-                    }
-                    device_coords_by_area[area_id].append(device_data)
-                    device_count_by_area[area_id] += 1
-                else:
-                    no_area_count += 1
-
-            logger.info(f"Processed {tracked_device_count + excluded_count} total entities from MDS.")
-            logger.info(f"  Skipped {excluded_count} scanners/reference points.")
-            logger.info(f"  Considered {tracked_device_count} as potential tracked devices.")
-            logger.info(f"  {no_area_count} tracked devices had no area prediction.")
-
-            # Calculate devices with area predictions
-            devices_with_area = tracked_device_count - no_area_count
-            logger.info(f"  {devices_with_area} tracked devices were added to {len(device_coords_by_area)} areas.")
-
-            # Fetch all Home Assistant areas to ensure we include even areas without devices
+            # Step 2: Get area definitions
             try:
-                # Use the already initialized HA client instead of creating a new one
-                all_areas = self.ha_client.get_areas()
-                logger.info(f"Retrieved {len(all_areas)} areas from Home Assistant")
+                from .ha_client import get_ha_client
+                ha_client = get_ha_client()
+                areas = ha_client.get_areas()
+                logger.info(f"Retrieved {len(areas)} areas from Home Assistant")
             except Exception as e:
-                logger.error(f"Error fetching Home Assistant areas: {str(e)}")
-                all_areas = []  # Use empty list instead of None so the empty areas still get processed
+                logger.error(f"Error retrieving areas: {e}")
+                # Create some default areas
+                areas = [
+                    {"area_id": "living_room", "name": "Living Room"},
+                    {"area_id": "kitchen", "name": "Kitchen"},
+                    {"area_id": "bedroom", "name": "Bedroom"},
+                    {"area_id": "bathroom", "name": "Bathroom"},
+                    {"area_id": "office", "name": "Office"}
+                ]
+                logger.warning(f"Using {len(areas)} default areas")
 
-            # Generate rooms from the grouped points
-            rooms = self._determine_rooms(all_areas, device_coords_by_area)
-            if not rooms:
-                logger.error("Failed to generate rooms from points")
+            # Step 3: Generate target layout
+            target_layout = self._generate_target_layout(areas)
+            logger.info("Generated target layout for areas")
+
+            # Step 4: Group devices by area
+            device_area_groups = self._group_devices_by_area(device_positions, area_predictions, areas)
+            logger.info(f"Grouped devices into {len(device_area_groups)} areas")
+
+            # Step 5: Calculate centroids for each area group
+            area_centroids = self._calculate_area_centroids(device_area_groups)
+            logger.info(f"Calculated centroids for {len(area_centroids)} areas")
+
+            # Step 6: Calculate transformation using Procrustes analysis
+            transform_params = self._calculate_transformation(area_centroids, target_layout)
+            if not transform_params:
+                logger.error("Failed to calculate transformation")
                 return False
 
-            # Calculate room positions, dimensions, and walls
-            rooms = self._calculate_room_dimensions(rooms)
-            walls = self._generate_walls(rooms)
-            logger.info(f"Generated {len(walls)} walls")
+            logger.info("Calculated spatial transformation parameters")
 
-            # Group rooms into floors
-            floors = self._organize_floors(rooms)
-            logger.info(f"Grouped {len(rooms)} rooms into {len(floors)} floors")
+            # Step 7: Transform all positions (devices and scanners)
+            transformed_positions = self._apply_transformation(
+                {**device_positions, **scanner_positions},
+                transform_params
+            )
+            logger.info(f"Transformed {len(transformed_positions)} positions")
 
-            # Predict objects (furniture, fixtures, etc.) for each room
-            objects = self.ai_processor.predict_objects(rooms)
+            # Step 8: Generate room geometries
+            rooms = self._generate_rooms(transformed_positions, device_area_groups, areas)
+            logger.info(f"Generated {len(rooms)} room geometries")
+
+            # Step 9: Infer walls between rooms
+            walls = self._infer_walls(rooms)
+            logger.info(f"Inferred {len(walls)} walls")
+
+            # Step 10: Predict objects for each room
+            objects = ai_processor.predict_objects(rooms)
             logger.info(f"Predicted {len(objects)} objects")
 
-            # Build the complete blueprint
+            # Step 11: Assemble and save the blueprint
             blueprint = {
                 'generated_at': datetime.now().isoformat(),
                 'rooms': rooms,
                 'walls': walls,
-                'floors': floors,
-                'objects': objects
+                'objects': objects,
+                'positions': transformed_positions,
+                'floors': self._determine_floors(rooms)
             }
 
-            # Save to database
+            # Save blueprint to database
+            from .db import save_blueprint_to_sqlite
             success = save_blueprint_to_sqlite(blueprint)
-            if success:
-                logger.info(f"Successfully saved blueprint with {len(rooms)} rooms")
-            else:
-                logger.error("Failed to save blueprint to database")
 
-            logger.info("Blueprint generation completed successfully")
-            return True
+            if success:
+                logger.info("Blueprint successfully generated and saved")
+                return True
+            else:
+                logger.error("Failed to save blueprint")
+                return False
 
         except Exception as e:
-            logger.error(f"Blueprint generation failed: {str(e)}", exc_info=True)
+            logger.error(f"Error generating blueprint: {str(e)}", exc_info=True)
             return False
 
     def _determine_rooms(self, areas: List[Dict], device_coords_by_area: Dict) -> List[Dict]:

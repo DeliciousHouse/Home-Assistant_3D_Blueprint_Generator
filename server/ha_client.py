@@ -471,37 +471,66 @@ class HAClient:
     def get_areas(self):
         """Get all areas from Home Assistant."""
         try:
-            # HA API provides multiple possible area endpoints, try them in order
-            # First try modern areas endpoint
-            areas = self._api_call('areas')
+            # Try multiple area endpoint variations in order of likelihood
+            area_endpoints = [
+                'api/config/areas',           # Current API endpoint
+                'api/areas',                  # Alternative API endpoint
+                'api/area_registry',          # New alternative
+                'api/states/area',            # Another possibility
+                'config/area_registry',       # Older API endpoint
+                'areas',                      # Legacy endpoint
+                'core/api/config/areas',      # Try with core prefix
+                'core/api/areas',             # Another core variation
+                'supervisor/core/api/config/areas',  # Try supervisor path
+            ]
 
-            if areas:
-                logger.info(f"Retrieved {len(areas)} areas from Home Assistant API (areas endpoint)")
-                return areas
+            for endpoint in area_endpoints:
+                logger.debug(f"Trying area endpoint: {endpoint}")
+                areas = self._api_call(endpoint)
 
-            # Try area registry endpoint - which is more commonly available
-            areas = self._api_call('config/area_registry')
+                if areas and isinstance(areas, list):
+                    logger.info(f"Retrieved {len(areas)} areas from Home Assistant API ({endpoint} endpoint)")
+                    return areas
+                elif areas:
+                    logger.debug(f"Area endpoint {endpoint} returned non-list result: {type(areas)}")
 
-            if areas:
-                logger.info(f"Retrieved {len(areas)} areas from Home Assistant API (area registry endpoint)")
-                return areas
-
-            # Try getting device trackers and extracting areas from their attributes
-            logger.debug("Trying to extract areas from device tracker attributes")
-            device_trackers = self.get_device_trackers()
+            # If direct API calls fail, try extracting areas from entity attributes
+            logger.debug("Trying to extract areas from entity attributes")
             area_ids = {}
+
+            # First try device trackers
+            device_trackers = self.get_device_trackers()
             for tracker in device_trackers:
                 area_id = tracker.get('attributes', {}).get('area_id')
                 area_name = tracker.get('attributes', {}).get('area_name') or area_id
                 if area_id:
-                    area_ids[area_id] = {"area_id": area_id, "name": area_name, "derived": True}
+                    area_ids[area_id] = {"area_id": area_id, "name": area_name or area_id.replace('_', ' ').title(), "derived": True}
+
+            # Then try all entities for more area references
+            states = self.get_states()
+            if states:
+                for entity in states:
+                    attrs = entity.get('attributes', {})
+                    if 'area_id' in attrs and attrs['area_id'] not in area_ids:
+                        area_id = attrs['area_id']
+                        area_name = attrs.get('area_name') or area_id.replace('_', ' ').title()
+                        area_ids[area_id] = {"area_id": area_id, "name": area_name, "derived": True}
 
             if area_ids:
-                logger.info(f"Extracted {len(area_ids)} areas from device tracker attributes")
+                logger.info(f"Extracted {len(area_ids)} areas from entity attributes")
                 return list(area_ids.values())
 
-            logger.warning("Failed to get areas from API, using mock areas")
-            return self._generate_mock_areas()
+            # As a last resort, create some standard areas for testing
+            logger.warning("Failed to get areas from API or entity attributes, using standard areas")
+            standard_areas = [
+                {"area_id": "living_room", "name": "Living Room"},
+                {"area_id": "kitchen", "name": "Kitchen"},
+                {"area_id": "bedroom", "name": "Bedroom"},
+                {"area_id": "office", "name": "Office"},
+                {"area_id": "bathroom", "name": "Bathroom"},
+                {"area_id": "entry", "name": "Entry"}
+            ]
+            return standard_areas
         except Exception as e:
             logger.error(f"Error getting areas: {str(e)}")
             return self._generate_mock_areas()
