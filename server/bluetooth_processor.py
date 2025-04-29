@@ -10,6 +10,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import random
 from scipy.optimize import minimize
+import re
 
 # Import local modules with fallbacks
 try:
@@ -72,8 +73,8 @@ class BluetoothProcessor:
 
         # Get processing configuration
         self.processing_params = self.config.get('processing_params', {
-            'rssi_power_coefficient': -20,
-            'environment_factor': 2.0,
+            'rssi_power_coefficient': -66,  # Updated default reference power
+            'environment_factor': 2.8,       # Updated default path loss exponent
             'distance_filter_threshold': 15,  # meters
             'distance_time_window': 15,  # minutes
             'prediction_time_window': 10,  # minutes
@@ -82,7 +83,8 @@ class BluetoothProcessor:
             'trilateration_beta': 0.5,
             'use_kalman_filter': True,
             'kalman_process_noise': 0.01,
-            'kalman_measurement_noise': 0.1
+            'kalman_measurement_noise': 0.1,
+            'rssi_threshold': -85
         })
 
         # Initialize counters and timestamps
@@ -91,6 +93,15 @@ class BluetoothProcessor:
 
         # Cache of device metadata (name, type, etc.)
         self.device_metadata = {}
+
+        # Keep track of seen devices and scanners
+        self.seen_devices = set()
+        self.seen_scanners = set()
+
+        # Regular expression for extracting device and scanner IDs from sensor names
+        self.distance_sensor_pattern = re.compile(r'(\w+)_distance_(\w+)')
+        # Pattern to extract device ID from entity ID
+        self.device_id_pattern = re.compile(r'sensor\.(\w+)_')
 
         self._initialized = True
         logger.info("BluetoothProcessor initialized successfully")
@@ -146,6 +157,11 @@ class BluetoothProcessor:
                        f"Logged {distances_logged} distances and {areas_logged} area predictions. "
                        f"Calculated {positions_calculated} positions.")
 
+            # Log the unique devices and scanners found for debugging
+            if distances_logged > 0:
+                logger.debug(f"Unique tracked devices: {self.seen_devices}")
+                logger.debug(f"Unique scanners: {self.seen_scanners}")
+
             return {
                 'status': 'success',
                 'processing_time': processing_time,
@@ -169,35 +185,108 @@ class BluetoothProcessor:
         Returns number of distances logged.
         """
         distances_logged = 0
+        rssi_threshold = self.processing_params.get('rssi_threshold', -85)
 
         # Create a map of scanner IDs to their positions
         scanner_positions = {}
         for ref_id, ref_data in reference_positions.items():
             scanner_positions[ref_id] = (ref_data['x'], ref_data['y'], ref_data['z'])
 
+        # Extract distance sensor entities specifically
         for sensor in bt_sensors:
-            sensor_id = sensor.get('entity_id', '').replace('sensor.', '')
-            tracked_device_id = sensor.get('attributes', {}).get('source', 'unknown')
+            entity_id = sensor.get('entity_id', '')
+            attributes = sensor.get('attributes', {})
+            state = sensor.get('state', None)
 
-            # Skip if no scanner position available
-            if sensor_id not in scanner_positions:
-                continue
+            # Try multiple methods to identify distance sensors
 
-            # Get RSSI value
-            rssi = sensor.get('attributes', {}).get('rssi')
-            if rssi is None:
-                continue
+            # Method 1: Look for entity_ids with _distance_ in them
+            distance_match = self.distance_sensor_pattern.search(entity_id)
+            if distance_match:
+                tracked_device_id = distance_match.group(1)
+                scanner_id = distance_match.group(2)
 
-            # Convert RSSI to distance
-            distance = self._rssi_to_distance(rssi)
+                # Try to extract distance from state or attributes
+                distance = None
+                if state and state != 'unknown' and state != 'unavailable':
+                    try:
+                        distance = float(state)
+                    except (ValueError, TypeError):
+                        pass
 
-            # Skip unreliable long distances
-            if distance > self.processing_params.get('distance_filter_threshold', 15):
-                continue
+                # If we found a valid distance, log it
+                if distance is not None:
+                    self.seen_devices.add(tracked_device_id)
+                    self.seen_scanners.add(scanner_id)
 
-            # Log the distance
-            if save_distance_log(tracked_device_id, sensor_id, distance):
-                distances_logged += 1
+                    if save_distance_log(tracked_device_id, scanner_id, distance):
+                        distances_logged += 1
+                    continue  # Go to next sensor
+
+            # Method 2: Look for sensors with rssi values that we can convert to distances
+            rssi = attributes.get('rssi')
+            if rssi is not None:
+                # Skip weak signals
+                if rssi < rssi_threshold:
+                    continue
+
+                # Extract device and scanner IDs from attributes if available
+                tracked_device_id = attributes.get('source')
+                scanner_id = attributes.get('scanner') or attributes.get('scanner_id')
+
+                # If not in attributes, try to extract from entity_id
+                if not tracked_device_id or not scanner_id:
+                    # Try to extract from entity_id
+                    device_match = self.device_id_pattern.search(entity_id)
+                    if device_match:
+                        if not tracked_device_id:
+                            tracked_device_id = device_match.group(1)
+
+                        # Use the entity_id itself as the scanner_id if we couldn't extract one
+                        if not scanner_id:
+                            scanner_id = entity_id.replace('sensor.', '')
+
+                # If we have both IDs and RSSI, calculate and log distance
+                if tracked_device_id and scanner_id:
+                    distance = self._rssi_to_distance(rssi)
+
+                    # Skip unreliable long distances
+                    if distance > self.processing_params.get('distance_filter_threshold', 15):
+                        continue
+
+                    self.seen_devices.add(tracked_device_id)
+                    self.seen_scanners.add(scanner_id)
+
+                    if save_distance_log(tracked_device_id, scanner_id, distance):
+                        distances_logged += 1
+
+            # Method 3: Look for devices with explicit distance in attributes
+            distance = attributes.get('distance')
+            if distance is not None:
+                try:
+                    distance = float(distance)
+                    tracked_device_id = attributes.get('source')
+                    scanner_id = attributes.get('scanner') or attributes.get('scanner_id')
+
+                    if tracked_device_id and scanner_id:
+                        self.seen_devices.add(tracked_device_id)
+                        self.seen_scanners.add(scanner_id)
+
+                        if save_distance_log(tracked_device_id, scanner_id, distance):
+                            distances_logged += 1
+                except (ValueError, TypeError):
+                    pass
+
+        # If we found no distance data but have plenty of sensors, log this situation
+        if distances_logged == 0 and len(bt_sensors) > 10:
+            logger.warning(f"No distance data extracted from {len(bt_sensors)} sensors. Check sensor entity formats.")
+            # Log a sample of sensors for debugging
+            sample_size = min(5, len(bt_sensors))
+            for i in range(sample_size):
+                sensor = bt_sensors[i]
+                logger.debug(f"Sample sensor {i+1}: {sensor.get('entity_id', 'unknown')} - "
+                           f"state: {sensor.get('state', 'unknown')}, "
+                           f"attributes: {sensor.get('attributes', {})}")
 
         return distances_logged
 
@@ -306,6 +395,24 @@ class BluetoothProcessor:
                 if success:
                     areas_logged += 1
 
+        # Also process areas from device trackers
+        for tracker in device_trackers:
+            entity_id = tracker.get('entity_id', '')
+            if not entity_id.startswith('device_tracker.'):
+                continue
+
+            device_id = entity_id.replace('device_tracker.', '')
+            attributes = tracker.get('attributes', {})
+
+            # Get area ID if present
+            area_id = attributes.get('area_id')
+
+            if area_id:
+                # Save area observation
+                success = save_area_observation(device_id, area_id)
+                if success:
+                    areas_logged += 1
+
         return areas_logged
 
     def _trilaterate_position(
@@ -385,14 +492,17 @@ class BluetoothProcessor:
         Uses log-distance path loss model.
         """
         # Default parameters if not specified
-        power_coefficient = self.processing_params.get('rssi_power_coefficient', -20)
-        environment_factor = self.processing_params.get('environment_factor', 2.0)
+        power_coefficient = self.processing_params.get('rssi_power_coefficient', -66)
+        environment_factor = self.processing_params.get('environment_factor', 2.8)
 
         # Log-distance path loss model formula:
         # distance = 10^((power_coefficient - rssi) / (10 * environment_factor))
-        distance = 10 ** ((power_coefficient - rssi) / (10 * environment_factor))
-
-        return distance
+        try:
+            distance = 10 ** ((power_coefficient - rssi) / (10 * environment_factor))
+            return distance
+        except (TypeError, ValueError) as e:
+            logger.warning(f"Error converting RSSI {rssi} to distance: {e}")
+            return 10.0  # Return a default value
 
     def get_device_location_quality(self, device_id: str) -> Dict:
         """
