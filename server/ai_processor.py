@@ -332,9 +332,17 @@ class AIProcessor:
                 logger.error("No distance data provided for relative positioning")
                 return {}
 
+            # Debug: Print the first few records to see their structure
+            if distance_data:
+                logger.debug(f"First distance record: {distance_data[0]}")
+
             # Create list of all unique device IDs
             all_devices = set()
             for reading in distance_data:
+                # Debug: Log the keys in each reading to understand structure
+                if isinstance(reading, dict):
+                    logger.debug(f"Reading keys: {list(reading.keys())}")
+
                 # Check for the correct key format based on database schema
                 # The data should have tracked_device_id and scanner_id
                 tracked_device_id = reading.get('tracked_device_id')
@@ -343,12 +351,16 @@ class AIProcessor:
                 if tracked_device_id and scanner_id:
                     all_devices.add(tracked_device_id)
                     all_devices.add(scanner_id)
+                    logger.debug(f"Added devices from distance reading: '{tracked_device_id}' and '{scanner_id}'")
                 # Fallback for alternative key names if needed
                 elif 'device_id' in reading and 'other_id' in reading:
                     all_devices.add(reading['device_id'])
                     all_devices.add(reading['other_id'])
                 else:
                     logger.warning(f"Unrecognized distance reading format: {reading}")
+
+            # Log the unique devices found
+            logger.info(f"Found {len(all_devices)} unique devices: {all_devices}")
 
             # Sort them for consistent ordering
             device_list = sorted(list(all_devices))
@@ -368,6 +380,7 @@ class AIProcessor:
             np.fill_diagonal(distance_matrix, 0)
 
             # Fill distance matrix with known measurements
+            measurements_added = 0
             for reading in distance_data:
                 try:
                     # Get the device IDs using the correct keys
@@ -389,9 +402,12 @@ class AIProcessor:
                     # Set the distance in both directions (symmetric matrix)
                     distance_matrix[device_idx_a, device_idx_b] = distance
                     distance_matrix[device_idx_b, device_idx_a] = distance
+                    measurements_added += 1
                 except (ValueError, KeyError, TypeError) as e:
                     logger.warning(f"Error processing distance reading: {e}")
                     continue
+
+            logger.info(f"Added {measurements_added} measurements to distance matrix")
 
             # Apply MDS to get relative positions
             mds = MDS(n_components=dimensions, dissimilarity='precomputed',

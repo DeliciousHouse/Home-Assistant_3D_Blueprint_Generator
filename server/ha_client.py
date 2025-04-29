@@ -29,12 +29,20 @@ class HAClient:
         self.ha_config = self.config.get('home_assistant', {})
 
         # When running as a Supervisor add-on, these environment variables will be set automatically
-        self.ha_url = os.environ.get('SUPERVISOR_API', self.ha_config.get('url', 'http://supervisor/core'))
+        # SUPERVISOR_TOKEN is provided by the Supervisor when running as an add-on
+        self.ha_url = os.environ.get('SUPERVISOR_URL', self.ha_config.get('url', 'http://supervisor/core'))
         self.ha_token = os.environ.get('SUPERVISOR_TOKEN', self.ha_config.get('token', ''))
 
         # Log connection details (but not the token itself)
         logger.info(f"Initializing Home Assistant client with URL: {self.ha_url}")
         logger.info(f"Authentication token available: {bool(self.ha_token)}")
+        if not self.ha_token:
+            logger.warning("No authentication token found! API calls will fail.")
+
+        # Debug: Log all environment variables (useful for troubleshooting)
+        if logger.isEnabledFor(logging.DEBUG):
+            env_vars = {k: '***REDACTED***' if 'token' in k.lower() else v for k, v in os.environ.items()}
+            logger.debug(f"Environment variables available: {env_vars}")
 
         # Setting offline mode to False initially and letting _test_connection determine if needed
         self.offline_mode = False
@@ -57,6 +65,7 @@ class HAClient:
         try:
             url = urljoin(self.ha_url, '/api/')
             logger.debug(f"Testing Home Assistant connection to {url}")
+            logger.debug(f"Using headers: {{'Authorization': 'Bearer ***REDACTED***', 'Content-Type': '{self.headers.get('Content-Type')}'}}")
 
             response = requests.get(url, headers=self.headers, timeout=10)
 
@@ -67,6 +76,16 @@ class HAClient:
                 logger.error(f"Failed to connect to Home Assistant API: HTTP {response.status_code}")
                 logger.debug(f"URL: {url}, Headers: Auth Bearer token length: {len(self.ha_token)} characters")
                 logger.debug(f"Response: {response.text[:200]}")  # Log first 200 chars of response
+
+                # Try alternative URL paths if needed
+                if self.ha_url.endswith('/core'):
+                    alt_url = self.ha_url[:-5]  # Remove '/core'
+                    logger.debug(f"Trying alternative URL: {alt_url}/api/")
+                    alt_response = requests.get(urljoin(alt_url, '/api/'), headers=self.headers, timeout=10)
+                    if alt_response.status_code == 200:
+                        logger.info(f"Successfully connected using alternative URL: {alt_url}")
+                        self.ha_url = alt_url
+                        return True
                 return False
 
         except Exception as e:
