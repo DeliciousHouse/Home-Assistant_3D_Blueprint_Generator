@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Any, Tuple
 import requests
 from urllib.parse import urljoin
 import random  # For generating mock data
+import uuid  # For generating unique identifiers
 
 # Load configuration
 try:
@@ -214,31 +215,64 @@ class HAClient:
 
     def get_distance_sensors(self) -> List[Dict[str, Any]]:
         """Get distance sensor entities from Home Assistant."""
-        try:
-            # First get all entities
-            entities = self.get_entities()
-
-            # Filter for distance or proximity sensors
-            distance_sensors = []
-            for entity in entities:
-                entity_id = entity.get('entity_id', '')
-
-                # Match on common distance sensor patterns
-                if re.match(r'sensor\.[^\.]+_(distance|proximity|rssi|signal_strength)', entity_id):
-                    distance_sensors.append(entity)
-
-            logger.info(f"HA_Client: Found {len(distance_sensors)} potential distance sensor entities.")
-
-            # If in offline mode or no sensors found, generate mock sensors
-            if self.offline_mode or not distance_sensors:
-                mock_sensors = self._generate_mock_distance_sensors()
-                logger.info(f"Using {len(mock_sensors)} mock distance sensors")
-                return mock_sensors
-
-            return distance_sensors
-        except Exception as e:
-            logger.error(f"Error getting distance sensors: {str(e)}")
+        if self.offline_mode:
             return self._generate_mock_distance_sensors()
+
+        try:
+            url = urljoin(self.ha_url, '/api/states')
+            logger.debug(f"Fetching distance sensors from {url}")
+
+            response = requests.get(url, headers=self.headers, timeout=10)
+
+            if response.status_code == 200:
+                entities = response.json()
+                # Filter for distance sensors
+                sensors = []
+                for entity in entities:
+                    if (entity['entity_id'].startswith('sensor.') and
+                        'attributes' in entity and
+                        'device_class' in entity['attributes'] and
+                        entity['attributes']['device_class'] == 'distance'):
+                        sensors.append(entity)
+                logger.info(f"Found {len(sensors)} distance sensors")
+                return sensors
+            else:
+                logger.error(f"Failed to get distance sensors from Home Assistant: HTTP {response.status_code}")
+                # Fall back to mock sensors
+                return self._generate_mock_distance_sensors()
+
+        except Exception as e:
+            logger.error(f"Error getting distance sensors from Home Assistant: {str(e)}")
+            return self._generate_mock_distance_sensors()
+
+    def get_device_trackers(self) -> List[Dict[str, Any]]:
+        """Get all device trackers from Home Assistant."""
+        if self.offline_mode:
+            return self._generate_mock_device_trackers()
+
+        try:
+            url = urljoin(self.ha_url, '/api/states')
+            logger.debug(f"Fetching device trackers from {url}")
+
+            response = requests.get(url, headers=self.headers, timeout=10)
+
+            if response.status_code == 200:
+                entities = response.json()
+                # Filter for device tracker entities
+                trackers = []
+                for entity in entities:
+                    if entity['entity_id'].startswith('device_tracker.'):
+                        trackers.append(entity)
+                logger.info(f"Found {len(trackers)} device trackers")
+                return trackers
+            else:
+                logger.error(f"Failed to get device trackers from Home Assistant: HTTP {response.status_code}")
+                # Fall back to mock device trackers
+                return self._generate_mock_device_trackers()
+
+        except Exception as e:
+            logger.error(f"Error getting device trackers from Home Assistant: {str(e)}")
+            return self._generate_mock_device_trackers()
 
     def get_area_predictions(self) -> Dict[str, Optional[str]]:
         """Get current area predictions for devices."""
@@ -498,6 +532,88 @@ class HAClient:
 
         logger.debug(f"Generated mock distances for {len(distances)} devices")
         return distances
+
+    def _generate_mock_device_trackers(self, count=5) -> List[Dict[str, Any]]:
+        """Generate mock device trackers for testing."""
+        mock_device_trackers = []
+        locations = ["home", "not_home", "living_room", "kitchen", "bedroom", "office", "bathroom"]
+
+        # Create different types of device trackers for different devices
+        device_types = [
+            {"name": "Phone", "model": "Smartphone"},
+            {"name": "Tablet", "model": "Tablet"},
+            {"name": "Watch", "model": "Smartwatch"},
+            {"name": "Laptop", "model": "Computer"},
+            {"name": "Tag", "model": "Bluetooth Tag"}
+        ]
+
+        for i in range(count):
+            # Select device type
+            device_type = device_types[i % len(device_types)]
+
+            # Generate entity_id
+            entity_id = f"device_tracker.mock_{device_type['name'].lower()}_{i}"
+
+            # Generate name
+            name = f"Mock {device_type['name']} {i}"
+
+            # Randomize location state
+            location = random.choice(locations)
+
+            # Create the device tracker entity
+            mock_device = {
+                "entity_id": entity_id,
+                "name": name,
+                "state": location,
+                "attributes": {
+                    "friendly_name": name,
+                    "source_type": "bluetooth" if random.random() > 0.3 else "gps",
+                    "device_class": "device_tracker",
+                    "battery_level": random.randint(20, 100) if random.random() > 0.2 else None,
+                    "model": device_type["model"],
+                    "mac": f"AA:BB:CC:DD:EE:{i:02X}",
+                },
+                "last_updated": datetime.now().isoformat(),
+                "uuid": str(uuid.uuid4())
+            }
+
+            # Add coordinates if device is at home or in a room
+            if location != "not_home":
+                mock_device["attributes"]["latitude"] = 37.7749 + (random.random() - 0.5) * 0.01
+                mock_device["attributes"]["longitude"] = -122.4194 + (random.random() - 0.5) * 0.01
+
+                # Add room-specific coordinates for devices in rooms
+                if location not in ["home", "not_home"]:
+                    mock_device["attributes"]["room"] = location
+                    # These would be local x,y,z coordinates within the home
+                    mock_device["attributes"]["local_x"] = random.uniform(0, 10)
+                    mock_device["attributes"]["local_y"] = random.uniform(0, 10)
+                    mock_device["attributes"]["local_z"] = random.uniform(0, 3)
+
+            mock_device_trackers.append(mock_device)
+
+        logger.info(f"Generated {count} mock device trackers")
+        return mock_device_trackers
+
+    def _generate_mock_bluetooth_sensors(self, count=10) -> List[Dict[str, Any]]:
+        """Generate mock bluetooth sensors for testing."""
+        mock_sensors = []
+        for i in range(count):
+            mock_sensors.append({
+                "entity_id": f"sensor.mock_bluetooth_sensor_{i}",
+                "name": f"Mock Bluetooth Sensor {i}",
+                "state": "on",
+                "attributes": {
+                    "friendly_name": f"Mock Bluetooth Sensor {i}",
+                    "device_class": "bluetooth",
+                    "rssi": random.randint(-90, -40),  # Random RSSI value
+                    "mac": f"AA:BB:CC:DD:EE:{i:02X}",
+                },
+                "last_updated": datetime.now().isoformat(),
+                "uuid": str(uuid.uuid4()),
+                "room": random.choice(["living_room", "kitchen", "bedroom", "office", "bathroom"])
+            })
+        return mock_sensors
 
 # For compatibility with existing code
 HomeAssistantClient = HAClient
