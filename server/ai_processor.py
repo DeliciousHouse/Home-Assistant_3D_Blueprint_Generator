@@ -496,6 +496,10 @@ class AIProcessor:
         """
         logger.info("Calculating relative positions using MDS...")
 
+        # Initialize empty result dictionaries - this ensures we always return a valid tuple
+        device_positions = {}
+        anchor_positions = {}
+
         try:
             from .db import get_recent_distances
 
@@ -505,7 +509,7 @@ class AIProcessor:
 
             if not distances:
                 logger.warning("No distance data available for positioning")
-                return {}, {}
+                return {}, {}  # Return empty dictionaries, not None
 
             # Debug log to see what we're working with
             logger.info(f"Retrieved {len(distances)} distance records for positioning")
@@ -676,7 +680,7 @@ class AIProcessor:
 
             if total_entities < min_entities:
                 logger.error(f"Not enough entities ({total_entities}) for 2D positioning. Minimum required: {min_entities}")
-                return {}, {}
+                return {}, {}  # Return empty dictionaries, not None
 
             # If we don't have enough devices specifically, consider some scanners as devices
             min_devices_required = 1
@@ -696,7 +700,7 @@ class AIProcessor:
 
             if n_nodes < 3:
                 logger.error(f"Insufficient nodes for positioning (need at least 3, found {n_nodes})")
-                return {}, {}
+                return {}, {}  # Return empty dictionaries, not None
 
             # Create node index mapping for the distance matrix
             node_indices = {node: i for i, node in enumerate(all_nodes)}
@@ -787,4 +791,5 @@ class AIProcessor:
 
         except Exception as e:
             logger.error(f"Error calculating relative positions: {str(e)}", exc_info=True)
+            # Always return empty dictionaries, never None
             return {}, {}
