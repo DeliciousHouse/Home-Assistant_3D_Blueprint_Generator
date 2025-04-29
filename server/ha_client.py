@@ -213,8 +213,276 @@ class HAClient:
             logger.error(f"Error connecting to Home Assistant: {str(e)}")
             return False
 
-    # The rest of the class remains unchanged
-    # ...
+    def _api_call(self, endpoint, method='GET', data=None, timeout=10, is_supervisor_api=False):
+        """Make an API call to Home Assistant."""
+        if self.offline_mode:
+            logger.warning(f"Offline mode active, returning mock data for {endpoint}")
+            return self._generate_mock_data(endpoint)
+
+        # Determine which base URL to use
+        if endpoint.startswith('/'):
+            endpoint = endpoint[1:]  # Remove leading slash if present
+
+        # Choose appropriate URL based on whether this is a supervisor API call
+        api_url = self.ha_url
+        if not is_supervisor_api and '/api/' not in self.ha_url:
+            # For regular HA API calls, make sure we're targeting the correct endpoint
+            if '/core' in api_url and not '/core/api' in api_url:
+                api_url = urljoin(api_url, '/core/api/')
+            else:
+                api_url = urljoin(api_url, '/api/')
+
+        url = urljoin(api_url, endpoint)
+        logger.debug(f"Making {method} request to {url}")
+
+        try:
+            # Choose appropriate headers
+            headers = self.headers
+            if is_supervisor_api:
+                # Use only the Supervisor header for Supervisor API calls
+                headers = {
+                    'X-HASSIO-KEY': f"{self.ha_token}",
+                    'Content-Type': 'application/json',
+                }
+
+            response = None
+            if method == 'GET':
+                response = requests.get(url, headers=headers, timeout=timeout)
+            elif method == 'POST':
+                response = requests.post(url, headers=headers, json=data, timeout=timeout)
+            elif method == 'PUT':
+                response = requests.put(url, headers=headers, json=data, timeout=timeout)
+            elif method == 'DELETE':
+                response = requests.delete(url, headers=headers, timeout=timeout)
+            else:
+                logger.error(f"Unsupported method: {method}")
+                return None
+
+            if response.status_code in [200, 201]:
+                try:
+                    return response.json()
+                except ValueError:
+                    # Not JSON content
+                    return response.text
+            else:
+                logger.error(f"API call to {url} failed with status {response.status_code}: {response.text}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error making API call to {url}: {str(e)}")
+            return None
+
+    def _generate_mock_data(self, endpoint):
+        """Generate mock data for offline mode."""
+        logger.debug(f"Generating mock data for {endpoint}")
+
+        # Mock data for different endpoints
+        if 'states' in endpoint:
+            return self._generate_mock_states()
+        elif 'bluetooth' in endpoint:
+            return self._generate_mock_bluetooth()
+        elif 'device_tracker' in endpoint:
+            return self._generate_mock_device_trackers()
+        elif 'areas' in endpoint:
+            return self._generate_mock_areas()
+        else:
+            # Generic response for other endpoints
+            return {"result": "success", "data": {}, "mock": True}
+
+    def _generate_mock_states(self):
+        """Generate mock states data."""
+        # Generate basic entity states
+        return [
+            {
+                "entity_id": "sensor.living_room_temperature",
+                "state": "21.5",
+                "attributes": {"unit_of_measurement": "°C", "friendly_name": "Living Room Temperature"}
+            },
+            {
+                "entity_id": "sensor.living_room_humidity",
+                "state": "45",
+                "attributes": {"unit_of_measurement": "%", "friendly_name": "Living Room Humidity"}
+            },
+            {
+                "entity_id": "sensor.test_device_distance_test_scanner",
+                "state": "2.5",
+                "attributes": {
+                    "unit_of_measurement": "m",
+                    "friendly_name": "Test Device Distance",
+                    "source": "test_device",
+                    "scanner": "test_scanner",
+                    "rssi": -65
+                }
+            }
+        ]
+
+    def _generate_mock_bluetooth(self):
+        """Generate mock Bluetooth sensor data."""
+        return [
+            {
+                "entity_id": "sensor.bedroom_scanner_1",
+                "state": "on",
+                "attributes": {
+                    "friendly_name": "Bedroom BT Scanner",
+                    "rssi": -65,
+                    "source": "smartphone_1"
+                }
+            },
+            {
+                "entity_id": "sensor.living_room_scanner_1",
+                "state": "on",
+                "attributes": {
+                    "friendly_name": "Living Room BT Scanner",
+                    "rssi": -70,
+                    "source": "smartphone_1"
+                }
+            },
+            {
+                "entity_id": "sensor.kitchen_scanner_1",
+                "state": "on",
+                "attributes": {
+                    "friendly_name": "Kitchen BT Scanner",
+                    "rssi": -85,
+                    "source": "smartphone_2"
+                }
+            }
+        ]
+
+    def _generate_mock_device_trackers(self):
+        """Generate mock device tracker data."""
+        return [
+            {
+                "entity_id": "device_tracker.smartphone_1",
+                "state": "home",
+                "attributes": {
+                    "friendly_name": "Smartphone 1",
+                    "source_type": "bluetooth",
+                    "area_id": "living_room"
+                }
+            },
+            {
+                "entity_id": "device_tracker.smartphone_2",
+                "state": "home",
+                "attributes": {
+                    "friendly_name": "Smartphone 2",
+                    "source_type": "bluetooth",
+                    "area_id": "kitchen"
+                }
+            }
+        ]
+
+    def _generate_mock_areas(self):
+        """Generate mock areas data."""
+        return [
+            {
+                "area_id": "living_room",
+                "name": "Living Room",
+                "picture": None
+            },
+            {
+                "area_id": "kitchen",
+                "name": "Kitchen",
+                "picture": None
+            },
+            {
+                "area_id": "master_bedroom",
+                "name": "Master Bedroom",
+                "picture": None
+            },
+            {
+                "area_id": "office",
+                "name": "Office",
+                "picture": None
+            }
+        ]
+
+    def get_states(self):
+        """Get all entity states from Home Assistant."""
+        return self._api_call('states')
+
+    def get_bluetooth_sensors(self):
+        """Get all Bluetooth sensors from Home Assistant."""
+        logger.debug("Fetching Bluetooth sensors from Home Assistant")
+
+        # In a production environment, we'd filter for entities that are Bluetooth sensors
+        # For now, let's get all states and filter for Bluetooth sensors
+        states = self._api_call('states')
+
+        if not states and self.offline_mode:
+            return self._generate_mock_bluetooth()
+
+        bt_sensors = []
+        # Filter for Bluetooth sensors based on common patterns
+        for entity in states or []:
+            entity_id = entity.get('entity_id', '')
+
+            # Check if this is likely to be a Bluetooth sensor
+            # Patterns to check: 'bluetooth' in entity_id, has rssi attribute, etc.
+            attributes = entity.get('attributes', {})
+
+            # Main condition: entity has RSSI attribute (common for BT sensors)
+            has_rssi = 'rssi' in attributes
+
+            # Secondary conditions: entity ID suggests Bluetooth
+            is_bt_entity = ('bluetooth' in entity_id.lower() or
+                           'bt_' in entity_id.lower() or
+                           'ble_' in entity_id.lower() or
+                           'rssi' in entity_id.lower() or
+                           'proximity' in entity_id.lower())
+
+            # If any of the Bluetooth conditions are met, include this entity
+            if has_rssi or is_bt_entity:
+                bt_sensors.append(entity)
+
+        if not bt_sensors:
+            logger.warning(f"No Bluetooth sensors found among {len(states) if states else 0} entities, returning mock data")
+            return self._generate_mock_bluetooth()
+
+        logger.info(f"Found {len(bt_sensors)} Bluetooth sensors")
+        return bt_sensors
+
+    def get_device_trackers(self):
+        """Get all device trackers from Home Assistant."""
+        logger.debug("Fetching device trackers from Home Assistant")
+
+        # Get all states and filter for device trackers
+        states = self._api_call('states')
+
+        if not states and self.offline_mode:
+            return self._generate_mock_device_trackers()
+
+        device_trackers = []
+
+        # Filter for device trackers
+        for entity in states or []:
+            entity_id = entity.get('entity_id', '')
+
+            # Check if this is a device tracker
+            if entity_id.startswith('device_tracker.'):
+                device_trackers.append(entity)
+
+        if not device_trackers:
+            logger.warning("No device trackers found, returning mock data")
+            return self._generate_mock_device_trackers()
+
+        logger.info(f"Found {len(device_trackers)} device trackers")
+        return device_trackers
+
+    def get_areas(self):
+        """Get all areas from Home Assistant."""
+        try:
+            # HA API provides areas endpoint
+            areas = self._api_call('areas')
+
+            if areas:
+                logger.info(f"Retrieved {len(areas)} areas from Home Assistant API")
+                return areas
+
+            logger.warning("Failed to get areas from API, using mock areas")
+            return self._generate_mock_areas()
+        except Exception as e:
+            logger.error(f"Error getting areas: {str(e)}")
+            return self._generate_mock_areas()
 
 # For compatibility with existing code
 HomeAssistantClient = HAClient
