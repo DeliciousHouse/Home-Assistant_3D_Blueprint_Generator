@@ -22,7 +22,7 @@ REPO_PATH=$(pwd)
 REMOTE_NAME=${1:-origin}
 BRANCH_NAME=${2:-main}
 HA_HOST=${HA_HOST:-"192.168.86.91"}  # Default HA host - change or set env var
-HA_USER=${HA_USER:-"bkam"}           # Default HA user - change or set env var
+HA_USER=${HA_USER:-"root"}           # Default HA user - change or set env var
 HA_ADDON_PATH=${HA_ADDON_PATH:-"/addons/Home-Assistant_3D_Blueprint_Generator"}  # Default addon path on HA
 
 echo -e "${YELLOW}Starting development push workflow...${NC}"
