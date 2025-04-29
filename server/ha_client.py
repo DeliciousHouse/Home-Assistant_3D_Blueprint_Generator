@@ -20,6 +20,16 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Global singleton instance
+_ha_client_instance = None
+
+def get_ha_client():
+    """Get or create a singleton instance of the HAClient."""
+    global _ha_client_instance
+    if _ha_client_instance is None:
+        _ha_client_instance = HAClient()
+    return _ha_client_instance
+
 class HAClient:
     """Home Assistant API client for the Blueprint Generator."""
 
