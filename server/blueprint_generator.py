@@ -153,8 +153,9 @@ class BlueprintGenerator:
             target_layout = self._generate_target_layout(areas)
             logger.info("Generated target layout for areas")
 
-            # Step 4: Group devices by area
-            device_area_groups = self._group_devices_by_area(device_positions, area_predictions, areas)
+            # Step 4: Get RSSI data and group devices by area
+            rssi_data = ai_processor.get_rssi_data()
+            device_area_groups = self._group_devices_by_area(device_positions, area_predictions, areas, rssi_data)
             logger.info(f"Grouped devices into {len(device_area_groups)} areas")
 
             # Step 5: Calculate centroids for each area group
@@ -283,24 +284,29 @@ class BlueprintGenerator:
 
         return target_layout
 
-    def _group_devices_by_area(self, device_positions: Dict, area_predictions: Dict, areas: List[Dict]) -> Dict:
-        """Group device coordinates by their predicted area."""
+    def _group_devices_by_area(self, device_positions: Dict, area_predictions: Dict, areas: List[Dict], rssi_data: Dict) -> Dict:
+        """Group device coordinates by their predicted area or map unknown devices based on RSSI."""
         device_area_groups = {}
 
         for device_id, position in device_positions.items():
             # Get predicted area for this device
             area_id = area_predictions.get(device_id)
 
-            # If no area prediction, use a default
+            # If no area prediction, map based on RSSI
             if not area_id:
-                area_id = "unknown"
+                # Find the scanner with the strongest RSSI for this device
+                if device_id in rssi_data:
+                    strongest_signal = max(rssi_data[device_id], key=rssi_data[device_id].get)
+                    # Map to the area of the scanner with the strongest signal
+                    area_id = next((area['id'] for area in areas if strongest_signal in area.get('scanners', [])), 'unknown')
+                else:
+                    area_id = 'unknown'
 
             # Initialize the area group if it doesn't exist
             if area_id not in device_area_groups:
                 device_area_groups[area_id] = []
 
             # Add device with its position to the area group
-            # Handle both dictionary format and tuple format
             if isinstance(position, dict):
                 # Dictionary format with 'x', 'y', 'z' keys
                 device_area_groups[area_id].append({
@@ -345,9 +351,36 @@ class BlueprintGenerator:
         # Filter for areas that exist in both source and target
         common_areas = set(source_centroids.keys()) & set(target_layout.keys())
 
+        # Add debugging information
+        logger.debug(f"Source centroids: {list(source_centroids.keys())}")
+        logger.debug(f"Target layout areas: {list(target_layout.keys())}")
+        logger.debug(f"Common areas: {list(common_areas)}")
+
         if len(common_areas) < 2:
-            logger.error(f"Not enough common areas for transformation: {len(common_areas)}")
-            return None
+            logger.warning(f"Not enough common areas for transformation: {len(common_areas)}")
+
+            # FALLBACK: If we have at least one area, create a simple translation
+            if len(source_centroids) > 0:
+                logger.info("Using fallback transformation with simple translation")
+
+                # Get the first source and target areas
+                first_source_area = list(source_centroids.keys())[0]
+                first_target_area = list(target_layout.keys())[0]
+
+                source_point = np.array(source_centroids[first_source_area])
+                target_point = np.array(target_layout[first_target_area])
+
+                # Simple identity rotation, 1.0 scale, and translation to move source to target
+                return {
+                    'rotation': np.eye(2),  # Identity rotation matrix
+                    'scale': 1.0,
+                    'translation': target_point - source_point,
+                    'source_mean': source_point,
+                    'target_mean': target_point
+                }
+            else:
+                logger.error("No source centroids available for transformation")
+                return None
 
         # Extract matching points
         source_points = np.array([source_centroids[area] for area in common_areas])

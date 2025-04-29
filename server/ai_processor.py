@@ -39,7 +39,8 @@ from .db import (
     execute_write_query,     # Potentially needed if saving intermediate AI data
     get_sqlite_connection, # Generally not needed directly, use helpers
     save_rssi_sample_to_sqlite, # Only if actively training RSSI model
-    save_ai_model_sqlite
+    save_ai_model_sqlite,
+    get_recent_distances    # Needed for get_rssi_data
 )
 
 from .config_loader import load_config
@@ -196,6 +197,30 @@ class AIProcessor:
         except Exception as e:
             logger.error(f"Error loading AI models: {str(e)}")
             # Continue without the models - we'll use fallback methods
+
+    def get_rssi_data(self) -> Dict:
+        """Get RSSI data for devices from the database."""
+        try:
+            # Get the recent distance measurements which contain RSSI information
+            distance_data = get_recent_distances(time_window_minutes=30)
+
+            # Process the distance data to get RSSI values
+            rssi_data = {}
+            for record in distance_data:
+                device_id = record.get('device_id') or record.get('tracked_device_id')
+                scanner_id = record.get('scanner_id')
+                rssi = record.get('rssi')
+
+                if device_id and scanner_id and rssi is not None:
+                    if device_id not in rssi_data:
+                        rssi_data[device_id] = {}
+                    rssi_data[device_id][scanner_id] = rssi
+
+            logger.info(f"Collected RSSI data for {len(rssi_data)} devices")
+            return rssi_data
+        except Exception as e:
+            logger.error(f"Error getting RSSI data: {str(e)}")
+            return {}
 
     def predict_objects(self, rooms: List[Dict]) -> List[Dict]:
         """
