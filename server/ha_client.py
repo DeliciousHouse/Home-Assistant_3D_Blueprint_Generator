@@ -84,9 +84,11 @@ class HAClient:
         # Setting offline mode to False initially and letting _test_connection determine if needed
         self.offline_mode = False
 
-        # Setup request headers
+        # Setup request headers - Use X-HASSIO-KEY header for Supervisor API access
+        # This is the key change needed to fix the 403 Forbidden error
         self.headers = {
-            'Authorization': f'Bearer {self.ha_token}',
+            'X-HASSIO-KEY': f"{self.ha_token}",  # Special header for Supervisor API
+            'Authorization': f'Bearer {self.ha_token}',  # Keep Bearer token for HA API
             'Content-Type': 'application/json',
         }
 
@@ -100,18 +102,52 @@ class HAClient:
     def _test_connection(self):
         """Test connection to Home Assistant and log detailed debug info."""
         try:
-            # First try the classic API endpoint
+            # First try the Supervisor API endpoint
             base_url = self.ha_url
-            api_paths = [
-                '/api/',  # Standard API path
-                '/',      # Try directly
-                '/api',   # Without trailing slash
+
+            # Try Supervisor API endpoints first
+            supervisor_paths = [
+                '/supervisor/info',  # Supervisor API
+                '/core/api',         # HA API through Supervisor
+                '/api',              # Direct API
             ]
 
+            # Standard API paths as fallback
+            api_paths = [
+                '/api/',             # Standard API path
+                '/',                 # Try directly
+                '/api',              # Without trailing slash
+            ]
+
+            # Try supervisor paths first with X-HASSIO-KEY header
+            for path in supervisor_paths:
+                url = urljoin(base_url, path)
+                try:
+                    logger.debug(f"Testing Supervisor API connection to {url}")
+
+                    # Create headers focused on Supervisor auth
+                    supervisor_headers = {
+                        'X-HASSIO-KEY': f"{self.ha_token}",
+                        'Content-Type': 'application/json',
+                    }
+
+                    response = requests.get(url, headers=supervisor_headers, timeout=10)
+
+                    if response.status_code == 200:
+                        logger.info(f"Successfully connected to Supervisor API at {url}")
+                        self.ha_url = base_url  # Save the working base URL
+                        return True
+                    else:
+                        logger.warning(f"Supervisor API connection attempt to {url} failed: HTTP {response.status_code}")
+                        logger.debug(f"Response: {response.text[:200]}")
+                except Exception as e:
+                    logger.warning(f"Supervisor API connection attempt to {url} failed: {str(e)}")
+                    continue
+
+            # Now try standard API paths with regular Bearer token auth
             for api_path in api_paths:
                 url = urljoin(base_url, api_path)
-                logger.debug(f"Testing Home Assistant connection to {url}")
-                logger.debug(f"Using headers: {{'Authorization': 'Bearer ***REDACTED***', 'Content-Type': '{self.headers.get('Content-Type')}'}}")
+                logger.debug(f"Testing Home Assistant API connection to {url}")
 
                 try:
                     response = requests.get(url, headers=self.headers, timeout=10)
@@ -123,7 +159,7 @@ class HAClient:
                         return True
                     else:
                         logger.warning(f"Connection attempt to {url} failed: HTTP {response.status_code}")
-                        logger.debug(f"Response: {response.text[:200]}")  # Log first 200 chars
+                        logger.debug(f"Response: {response.text[:200]}")
                 except Exception as e:
                     logger.warning(f"Connection attempt to {url} failed: {str(e)}")
                     continue
@@ -142,12 +178,28 @@ class HAClient:
                     continue  # Skip if we already tried this base URL
 
                 logger.debug(f"Trying alternative base URL: {alt_base}")
-                url = urljoin(alt_base, '/api/')
 
+                # First try supervisor endpoint
+                sup_url = urljoin(alt_base, '/supervisor/info')
                 try:
-                    response = requests.get(url, headers=self.headers, timeout=5)  # Shorter timeout for alternatives
+                    supervisor_headers = {
+                        'X-HASSIO-KEY': f"{self.ha_token}",
+                        'Content-Type': 'application/json',
+                    }
+                    response = requests.get(sup_url, headers=supervisor_headers, timeout=5)
                     if response.status_code == 200:
-                        logger.info(f"Successfully connected using alternative URL: {alt_base}")
+                        logger.info(f"Successfully connected using alternative Supervisor URL: {alt_base}")
+                        self.ha_url = alt_base  # Update to working URL
+                        return True
+                except Exception:
+                    pass  # Try the API endpoint
+
+                # Then try API endpoint
+                api_url = urljoin(alt_base, '/api/')
+                try:
+                    response = requests.get(api_url, headers=self.headers, timeout=5)
+                    if response.status_code == 200:
+                        logger.info(f"Successfully connected using alternative API URL: {alt_base}")
                         self.ha_url = alt_base  # Update to working URL
                         return True
                 except Exception:
