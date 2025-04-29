@@ -300,12 +300,23 @@ class BlueprintGenerator:
                 device_area_groups[area_id] = []
 
             # Add device with its position to the area group
-            device_area_groups[area_id].append({
-                'device_id': device_id,
-                'x': position[0],  # X coordinate from position tuple
-                'y': position[1],  # Y coordinate from position tuple
-                'z': 0 if len(position) < 3 else position[2]  # Z coordinate if available
-            })
+            # Handle both dictionary format and tuple format
+            if isinstance(position, dict):
+                # Dictionary format with 'x', 'y', 'z' keys
+                device_area_groups[area_id].append({
+                    'device_id': device_id,
+                    'x': position.get('x', 0.0),
+                    'y': position.get('y', 0.0),
+                    'z': position.get('z', 0.0)
+                })
+            else:
+                # Tuple/list format with indices
+                device_area_groups[area_id].append({
+                    'device_id': device_id,
+                    'x': position[0] if len(position) > 0 else 0.0,
+                    'y': position[1] if len(position) > 1 else 0.0,
+                    'z': position[2] if len(position) > 2 else 0.0
+                })
 
         return device_area_groups
 
