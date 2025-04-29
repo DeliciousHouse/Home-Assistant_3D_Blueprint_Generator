@@ -34,11 +34,15 @@
       "use_adjacency": true,
       "min_points_per_room": 0
   },
-   "ai_settings": {
+  "home_assistant": {
+      "url": "http://supervisor/core",
+      "token": ""
+  },
+  "ai_settings": {
       "enable_refinement": true
-   },
-   "room_detection": {
+  },
+  "room_detection": {
       "use_areas": true
-   },
-   "log_level": "debug"
+  },
+  "log_level": "debug"
 }

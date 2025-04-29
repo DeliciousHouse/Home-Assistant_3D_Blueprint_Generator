@@ -68,6 +68,18 @@ def load_config(config_path: Optional[str] = None) -> Dict:
                 config.get('generation_settings', {}).get('distance_window_minutes', 15)
             )
 
+            # Home Assistant connection settings
+            if 'home_assistant' not in config: config['home_assistant'] = {}
+            # Get the token from options
+            if 'ha_token' in ha_options and ha_options['ha_token']:
+                config['home_assistant']['token'] = ha_options['ha_token']
+                logger.info("Found Home Assistant token in options")
+            # Default URL for supervisor add-on
+            config['home_assistant']['url'] = ha_options.get(
+                'ha_url',
+                config.get('home_assistant', {}).get('url', 'http://supervisor/core')
+            )
+
         except Exception as e:
             logger.error(f"Failed to process HA options: {str(e)}")
     else:
@@ -76,6 +88,9 @@ def load_config(config_path: Optional[str] = None) -> Dict:
 
     # Debug output
     safe_config = {k: v for k, v in config.items()}  # Shallow copy
+    # Remove sensitive values from debug log
+    if 'home_assistant' in safe_config and 'token' in safe_config['home_assistant']:
+        safe_config['home_assistant']['token'] = '***REDACTED***'
     logger.debug(f"Final config loaded: {json.dumps(safe_config, default=str)}")  # Log final structure
 
     return config

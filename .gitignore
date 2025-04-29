@@ -1,4 +1,9 @@
 .venv*
 build-and-push.sh
 dev-push.sh
+<<<<<<< HEAD
 venv/*
+=======
+venv
+venv/*
+>>>>>>> rollback-branch

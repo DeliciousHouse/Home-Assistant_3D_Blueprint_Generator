@@ -15,7 +15,8 @@ import threading
 from .blueprint_generator import BlueprintGenerator
 from .bluetooth_processor import BluetoothProcessor
 from .db import get_sqlite_connection, execute_sqlite_query, get_latest_blueprint_from_sqlite
-from .ha_client import HomeAssistantClient
+# Fix the import to use HAClient as HomeAssistantClient
+from .ha_client import HAClient as HomeAssistantClient
 from .config_loader import load_config
 import uuid
 from datetime import datetime
