@@ -471,36 +471,11 @@ class HAClient:
     def get_areas(self):
         """Get all areas from Home Assistant."""
         try:
-            # Try multiple area endpoint variations in order of likelihood
-            area_endpoints = [
-                'api/config/area_registry',   # Most current HA API endpoint
-                'api/areas',                  # Alternative API endpoint
-                'api/config/areas',           # Third alternative
-                'config/area_registry',       # Slightly older endpoint
-                'api/area_registry',          # Another possibility
-                'core/api/config/area_registry', # Try with core prefix
-                'api/states/area',            # Another possibility
-                'areas',                      # Legacy endpoint
-                'supervisor/core/api/config/area_registry',  # Try supervisor path
-                'core/api/areas',             # Another core variation
-                'supervisor/core/api/config/areas',  # Try supervisor path with areas
-            ]
-
-            for endpoint in area_endpoints:
-                logger.debug(f"Trying area endpoint: {endpoint}")
-                areas = self._api_call(endpoint)
-
-                if areas and isinstance(areas, list):
-                    logger.info(f"Retrieved {len(areas)} areas from Home Assistant API ({endpoint} endpoint)")
-                    return areas
-                elif areas:
-                    logger.debug(f"Area endpoint {endpoint} returned non-list result: {type(areas)}")
-
-            # If direct API calls fail, try extracting areas from entity attributes
+            # Try extracting areas from entity attributes FIRST since direct API calls are failing
             logger.debug("Trying to extract areas from entity attributes")
             area_ids = {}
 
-            # First try device trackers
+            # First try device trackers - this is working based on the logs
             device_trackers = self.get_device_trackers()
             for tracker in device_trackers:
                 area_id = tracker.get('attributes', {}).get('area_id')
@@ -534,8 +509,33 @@ class HAClient:
                 logger.info(f"Extracted {len(area_ids)} areas from entity attributes")
                 return list(area_ids.values())
 
+            # Only if entity attribute extraction fails, try the direct API endpoints
+            area_endpoints = [
+                'api/config/area_registry',   # Most current HA API endpoint
+                'api/areas',                  # Alternative API endpoint
+                'api/config/areas',           # Third alternative
+                'config/area_registry',       # Slightly older endpoint
+                'api/area_registry',          # Another possibility
+                'core/api/config/area_registry', # Try with core prefix
+                'api/states/area',            # Another possibility
+                'areas',                      # Legacy endpoint
+                'supervisor/core/api/config/area_registry',  # Try supervisor path
+                'core/api/areas',             # Another core variation
+                'supervisor/core/api/config/areas',  # Try supervisor path with areas
+            ]
+
+            for endpoint in area_endpoints:
+                logger.debug(f"Trying area endpoint: {endpoint}")
+                areas = self._api_call(endpoint)
+
+                if areas and isinstance(areas, list):
+                    logger.info(f"Retrieved {len(areas)} areas from Home Assistant API ({endpoint} endpoint)")
+                    return areas
+                elif areas:
+                    logger.debug(f"Area endpoint {endpoint} returned non-list result: {type(areas)}")
+
             # As a last resort, create some standard areas for testing
-            logger.warning("Failed to get areas from API or entity attributes, using standard areas")
+            logger.warning("Failed to get areas from entity attributes or API, using standard areas")
             standard_areas = [
                 {"area_id": "living_room", "name": "Living Room"},
                 {"area_id": "kitchen", "name": "Kitchen"},

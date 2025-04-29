@@ -332,13 +332,16 @@ class AIProcessor:
                 logger.error("No distance data provided for relative positioning")
                 return {}
 
-            # Debug: Print the structure of the first few records
+            # Debug: Log the structure of the input data
             if distance_data and len(distance_data) > 0:
-                logger.debug(f"First distance record: {distance_data[0]}")
-                logger.debug(f"Distance record keys: {list(distance_data[0].keys() if isinstance(distance_data[0], dict) else [])}")
+                sample = distance_data[0]
+                logger.debug(f"Sample distance record: {sample}")
+                logger.debug(f"Sample record keys: {list(sample.keys() if isinstance(sample, dict) else [])}")
 
-            # IMPROVED ENTITY DETECTION
+            # ENHANCED ENTITY DETECTION
             # Extract all unique entity IDs (devices and scanners)
+            devices = set()
+            scanners = set()
             all_entities = set()
 
             # First pass - collect all entity IDs from distance records
@@ -347,33 +350,27 @@ class AIProcessor:
                     logger.warning(f"Skipping non-dict record: {record}")
                     continue
 
-                # Try different possible key names for tracked device and scanner
-                device_id = None
-                scanner_id = None
+                # Extract device ID and scanner ID from the record
+                device_id = record.get('tracked_device_id')
+                scanner_id = record.get('scanner_id')
 
-                # Check for tracked_device_id
-                if 'tracked_device_id' in record:
-                    device_id = record['tracked_device_id']
-                elif 'device_id' in record:
-                    device_id = record['device_id']
+                # Skip records with missing IDs
+                if not device_id or not scanner_id:
+                    continue
 
-                # Check for scanner_id
-                if 'scanner_id' in record:
-                    scanner_id = record['scanner_id']
-                elif 'other_id' in record:
-                    scanner_id = record['other_id']
-
-                # Add any non-empty IDs to our set
-                if device_id:
-                    all_entities.add(device_id)
-                if scanner_id:
-                    all_entities.add(scanner_id)
+                # Add to our device and scanner sets
+                devices.add(device_id)
+                scanners.add(scanner_id)
+                all_entities.add(device_id)
+                all_entities.add(scanner_id)
 
             # Filter out any empty strings or None values
             all_entities = {entity for entity in all_entities if entity}
 
-            # Log all entities for debugging
-            logger.info(f"Found {len(all_entities)} total entities: {all_entities}")
+            # Log what we found - good for debugging
+            logger.info(f"Found {len(devices)} tracked devices: {devices}")
+            logger.info(f"Found {len(scanners)} scanners: {scanners}")
+            logger.info(f"Found {len(all_entities)} total unique entities")
 
             # Create a sorted list of all entities for MDS
             device_list = sorted(list(all_entities))
@@ -396,35 +393,22 @@ class AIProcessor:
             measurements_added = 0
             for reading in distance_data:
                 try:
-                    # Get the device IDs using the correct keys
-                    device_a = None
-                    device_b = None
-                    distance = None
-
-                    if 'tracked_device_id' in reading and 'scanner_id' in reading:
-                        device_a = reading['tracked_device_id']
-                        device_b = reading['scanner_id']
-                        distance = reading.get('distance')
-                    elif 'device_id' in reading and 'other_id' in reading:
-                        device_a = reading['device_id']
-                        device_b = reading['other_id']
-                        distance = reading.get('distance')
-                    else:
-                        logger.debug(f"Skipping reading with unrecognized format: {reading}")
-                        continue
+                    device_id = reading.get('tracked_device_id')
+                    scanner_id = reading.get('scanner_id')
+                    distance = reading.get('distance')
 
                     # Skip if distance is missing or invalid
-                    if distance is None or not isinstance(distance, (int, float)) or distance <= 0:
+                    if not device_id or not scanner_id or distance is None or not isinstance(distance, (int, float)) or distance <= 0:
                         continue
 
                     # Find indices for these devices
-                    if device_a in device_list and device_b in device_list:
-                        device_idx_a = device_list.index(device_a)
-                        device_idx_b = device_list.index(device_b)
+                    if device_id in device_list and scanner_id in device_list:
+                        device_idx = device_list.index(device_id)
+                        scanner_idx = device_list.index(scanner_id)
 
                         # Set the distance in both directions (symmetric matrix)
-                        distance_matrix[device_idx_a, device_idx_b] = distance
-                        distance_matrix[device_idx_b, device_idx_a] = distance
+                        distance_matrix[device_idx, scanner_idx] = distance
+                        distance_matrix[scanner_idx, device_idx] = distance
                         measurements_added += 1
                 except (ValueError, KeyError, TypeError) as e:
                     logger.warning(f"Error processing distance reading: {e}")
