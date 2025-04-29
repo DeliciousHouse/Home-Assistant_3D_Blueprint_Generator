@@ -436,26 +436,50 @@ class BlueprintGenerator:
         transformed_positions = {}
 
         for entity_id, position in positions.items():
-            # Convert position to numpy array
-            if isinstance(position, tuple):
-                pos_array = np.array(position)
+            # Convert position to numpy array based on its format
+            if isinstance(position, dict):
+                # Handle dictionary format with 'x', 'y', 'z' keys
+                pos_array = np.array([position.get('x', 0.0), position.get('y', 0.0)])
+                has_z = 'z' in position
+                z_value = position.get('z', 0.0)
+            elif isinstance(position, (list, tuple)):
+                # Handle tuple/list format with indices
+                if len(position) >= 2:
+                    pos_array = np.array([position[0], position[1]])
+                    has_z = len(position) > 2
+                    z_value = position[2] if has_z else 0.0
+                else:
+                    logger.warning(f"Position for {entity_id} doesn't have enough elements: {position}")
+                    pos_array = np.array([0.0, 0.0])
+                    has_z = False
+                    z_value = 0.0
             else:
-                pos_array = np.array([position[0], position[1]])
+                logger.warning(f"Unexpected position format for {entity_id}: {position}")
+                continue
 
             # Apply transformation: scale, rotate, translate
             transformed = scale * pos_array @ rotation + translation
 
             # Convert back to the original format
-            if isinstance(position, tuple):
-                if len(position) > 2:  # If we had z-coordinate
-                    transformed_positions[entity_id] = (float(transformed[0]), float(transformed[1]), position[2])
-                else:
-                    transformed_positions[entity_id] = (float(transformed[0]), float(transformed[1]))
-            else:
-                if len(position) > 2:  # If we had z-coordinate
-                    transformed_positions[entity_id] = [float(transformed[0]), float(transformed[1]), position[2]]
+            if isinstance(position, dict):
+                # Return in same dictionary format
+                transformed_positions[entity_id] = {
+                    'x': float(transformed[0]),
+                    'y': float(transformed[1]),
+                    'z': z_value  # Keep original z coordinate
+                }
+            elif isinstance(position, list):
+                # Return as list
+                if has_z:
+                    transformed_positions[entity_id] = [float(transformed[0]), float(transformed[1]), z_value]
                 else:
                     transformed_positions[entity_id] = [float(transformed[0]), float(transformed[1])]
+            else:
+                # Return as tuple
+                if has_z:
+                    transformed_positions[entity_id] = (float(transformed[0]), float(transformed[1]), z_value)
+                else:
+                    transformed_positions[entity_id] = (float(transformed[0]), float(transformed[1]))
 
         return transformed_positions
 
