@@ -361,26 +361,24 @@ class BlueprintGenerator:
 
             # FALLBACK: If we have at least one area, create a simple translation
             if len(source_centroids) > 0:
-                logger.info("Using fallback transformation with simple translation")
+                # Create a simple translation to move the first centroid to (0,0)
+                first_area = next(iter(source_centroids.keys()))
+                source_x, source_y = source_centroids[first_area]
 
-                # Get the first source and target areas
-                first_source_area = list(source_centroids.keys())[0]
-                first_target_area = list(target_layout.keys())[0]
-
-                source_point = np.array(source_centroids[first_source_area])
-                target_point = np.array(target_layout[first_target_area])
-
-                # Simple identity rotation, 1.0 scale, and translation to move source to target
                 return {
-                    'rotation': np.eye(2),  # Identity rotation matrix
                     'scale': 1.0,
-                    'translation': target_point - source_point,
-                    'source_mean': source_point,
-                    'target_mean': target_point
+                    'rotation': 0.0,
+                    'translation_x': -source_x,
+                    'translation_y': -source_y
                 }
             else:
-                logger.error("No source centroids available for transformation")
-                return None
+                # No areas at all, use identity transformation
+                return {
+                    'scale': 1.0,
+                    'rotation': 0.0,
+                    'translation_x': 0.0,
+                    'translation_y': 0.0
+                }
 
         # Extract matching points
         source_points = np.array([source_centroids[area] for area in common_areas])
