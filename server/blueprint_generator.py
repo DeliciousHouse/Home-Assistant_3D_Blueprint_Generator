@@ -565,14 +565,26 @@ class BlueprintGenerator:
 
         # Process each area group
         for area_id, devices in device_area_groups.items():
-            if not devices or area_id == "unknown":
+            # Only skip empty device groups
+            if not devices:
                 continue
 
             # Extract device positions for this area
             area_device_ids = [device['device_id'] for device in devices]
-            area_positions = [transformed_positions.get(device_id) for device_id in area_device_ids if device_id in transformed_positions]
+            area_positions = []
+
+            # Get positions for each device that exists in transformed_positions
+            for device_id in area_device_ids:
+                if device_id in transformed_positions:
+                    pos = transformed_positions[device_id]
+                    # Convert position to list format if it's in dict format
+                    if isinstance(pos, dict):
+                        area_positions.append([pos['x'], pos['y'], pos.get('z', 0.0)])
+                    elif isinstance(pos, (list, tuple)):
+                        area_positions.append(list(pos))
 
             if not area_positions:
+                logger.warning(f"No valid positions for area: {area_id} with {len(devices)} devices")
                 continue
 
             # Convert to numpy array for easier processing
@@ -623,10 +635,15 @@ class BlueprintGenerator:
             center_y = (min_y + max_y) / 2
             center_z = 0  # Default floor level
 
+            # Use generic name for unknown areas but more descriptive than just "unknown"
+            display_name = area_names.get(area_id, area_id.replace('_', ' ').title())
+            if area_id == "unknown":
+                display_name = "Detected Space"
+
             # Create room entry
             room = {
                 'id': f"room_{area_id}",
-                'name': area_names.get(area_id, area_id.replace('_', ' ').title()),
+                'name': display_name,
                 'type': area_id,
                 'bounds': {
                     'min': {'x': min_x, 'y': min_y, 'z': 0},
@@ -644,6 +661,52 @@ class BlueprintGenerator:
             }
 
             rooms.append(room)
+
+        # If no rooms were generated and we have device positions, create at least one room to show something
+        if not rooms and transformed_positions:
+            logger.info("No rooms were generated, creating default room from all device positions")
+
+            # Extract all device points from transformed_positions
+            all_points = []
+            for entity_id, pos in transformed_positions.items():
+                if isinstance(pos, dict):
+                    all_points.append([pos['x'], pos['y'], pos.get('z', 0.0)])
+                elif isinstance(pos, (list, tuple)) and len(pos) >= 2:
+                    all_points.append(list(pos[:3]) if len(pos) >= 3 else list(pos) + [0.0])
+
+            if all_points:
+                points = np.array(all_points)
+                min_x = float(np.min(points[:,0])) - 1.0
+                max_x = float(np.max(points[:,0])) + 1.0
+                min_y = float(np.min(points[:,1])) - 1.0
+                max_y = float(np.max(points[:,1])) + 1.0
+
+                width = max_x - min_x
+                length = max_y - min_y
+                height = 2.5
+
+                rooms.append({
+                    'id': 'room_default',
+                    'name': 'Default Space',
+                    'type': 'default',
+                    'bounds': {
+                        'min': {'x': min_x, 'y': min_y, 'z': 0},
+                        'max': {'x': max_x, 'y': max_y, 'z': height}
+                    },
+                    'center': {
+                        'x': (min_x + max_x) / 2,
+                        'y': (min_y + max_y) / 2,
+                        'z': 0
+                    },
+                    'dimensions': {
+                        'width': width,
+                        'length': length,
+                        'height': height,
+                        'area': width * length
+                    },
+                    'devices': [{"id": entity_id} for entity_id in transformed_positions.keys()],
+                    'floor': 0
+                })
 
         return rooms
 
