@@ -155,7 +155,7 @@ class BlueprintGenerator:
 
             # Step 4: Get RSSI data and group devices by area
             rssi_data = ai_processor.get_rssi_data()
-            device_area_groups = self._group_devices_by_area(device_positions, area_predictions, areas, rssi_data)
+            device_area_groups = self._extract_device_area_mappings(device_positions)
             logger.info(f"Grouped devices into {len(device_area_groups)} areas")
 
             # Step 5: Calculate centroids for each area group
@@ -213,6 +213,164 @@ class BlueprintGenerator:
         except Exception as e:
             logger.error(f"Error generating blueprint: {str(e)}", exc_info=True)
             return False
+
+    def _extract_device_area_mappings(self, transformed_positions: Dict) -> Dict[str, List[Dict]]:
+        """
+        Extract mappings of areas to device positions, creating a mapping of area_id to list of devices.
+        Will fetch area information directly from Home Assistant if available.
+        """
+        logger.info("Extracting device area mappings...")
+        # Get device->area mappings from database
+        recent_area_predictions = get_recent_area_predictions(self.config.get('generation_settings', {}).get('area_window_minutes', 10))
+
+        # Fetch area information from Home Assistant - this provides official room assignments
+        try:
+            logger.info("Fetching areas from Home Assistant for direct room assignments...")
+            from .ha_client import HomeAssistantClient
+            ha_client = HomeAssistantClient()
+            ha_areas = ha_client.get_areas() or []
+
+            # Create a mapping of device_id to area_id from the device trackers
+            device_trackers = ha_client.get_device_trackers() or []
+            tracker_area_mappings = {}
+
+            for tracker in device_trackers:
+                device_id = tracker.get('entity_id', '').replace('device_tracker.', '')
+                area_id = tracker.get('attributes', {}).get('area_id')
+                if device_id and area_id:
+                    tracker_area_mappings[device_id] = area_id
+                    logger.debug(f"Found device tracker area mapping: {device_id} -> {area_id}")
+
+            # Get all device entities to check for area assignments
+            all_entities = ha_client.get_states() or []
+            entity_area_mappings = {}
+
+            for entity in all_entities:
+                entity_id = entity.get('entity_id', '')
+                if entity_id.startswith('sensor.'):
+                    device_id = entity_id.replace('sensor.', '')
+                    area_id = entity.get('attributes', {}).get('area_id')
+                    if device_id and area_id:
+                        entity_area_mappings[device_id] = area_id
+                        logger.debug(f"Found entity area mapping: {device_id} -> {area_id}")
+
+            logger.info(f"Found {len(tracker_area_mappings)} device tracker area mappings and {len(entity_area_mappings)} entity area mappings")
+        except Exception as e:
+            logger.error(f"Error fetching areas from Home Assistant: {str(e)}")
+            ha_areas = []
+            tracker_area_mappings = {}
+            entity_area_mappings = {}
+
+        # Map each device to its area, prioritizing direct HA assignments over database predictions
+        device_areas = {}
+        assigned_devices = 0
+
+        # Process each device in transformed positions
+        for device_id, position in transformed_positions.items():
+            # 1. First priority: Check if device has a direct assignment in device trackers
+            if device_id in tracker_area_mappings:
+                area_id = tracker_area_mappings[device_id]
+                device_areas[device_id] = area_id
+                assigned_devices += 1
+                logger.debug(f"Assigned device {device_id} to area {area_id} from tracker")
+
+            # 2. Second priority: Check entities for area assignments (e.g., ESP proxies)
+            elif device_id in entity_area_mappings:
+                area_id = entity_area_mappings[device_id]
+                device_areas[device_id] = area_id
+                assigned_devices += 1
+                logger.debug(f"Assigned device {device_id} to area {area_id} from entity attributes")
+
+            # 3. Third priority: Use recent predictions from database
+            elif device_id in recent_area_predictions:
+                area_id = recent_area_predictions[device_id]
+                if area_id:  # Skip None values
+                    device_areas[device_id] = area_id
+                    assigned_devices += 1
+                    logger.debug(f"Assigned device {device_id} to area {area_id} from recent predictions")
+
+        # Group devices by area
+        area_groups = {}
+        for device_id, area_id in device_areas.items():
+            if area_id not in area_groups:
+                area_groups[area_id] = []
+
+            # Only include devices that exist in transformed positions
+            if device_id in transformed_positions:
+                device_data = {
+                    "device_id": device_id,
+                    "position": transformed_positions[device_id],
+                }
+                area_groups[area_id].append(device_data)
+
+        # Make sure "unknown" exists in the groups
+        if "unknown" not in area_groups:
+            area_groups["unknown"] = []
+
+        # Add devices without area assignments to "unknown"
+        for device_id, position in transformed_positions.items():
+            if device_id not in device_areas:
+                # This device has no area assignment
+                device_data = {
+                    "device_id": device_id,
+                    "position": position,
+                }
+                area_groups["unknown"].append(device_data)
+
+        # Add scanners without explicit assignments to appropriate areas based on naming if possible
+        for device_id, position in transformed_positions.items():
+            # Skip devices already assigned
+            if device_id in device_areas:
+                continue
+
+            # Check if this looks like a scanner/proxy based on name patterns
+            is_likely_scanner = any(pattern in device_id.lower() for pattern in
+                                   ['ble_', 'bt_', 'proxy', 'scanner', 'esp', 'beacon'])
+
+            if is_likely_scanner:
+                # Try to match with area name
+                matched_area = None
+                for area in ha_areas:
+                    area_id = area.get('area_id', '')
+                    area_name = area.get('name', '').lower().replace(' ', '_')
+
+                    if area_name and area_name in device_id.lower():
+                        matched_area = area_id
+                        logger.debug(f"Matched scanner {device_id} to area {area_id} based on name")
+                        break
+
+                if matched_area:
+                    # Add scanner to the matched area
+                    if matched_area not in area_groups:
+                        area_groups[matched_area] = []
+
+                    device_data = {
+                        "device_id": device_id,
+                        "position": position,
+                    }
+                    area_groups[matched_area].append(device_data)
+
+                    # Remove from unknown if it was there
+                    area_groups["unknown"] = [d for d in area_groups["unknown"] if d["device_id"] != device_id]
+
+        num_areas = len(area_groups)
+        total_devices = sum(len(devices) for devices in area_groups.values())
+        logger.info(f"Grouped {total_devices} devices into {num_areas} area groups")
+
+        # Log the centroids of each area group
+        centroids = {}
+        for area_id, devices in area_groups.items():
+            if devices:
+                x_coords = [d['position'].get('x', 0) for d in devices]
+                y_coords = [d['position'].get('y', 0) for d in devices]
+                if x_coords and y_coords:
+                    centroids[area_id] = (
+                        sum(x_coords) / len(x_coords),
+                        sum(y_coords) / len(y_coords)
+                    )
+        logger.info(f"Source centroids: {centroids}")
+
+        return area_groups
 
     def _determine_rooms(self, areas: List[Dict], device_coords_by_area: Dict) -> List[Dict]:
         """Determine the rooms and their shapes based on Area and sensor data."""
