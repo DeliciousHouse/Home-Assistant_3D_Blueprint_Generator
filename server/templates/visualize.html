@@ -95,6 +95,23 @@
         #unit-toggle-icon {
             margin-right: 5px;
         }
+        #display-settings {
+            position: absolute;
+            top: 60px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 100;
+        }
+        .setting-toggle {
+            margin: 5px 0;
+        }
+        .setting-toggle label {
+            cursor: pointer;
+            margin-left: 5px;
+        }
     </style>
 </head>
 <body>
@@ -113,6 +130,16 @@
         <span id="unit-toggle-icon">📏</span>
         <span id="current-unit">Metric (m)</span>
     </div>
+    <div id="display-settings">
+        <div class="setting-toggle">
+            <input type="checkbox" id="show-labels" checked>
+            <label for="show-labels">Show Room Labels</label>
+        </div>
+        <div class="setting-toggle">
+            <input type="checkbox" id="show-floor-plans" checked>
+            <label for="show-floor-plans">Show Floor Plans</label>
+        </div>
+    </div>
 
     <script>
         // Blueprint data from server
@@ -121,10 +148,13 @@
         const meshes = {
             rooms: [],
             walls: [],
-            objects: []
+            objects: [],
+            labels: []
         };
         let selectedObject = null;
         let unitSystem = 'metric'; // Default unit system
+        let showLabels = true;
+        let showFloorPlans = true;
 
         // Unit conversion constants
         const METERS_TO_FEET = 3.28084;
@@ -173,10 +203,13 @@
             FLOOR: 0xcccccc,
             CEILING: 0xe0e0e0,
             SELECTED: 0xffcc00,
+            LABEL_BG: 0x000000,
+            LABEL_TEXT: 0xffffff,
             OBJECT: {
                 'sofa': 0x7b68ee,
                 'coffee_table': 0x8b4513,
                 'tv_unit': 0x2f4f4f,
+                'tv_stand': 0x2f4f4f,
                 'armchair': 0x6a5acd,
                 'refrigerator': 0xb0c4de,
                 'stove': 0x696969,
@@ -281,6 +314,17 @@
             }
         });
 
+        // Setup display settings toggles
+        document.getElementById('show-labels').addEventListener('change', function() {
+            showLabels = this.checked;
+            updateRoomLabels();
+        });
+
+        document.getElementById('show-floor-plans').addEventListener('change', function() {
+            showFloorPlans = this.checked;
+            renderBlueprint();
+        });
+
         // Main rendering function
         renderBlueprint();
 
@@ -383,6 +427,12 @@
                 if (mesh.material) mesh.material.dispose();
             });
             meshes.objects = [];
+
+            // Clear labels
+            meshes.labels.forEach(label => {
+                scene.remove(label);
+            });
+            meshes.labels = [];
         }
 
         // Render the entire blueprint based on current floor selection
@@ -424,6 +474,89 @@
 
                 renderObjects(objectsToRender);
             }
+
+            // Add room labels
+            if (showLabels) {
+                addRoomLabels(roomsToRender);
+            }
+        }
+
+        // Create and add room labels
+        function addRoomLabels(rooms) {
+            // Remove previous labels
+            meshes.labels.forEach(label => {
+                scene.remove(label);
+            });
+            meshes.labels = [];
+
+            // Skip if labels are disabled
+            if (!showLabels) return;
+
+            rooms.forEach(room => {
+                if (!room.name || !room.center) return;
+
+                // Get room center
+                const center = room.center;
+
+                // Create text sprite for the label
+                const labelHeight = room.dimensions?.height || 2.5;
+                createTextLabel(room.name, center.x, labelHeight + 0.3, center.y, room);
+            });
+        }
+
+        // Update visibility of room labels
+        function updateRoomLabels() {
+            // Show/hide existing labels
+            meshes.labels.forEach(label => {
+                label.visible = showLabels;
+            });
+
+            // If labels are now visible but none exist, add them
+            if (showLabels && meshes.labels.length === 0) {
+                const roomsToRender = blueprintData.rooms.filter(room => {
+                    if (currentFloor === 'all') return true;
+                    return room.floor === currentFloor;
+                });
+                addRoomLabels(roomsToRender);
+            }
+        }
+
+        // Create a text label sprite
+        function createTextLabel(text, x, y, z, userData) {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = 256;
+            canvas.height = 128;
+
+            // Draw background
+            context.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw text
+            context.font = 'Bold 24px Arial';
+            context.fillStyle = 'white';
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(text, canvas.width/2, canvas.height/2);
+
+            // Create sprite texture
+            const texture = new THREE.CanvasTexture(canvas);
+            const spriteMaterial = new THREE.SpriteMaterial({
+                map: texture,
+                transparent: true
+            });
+
+            const sprite = new THREE.Sprite(spriteMaterial);
+            sprite.position.set(x, y, z);
+            sprite.scale.set(2, 1, 1); // Adjust scale to make text readable
+
+            // Store the room data for interaction
+            sprite.userData = { type: 'label', data: userData };
+
+            scene.add(sprite);
+            meshes.labels.push(sprite);
+
+            return sprite;
         }
 
         // Render rooms as 3D boxes
@@ -470,9 +603,13 @@
                 const centerX = (room.bounds.min.x + room.bounds.max.x) / 2;
                 const centerY = (room.bounds.min.y + room.bounds.max.y) / 2;
 
-                roomMesh.position.set(centerX, height/2, centerY);
-                floorMesh.position.set(centerX, 0, centerY);
-                ceilingMesh.position.set(centerX, height, centerY);
+                // Calculate Y position based on floor number
+                const floorHeight = 3.0; // Height between floors in meters
+                const yOffset = room.floor * floorHeight;
+
+                roomMesh.position.set(centerX, height/2 + yOffset, centerY);
+                floorMesh.position.set(centerX, 0 + yOffset, centerY);
+                ceilingMesh.position.set(centerX, height + yOffset, centerY);
 
                 scene.add(roomMesh);
                 scene.add(floorMesh);
@@ -512,8 +649,15 @@
                 // Rotation angle
                 const angle = Math.atan2(dy, dx);
 
+                // Check if wall belongs to a specific floor
+                let yOffset = 0;
+                if (wall.floor !== undefined) {
+                    const floorHeight = 3.0; // Height between floors in meters
+                    yOffset = wall.floor * floorHeight;
+                }
+
                 // Position the wall
-                wallMesh.position.set(midpointX, height / 2, midpointY);
+                wallMesh.position.set(midpointX, height / 2 + yOffset, midpointY);
                 wallMesh.rotation.y = -angle;
 
                 scene.add(wallMesh);
@@ -532,6 +676,14 @@
                 const width = obj.dimensions.width;
                 const height = obj.dimensions.height;
                 const length = obj.dimensions.depth || obj.dimensions.length;
+
+                // Find the room this object belongs to
+                const room = blueprintData.rooms.find(r => r.id === obj.room_id);
+                let yOffset = 0;
+                if (room && room.floor !== undefined) {
+                    const floorHeight = 3.0; // Height between floors in meters
+                    yOffset = room.floor * floorHeight;
+                }
 
                 // Create object based on type
                 let objectGeometry;
@@ -570,7 +722,7 @@
 
                 // Position at the object's position
                 const x = obj.position.x;
-                const y = obj.position.z || height/2;
+                const y = (obj.position.z || height/2) + yOffset;
                 const z = obj.position.y;
 
                 objectMesh.position.set(x, y, z);
@@ -597,7 +749,7 @@
             raycaster.setFromCamera(mouse, camera);
 
             // Calculate objects intersecting the picking ray
-            const intersects = raycaster.intersectObjects([...meshes.rooms, ...meshes.walls, ...meshes.objects]);
+            const intersects = raycaster.intersectObjects([...meshes.rooms, ...meshes.walls, ...meshes.objects, ...meshes.labels]);
 
             // Reset previous selection
             if (selectedObject) {
@@ -618,6 +770,18 @@
             // Process new selection
             if (intersects.length > 0) {
                 selectedObject = intersects[0].object;
+
+                // Check if we clicked on a label
+                if (selectedObject.userData.type === 'label') {
+                    // Find the actual room object instead
+                    const roomData = selectedObject.userData.data;
+                    const roomMesh = meshes.rooms.find(mesh =>
+                        mesh.userData.type === 'room' && mesh.userData.data.id === roomData.id);
+
+                    if (roomMesh) {
+                        selectedObject = roomMesh;
+                    }
+                }
 
                 // Highlight selected object
                 if (selectedObject.userData.type === 'object' ||
@@ -683,6 +847,11 @@
             requestAnimationFrame(animate);
             controls.update();
             renderer.render(scene, camera);
+
+            // Update label positions to face camera
+            meshes.labels.forEach(label => {
+                label.quaternion.copy(camera.quaternion);
+            });
         }
         animate();
 

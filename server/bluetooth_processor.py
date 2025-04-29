@@ -1,348 +1,461 @@
+#!/usr/bin/env python3
+
 import json
 import logging
-import math
 import os
+import math
 import time
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any, Union
+from typing import Dict, List, Optional, Tuple
 import numpy as np
-import uuid
+from datetime import datetime, timedelta
+import random
+from scipy.optimize import minimize
 
-# Import database functions
-from .db import (
-    save_distance_log,
-    get_recent_distances,
-    save_area_observation,
-    get_device_positions_from_sqlite,
-    get_reference_positions_from_sqlite
-)
-
-# Import Home Assistant client
+# Import local modules with fallbacks
 try:
-    from .ha_client import HAClient
-except ImportError:
-    # For standalone testing
-    class HAClient:
-        def __init__(self):
-            pass
-        def get_distances(self):
-            return {}
-        def get_area_predictions(self):
-            return {}
-        def get_areas(self):
-            return []
-
-# Import config loader
-try:
+    from .ha_client import HomeAssistantClient
+    from .db import (
+        save_distance_log, save_area_observation,
+        get_recent_distances, get_recent_area_predictions,
+        get_reference_positions_from_sqlite, save_reference_position,
+        save_device_position
+    )
     from .config_loader import load_config
 except ImportError:
-    def load_config(): return {}
+    try:
+        from ha_client import HomeAssistantClient
+        from db import (
+            save_distance_log, save_area_observation,
+            get_recent_distances, get_recent_area_predictions,
+            get_reference_positions_from_sqlite, save_reference_position,
+            save_device_position
+        )
+        from config_loader import load_config
+    except ImportError:
+        # If both fail, handle gracefully but log error
+        import sys
+        logging.error("Failed to import required modules for BluetoothProcessor")
 
 logger = logging.getLogger(__name__)
-config = load_config()
 
 class BluetoothProcessor:
-    """Processes Bluetooth data for the blueprint generator."""
+    """
+    Process Bluetooth detection data to calculate device positions and areas.
+    """
+    # Class variable to hold the single instance
+    _instance = None
 
-    def __init__(self):
+    def __new__(cls, *args, **kwargs):
+        """Create or return the singleton instance."""
+        if cls._instance is None:
+            cls._instance = super(BluetoothProcessor, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self, config_path: Optional[str] = None):
         """Initialize the Bluetooth processor."""
-        self.ha_client = HAClient()
-        self.device_predictions = {}  # Cache of most recent area predictions
-        self.scanner_positions = {}   # Cache of scanner positions
-        self.last_update_time = datetime.now() - timedelta(minutes=10)  # Force initial update
+        if hasattr(self, '_initialized') and self._initialized:
+            return
 
-        # Get settings from config
-        self.settings = config.get('bluetooth_processor', {})
-        self.update_interval = self.settings.get('update_interval', 10)  # seconds
-        self.distance_max = self.settings.get('distance_max', 15.0)  # meters
-        self.rssi_cutoff = self.settings.get('rssi_cutoff', -90)  # dBm
-
-    def log_sensor_data(self) -> Dict[str, int]:
-        """
-        Log the latest sensor data from Home Assistant.
-        Returns a dictionary with counts of logged distances and areas.
-        """
-        result = {"distances_logged": 0, "areas_logged": 0}
-
+        # Use standardized config loader
         try:
-            # Check if we need to update based on interval
-            now = datetime.now()
-            if (now - self.last_update_time).total_seconds() < self.update_interval:
-                logger.debug("Skipping update - too soon since last update")
-                return result
-
-            self.last_update_time = now
-
-            # Get distance data from Home Assistant
-            distances = self.ha_client.get_distances()
-            if not distances:
-                logger.warning("No distance data available from HA")
-            else:
-                # Log distance data to the database
-                for device_id, distance_data in distances.items():
-                    for scanner, distance_info in distance_data.items():
-                        distance = distance_info.get('distance')
-                        if distance is not None and distance <= self.distance_max:
-                            if save_distance_log(device_id, scanner, distance):
-                                result["distances_logged"] += 1
-
-            # Get area predictions from Home Assistant
-            area_predictions = self.ha_client.get_area_predictions()
-            if not area_predictions:
-                logger.warning("No area predictions available from HA")
-            else:
-                # Log area predictions to the database
-                for device_id, area_id in area_predictions.items():
-                    if save_area_observation(device_id, area_id):
-                        result["areas_logged"] += 1
-                        # Update the cache
-                        self.device_predictions[device_id] = area_id
-
-            logger.info(f"Logged {result['distances_logged']} distance readings and {result['areas_logged']} area observations.")
-            return result
-
+            self.config = load_config(config_path)
         except Exception as e:
-            logger.error(f"Error logging sensor data: {str(e)}", exc_info=True)
-            return result
+            logger.error(f"Error loading config: {e}")
+            self.config = {}
 
-    def process_distances(self, time_window_minutes: int = 10) -> Dict[str, Dict[str, float]]:
+        # Get Home Assistant client
+        self.ha_client = HomeAssistantClient()
+
+        # Get processing configuration
+        self.processing_params = self.config.get('processing_params', {
+            'rssi_power_coefficient': -20,
+            'environment_factor': 2.0,
+            'distance_filter_threshold': 15,  # meters
+            'distance_time_window': 15,  # minutes
+            'prediction_time_window': 10,  # minutes
+            'min_observations': 3,
+            'trilateration_alpha': 0.5,
+            'trilateration_beta': 0.5,
+            'use_kalman_filter': True,
+            'kalman_process_noise': 0.01,
+            'kalman_measurement_noise': 0.1
+        })
+
+        # Initialize counters and timestamps
+        self.last_scan_time = datetime.now() - timedelta(hours=1)  # Set to an hour ago initially
+        self.scanning_interval = self.config.get('scanning_interval', 30)  # Default 30 seconds
+
+        # Cache of device metadata (name, type, etc.)
+        self.device_metadata = {}
+
+        self._initialized = True
+        logger.info("BluetoothProcessor initialized successfully")
+
+    def log_sensor_data(self) -> Dict:
         """
-        Process recent distance measurements to create a device-to-device distance matrix.
-
-        Args:
-            time_window_minutes: Time window in minutes for recent distances
-
-        Returns:
-            Dictionary mapping device pairs to distances
+        Scan for Bluetooth devices and log data.
+        Returns dictionary with log statistics.
         """
+        start_time = datetime.now()
+        distances_logged = 0
+        areas_logged = 0
+
         try:
-            # Get recent distance measurements from the database
-            recent_distances = get_recent_distances(time_window_minutes)
-            if not recent_distances:
-                logger.warning(f"No distance data found in the last {time_window_minutes} minutes")
-                return {}
+            # Check if enough time has passed since last scan
+            time_since_last_scan = (start_time - self.last_scan_time).total_seconds()
+            if time_since_last_scan < self.scanning_interval:
+                logger.debug(f"Skipping scan, only {time_since_last_scan:.1f}s since last scan "
+                           f"(interval: {self.scanning_interval}s)")
+                return {
+                    'status': 'skipped',
+                    'reason': 'interval_not_reached',
+                    'distances_logged': 0,
+                    'areas_logged': 0
+                }
 
-            # Create a matrix of distances between devices
-            device_distances = {}
+            self.last_scan_time = start_time
 
-            # Process each distance measurement
-            for record in recent_distances:
-                device_id = record.get('tracked_device_id')
-                scanner_id = record.get('scanner_id')
-                distance = record.get('distance')
+            # Get Bluetooth sensors from Home Assistant
+            bt_sensors = self.ha_client.get_bluetooth_sensors()
+            logger.info(f"Found {len(bt_sensors)} Bluetooth sensors")
 
-                if not device_id or not scanner_id or distance is None:
-                    continue
+            # Get device trackers from Home Assistant
+            device_trackers = self.ha_client.get_device_trackers()
+            logger.info(f"Found {len(device_trackers)} device trackers")
 
-                # Create unique key for the device pair (sorted to ensure consistency)
-                pair_key = tuple(sorted([device_id, scanner_id]))
-
-                # Store the minimum distance observed (more reliable than averaging)
-                if pair_key not in device_distances or distance < device_distances[pair_key]:
-                    device_distances[pair_key] = distance
-
-            logger.debug(f"Processed {len(recent_distances)} distance records into {len(device_distances)} unique device pairs")
-            return device_distances
-
-        except Exception as e:
-            logger.error(f"Error processing distances: {str(e)}", exc_info=True)
-            return {}
-
-    def get_area_predictions_for_devices(self, device_ids: List[str], time_window_minutes: int = 10) -> Dict[str, str]:
-        """
-        Get the most recent area predictions for the specified devices.
-
-        Args:
-            device_ids: List of device IDs to get predictions for
-            time_window_minutes: Time window in minutes for recent predictions
-
-        Returns:
-            Dictionary mapping device_id to area_id
-        """
-        try:
-            # First, check our cached predictions
-            predictions = {d: self.device_predictions.get(d) for d in device_ids if d in self.device_predictions}
-
-            # For devices without cached predictions, get fresh data from HA
-            missing_devices = [d for d in device_ids if d not in predictions]
-            if missing_devices:
-                fresh_predictions = self.ha_client.get_area_predictions()
-                for device_id in missing_devices:
-                    area_id = fresh_predictions.get(device_id)
-                    if area_id:
-                        predictions[device_id] = area_id
-                        # Update our cache
-                        self.device_predictions[device_id] = area_id
-
-            return predictions
-
-        except Exception as e:
-            logger.error(f"Error getting area predictions: {str(e)}", exc_info=True)
-            return {}
-
-    def get_all_ha_areas(self) -> List[Dict[str, Any]]:
-        """
-        Get all areas defined in Home Assistant.
-
-        Returns:
-            List of area dictionaries with 'area_id' and 'name' keys
-        """
-        try:
-            return self.ha_client.get_areas() or []
-        except Exception as e:
-            logger.error(f"Error getting Home Assistant areas: {str(e)}", exc_info=True)
-            return []
-
-    def get_reference_positions(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Get reference positions for devices (scanners or fixed beacons).
-
-        Returns:
-            Dictionary mapping device_id to position data
-        """
-        try:
-            # Get reference positions from the database
+            # Get reference positions
             reference_positions = get_reference_positions_from_sqlite()
+            logger.info(f"Found {len(reference_positions)} reference positions")
 
-            if not reference_positions:
-                logger.warning("No reference positions found in the database")
+            # Process Bluetooth data
+            distances_logged = self._process_bluetooth_data(bt_sensors, reference_positions)
 
-            return reference_positions
+            # Process device positions
+            positions_calculated = self._calculate_device_positions(reference_positions)
 
-        except Exception as e:
-            logger.error(f"Error getting reference positions: {str(e)}", exc_info=True)
-            return {}
+            # Process area predictions
+            areas_logged = self._process_area_predictions(device_trackers, reference_positions)
 
-    def create_distance_matrix(self, device_distances: Dict[Tuple[str, str], float]) -> Tuple[np.ndarray, List[str]]:
-        """
-        Create a symmetric distance matrix from device-to-device distances.
-
-        Args:
-            device_distances: Dictionary mapping device pairs to distances
-
-        Returns:
-            Tuple of (distance matrix, list of device IDs)
-        """
-        try:
-            # Get all unique device IDs from the distance data
-            unique_devices = set()
-            for device1, device2 in device_distances.keys():
-                unique_devices.add(device1)
-                unique_devices.add(device2)
-
-            # Convert to sorted list for consistent indexing
-            device_list = sorted(unique_devices)
-            n_devices = len(device_list)
-
-            if n_devices < 2:
-                logger.warning("Not enough devices for distance matrix")
-                return np.array([]), []
-
-            # Create a mapping from device ID to matrix index
-            device_to_idx = {device: idx for idx, device in enumerate(device_list)}
-
-            # Initialize distance matrix with large values
-            # Use a reasonable maximum distance (e.g., 30 meters)
-            max_distance = 30.0
-            dist_matrix = np.ones((n_devices, n_devices)) * max_distance
-
-            # Set diagonal to zero (distance to self)
-            np.fill_diagonal(dist_matrix, 0)
-
-            # Fill in known distances
-            for (device1, device2), distance in device_distances.items():
-                idx1 = device_to_idx[device1]
-                idx2 = device_to_idx[device2]
-                # Ensure symmetric matrix
-                dist_matrix[idx1, idx2] = distance
-                dist_matrix[idx2, idx1] = distance
-
-            logger.info(f"Created distance matrix for {n_devices} devices")
-            return dist_matrix, device_list
-
-        except Exception as e:
-            logger.error(f"Error creating distance matrix: {str(e)}", exc_info=True)
-            return np.array([]), []
-
-    def calibrate_rssi_model(self, rssi_samples: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Calibrate an RSSI-to-distance model.
-
-        Args:
-            rssi_samples: List of dictionaries with 'rssi' and 'distance' values
-
-        Returns:
-            Dictionary with model parameters
-        """
-        try:
-            if len(rssi_samples) < 5:
-                logger.warning("Not enough RSSI samples for calibration")
-                return {}
-
-            # Extract RSSI and distance values
-            rssi_values = np.array([sample['rssi'] for sample in rssi_samples])
-            distance_values = np.array([sample['distance'] for sample in rssi_samples])
-
-            # Log-distance path loss model: RSSI = A - 10*n*log10(d)
-            # where A is the RSSI at 1m, n is the path loss exponent
-
-            # Convert to log scale for linear regression
-            log_distances = np.log10(distance_values)
-
-            # Perform linear regression
-            A = np.vstack([np.ones_like(log_distances), log_distances]).T
-            # RSSI = a - b*log10(d)
-            a, b = np.linalg.lstsq(A, rssi_values, rcond=None)[0]
-
-            # Convert parameters to standard form
-            rssi_at_1m = a
-            path_loss_exponent = b / 10.0
-
-            # Calculate R-squared to evaluate fit
-            y_pred = a - b * log_distances
-            ss_total = np.sum((rssi_values - np.mean(rssi_values)) ** 2)
-            ss_residual = np.sum((rssi_values - y_pred) ** 2)
-            r_squared = 1 - (ss_residual / ss_total)
-
-            logger.info(f"Calibrated RSSI model: RSSI_1m={rssi_at_1m:.2f}, n={path_loss_exponent:.2f}, R²={r_squared:.3f}")
+            # Log statistics
+            processing_time = (datetime.now() - start_time).total_seconds()
+            logger.info(f"Processing complete in {processing_time:.2f}s. "
+                       f"Logged {distances_logged} distances and {areas_logged} area predictions. "
+                       f"Calculated {positions_calculated} positions.")
 
             return {
-                'rssi_at_1m': float(rssi_at_1m),
-                'path_loss_exponent': float(path_loss_exponent),
-                'r_squared': float(r_squared)
+                'status': 'success',
+                'processing_time': processing_time,
+                'distances_logged': distances_logged,
+                'areas_logged': areas_logged,
+                'positions_calculated': positions_calculated
             }
 
         except Exception as e:
-            logger.error(f"Error calibrating RSSI model: {str(e)}", exc_info=True)
-            return {}
+            logger.error(f"Error processing Bluetooth data: {str(e)}", exc_info=True)
+            return {
+                'status': 'error',
+                'error_message': str(e),
+                'distances_logged': distances_logged,
+                'areas_logged': areas_logged
+            }
 
-    def rssi_to_distance(self, rssi: float, rssi_at_1m: float = -59, path_loss_exponent: float = 2.0) -> float:
+    def _process_bluetooth_data(self, bt_sensors: List[Dict], reference_positions: Dict) -> int:
         """
-        Convert RSSI to distance using the log-distance path loss model.
-
-        Args:
-            rssi: Measured RSSI value in dBm
-            rssi_at_1m: RSSI value at 1 meter distance
-            path_loss_exponent: Path loss exponent (typically 2.0 to 4.0)
-
-        Returns:
-            Estimated distance in meters
+        Process Bluetooth sensor data and log distances.
+        Returns number of distances logged.
         """
+        distances_logged = 0
+
+        # Create a map of scanner IDs to their positions
+        scanner_positions = {}
+        for ref_id, ref_data in reference_positions.items():
+            scanner_positions[ref_id] = (ref_data['x'], ref_data['y'], ref_data['z'])
+
+        for sensor in bt_sensors:
+            sensor_id = sensor.get('entity_id', '').replace('sensor.', '')
+            tracked_device_id = sensor.get('attributes', {}).get('source', 'unknown')
+
+            # Skip if no scanner position available
+            if sensor_id not in scanner_positions:
+                continue
+
+            # Get RSSI value
+            rssi = sensor.get('attributes', {}).get('rssi')
+            if rssi is None:
+                continue
+
+            # Convert RSSI to distance
+            distance = self._rssi_to_distance(rssi)
+
+            # Skip unreliable long distances
+            if distance > self.processing_params.get('distance_filter_threshold', 15):
+                continue
+
+            # Log the distance
+            if save_distance_log(tracked_device_id, sensor_id, distance):
+                distances_logged += 1
+
+        return distances_logged
+
+    def _calculate_device_positions(self, reference_positions: Dict) -> int:
+        """
+        Calculate device positions using trilateration from distance logs.
+        Returns number of positions calculated.
+        """
+        positions_calculated = 0
+
+        # Get recent distance measurements
+        recent_distances = get_recent_distances(
+            self.processing_params.get('distance_time_window', 15)
+        )
+
+        # Group distances by device
+        distances_by_device = {}
+        for measurement in recent_distances:
+            device_id = measurement['tracked_device_id']
+            if device_id not in distances_by_device:
+                distances_by_device[device_id] = []
+            distances_by_device[device_id].append(measurement)
+
+        # For each device, calculate position if enough measurements
+        for device_id, measurements in distances_by_device.items():
+            # Skip if not enough measurement points
+            if len(measurements) < self.processing_params.get('min_observations', 3):
+                continue
+
+            # Extract relevant information for trilateration
+            scanner_distances = {}
+            for m in measurements:
+                scanner_id = m['scanner_id']
+                distance = m['distance']
+
+                # Take the most recent measurement for each scanner
+                if scanner_id not in scanner_distances:
+                    scanner_distances[scanner_id] = distance
+
+            # Skip if not enough scanner points
+            if len(scanner_distances) < 3:
+                continue
+
+            # Perform trilateration
+            position_data = self._trilaterate_position(device_id, scanner_distances, reference_positions)
+
+            if position_data:
+                # Save the calculated position
+                success = save_device_position(
+                    device_id=device_id,
+                    position_data=position_data,
+                    source='calculated',
+                    accuracy=position_data.get('accuracy')
+                )
+
+                if success:
+                    positions_calculated += 1
+
+        return positions_calculated
+
+    def _process_area_predictions(self, device_trackers: List[Dict], reference_positions: Dict) -> int:
+        """
+        Process data to determine which area each device is in.
+        Returns number of area predictions logged.
+        """
+        areas_logged = 0
+
+        # Create a mapping of reference_id to area_id
+        ref_to_area = {}
+        for ref_id, ref_data in reference_positions.items():
+            if 'area_id' in ref_data:
+                ref_to_area[ref_id] = ref_data['area_id']
+
+        # Get recent distance measurements
+        recent_distances = get_recent_distances(
+            self.processing_params.get('distance_time_window', 15)
+        )
+
+        # Group distances by device
+        distances_by_device = {}
+        for measurement in recent_distances:
+            device_id = measurement['tracked_device_id']
+            if device_id not in distances_by_device:
+                distances_by_device[device_id] = []
+            distances_by_device[device_id].append(measurement)
+
+        # For each device, predict area
+        for device_id, measurements in distances_by_device.items():
+            # Find closest reference point
+            closest_scanner = None
+            closest_distance = float('inf')
+
+            for m in measurements:
+                scanner_id = m['scanner_id']
+                distance = m['distance']
+
+                if distance < closest_distance:
+                    closest_distance = distance
+                    closest_scanner = scanner_id
+
+            if closest_scanner and closest_scanner in ref_to_area:
+                area_id = ref_to_area[closest_scanner]
+
+                # Save area observation
+                success = save_area_observation(device_id, area_id)
+                if success:
+                    areas_logged += 1
+
+        return areas_logged
+
+    def _trilaterate_position(
+        self, device_id: str, scanner_distances: Dict[str, float], reference_positions: Dict
+    ) -> Optional[Dict]:
+        """
+        Calculate device position using trilateration.
+        Returns position data dictionary or None on failure.
+        """
+        # Simple triangulation algorithm based on distances to reference points
+        # For a real implementation, use a proper multilateration algorithm
+        # This is a simplified version for demonstration
+
+        # Need at least 3 points for triangulation
+        if len(scanner_distances) < 3:
+            return None
+
+        # Get reference positions for relevant scanners
+        reference_points = []
+        distances = []
+
+        for scanner_id, distance in scanner_distances.items():
+            if scanner_id in reference_positions:
+                ref_pos = reference_positions[scanner_id]
+                reference_points.append((ref_pos['x'], ref_pos['y'], ref_pos['z']))
+                distances.append(distance)
+
+        # Check if we still have enough points
+        if len(reference_points) < 3:
+            logger.debug(f"Not enough reference points for device {device_id}")
+            return None
+
         try:
-            # Log-distance path loss model: RSSI = RSSI_1m - 10*n*log10(d)
-            # Solving for d: d = 10^((RSSI_1m - RSSI)/(10*n))
-            if path_loss_exponent <= 0:
-                path_loss_exponent = 2.0  # Default to free space
+            # Define the error function to minimize - sum of squared differences
+            # between actual distances and calculated distances to each reference
+            def error_func(pos):
+                x, y, z = pos
+                error_sum = 0
+                for i in range(len(reference_points)):
+                    rx, ry, rz = reference_points[i]
+                    calculated_distance = math.sqrt((x - rx)**2 + (y - ry)**2 + (z - rz)**2)
+                    error_sum += (calculated_distance - distances[i])**2
+                return error_sum
 
-            distance = 10 ** ((rssi_at_1m - rssi) / (10 * path_loss_exponent))
+            # Initial guess - average of reference points
+            initial_guess = np.mean(np.array(reference_points), axis=0)
 
-            # Apply reasonable bounds
-            min_distance = 0.1  # 10 cm minimum
-            max_distance = 30.0  # 30 meters maximum
-            distance = min(max(distance, min_distance), max_distance)
+            # Run minimization
+            result = minimize(error_func, initial_guess, method='Nelder-Mead')
 
-            return distance
+            # Check if optimization was successful
+            if result.success:
+                x, y, z = result.x
+
+                # Calculate accuracy based on final error
+                error = math.sqrt(result.fun / len(reference_points))
+
+                return {
+                    'x': float(x),
+                    'y': float(y),
+                    'z': float(z),
+                    'accuracy': float(error),
+                    'reference_count': len(reference_points),
+                    'timestamp': datetime.now().isoformat()
+                }
+            else:
+                logger.warning(f"Optimization failed for device {device_id}: {result.message}")
+                return None
 
         except Exception as e:
-            logger.error(f"Error converting RSSI to distance: {str(e)}")
-            return 5.0  # Return a reasonable default
+            logger.error(f"Error in trilateration for device {device_id}: {str(e)}")
+            return None
+
+    def _rssi_to_distance(self, rssi: float) -> float:
+        """
+        Convert RSSI to approximate distance in meters.
+        Uses log-distance path loss model.
+        """
+        # Default parameters if not specified
+        power_coefficient = self.processing_params.get('rssi_power_coefficient', -20)
+        environment_factor = self.processing_params.get('environment_factor', 2.0)
+
+        # Log-distance path loss model formula:
+        # distance = 10^((power_coefficient - rssi) / (10 * environment_factor))
+        distance = 10 ** ((power_coefficient - rssi) / (10 * environment_factor))
+
+        return distance
+
+    def get_device_location_quality(self, device_id: str) -> Dict:
+        """
+        Get the quality of location data for a device.
+        Returns dict with stats about location quality.
+        """
+        # Get recent distance measurements for this device
+        recent_distances = []
+        all_distances = get_recent_distances(
+            self.processing_params.get('distance_time_window', 15)
+        )
+
+        for measurement in all_distances:
+            if measurement['tracked_device_id'] == device_id:
+                recent_distances.append(measurement)
+
+        # Calculate quality metrics
+        num_measurements = len(recent_distances)
+        num_distinct_scanners = len(set(d['scanner_id'] for d in recent_distances))
+
+        # Determine if we have enough data for good positioning
+        has_enough_scanners = num_distinct_scanners >= 3
+
+        # Average distance
+        avg_distance = None
+        if num_measurements > 0:
+            avg_distance = sum(d['distance'] for d in recent_distances) / num_measurements
+
+        return {
+            'device_id': device_id,
+            'num_measurements': num_measurements,
+            'num_scanners': num_distinct_scanners,
+            'has_enough_data': has_enough_scanners,
+            'avg_distance': avg_distance
+        }
+
+    def get_all_device_locations(self) -> Dict[str, Dict]:
+        """
+        Get current location info for all devices.
+        Returns dict mapping device_id to location data.
+        """
+        from .db import get_device_positions_from_sqlite
+
+        # Get all recent device positions
+        device_positions = get_device_positions_from_sqlite(
+            time_window_minutes=self.processing_params.get('distance_time_window', 15)
+        )
+
+        # Get recent area predictions
+        area_predictions = get_recent_area_predictions(
+            self.processing_params.get('prediction_time_window', 10)
+        )
+
+        # Combine data
+        result = {}
+        for device_id, position in device_positions.items():
+            result[device_id] = {
+                'position': {
+                    'x': position.get('x'),
+                    'y': position.get('y'),
+                    'z': position.get('z')
+                },
+                'area_id': area_predictions.get(device_id),
+                'source': position.get('source'),
+                'accuracy': position.get('accuracy'),
+                'timestamp': position.get('timestamp')
+            }
+
+        return result

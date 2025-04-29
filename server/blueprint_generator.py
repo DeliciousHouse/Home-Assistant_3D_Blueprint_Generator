@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import uuid
 import math
+import random
 
 import numpy as np
 from scipy.spatial import Delaunay
@@ -173,17 +174,18 @@ class BlueprintGenerator:
                 all_areas = []  # Use empty list instead of None so the empty areas still get processed
 
             # Generate rooms from the grouped points
-            rooms = self.ai_processor.generate_rooms_from_points(device_coords_by_area, all_areas)
+            rooms = self._determine_rooms(all_areas, device_coords_by_area)
             if not rooms:
                 logger.error("Failed to generate rooms from points")
                 return False
 
-            # Generate walls between rooms
-            walls = self.ai_processor.generate_walls(rooms)
+            # Calculate room positions, dimensions, and walls
+            rooms = self._calculate_room_dimensions(rooms)
+            walls = self._generate_walls(rooms)
             logger.info(f"Generated {len(walls)} walls")
 
             # Group rooms into floors
-            floors = self._group_rooms_into_floors(rooms)
+            floors = self._organize_floors(rooms)
             logger.info(f"Grouped {len(rooms)} rooms into {len(floors)} floors")
 
             # Predict objects (furniture, fixtures, etc.) for each room
@@ -200,7 +202,6 @@ class BlueprintGenerator:
             }
 
             # Save to database
-            from server.db import save_blueprint_to_sqlite
             success = save_blueprint_to_sqlite(blueprint)
             if success:
                 logger.info(f"Successfully saved blueprint with {len(rooms)} rooms")
@@ -214,133 +215,167 @@ class BlueprintGenerator:
             logger.error(f"Blueprint generation failed: {str(e)}", exc_info=True)
             return False
 
-    def _generate_basic_walls(self, rooms: List[Dict]) -> List[Dict]:
-        """Generate basic walls from room bounds when AI wall generation fails."""
-        walls = []
-        wall_id = 0
+    def _determine_rooms(self, areas: List[Dict], device_coords_by_area: Dict) -> List[Dict]:
+        """Determine the rooms and their shapes based on Area and sensor data."""
+        rooms = []
+        for area_id, devices in device_coords_by_area.items():
+            area_name = next((area['name'] for area in areas if area['area_id'] == area_id), f"Room {area_id}")
+            avg_x = sum(device['x'] for device in devices) / len(devices)
+            avg_y = sum(device['y'] for device in devices) / len(devices)
+            avg_z = sum(device['z'] for device in devices) / len(devices)
+            room = {
+                'id': f"room_{area_id}",
+                'name': area_name,
+                'center': {'x': avg_x, 'y': avg_y, 'z': avg_z},
+                'devices': devices
+            }
+            rooms.append(room)
+        return rooms
 
+    def _calculate_room_dimensions(self, rooms: List[Dict]) -> List[Dict]:
+        """Calculate reasonable room dimensions based on their positions."""
         for room in rooms:
-            if not room.get('bounds'):
-                continue
+            # Default dimensions if no better calculation is available
+            width = 5.0
+            length = 5.0
+            height = 2.7
 
-            bounds = room['bounds']
-            min_x, min_y = bounds['min']['x'], bounds['min']['y']
-            max_x, max_y = bounds['max']['x'], bounds['max']['y']
+            # Better approach if we have devices
+            if 'devices' in room and len(room['devices']) >= 2:
+                # Get x and y coordinates of devices in this room
+                x_coords = [device['x'] for device in room['devices']]
+                y_coords = [device['y'] for device in room['devices']]
+                z_coords = [device.get('z', 0) for device in room['devices']]
 
-            wall_height = room.get('dimensions', {}).get('height', 2.4)
-            wall_thickness = 0.15
+                # Calculate width and length based on device spread, add margin
+                margin = 1.0  # Add 1m margin around detected points
+                min_x, max_x = min(x_coords), max(x_coords)
+                min_y, max_y = min(y_coords), max(y_coords)
+                min_z, max_z = min(z_coords), max(z_coords)
 
-            wall_id += 1
-            walls.append({
-                'id': f"wall_{wall_id}",
-                'start': {'x': min_x, 'y': min_y},
-                'end': {'x': min_x, 'y': max_y},
-                'thickness': wall_thickness,
-                'height': wall_height
-            })
+                width = max(2.0, max_x - min_x + margin * 2)  # At least 2 meters wide
+                length = max(2.0, max_y - min_y + margin * 2)  # At least 2 meters long
 
-            wall_id += 1
-            walls.append({
-                'id': f"wall_{wall_id}",
-                'start': {'x': min_x, 'y': max_y},
-                'end': {'x': max_x, 'y': max_y},
-                'thickness': wall_thickness,
-                'height': wall_height
-            })
+                # Determine floor number based on z-coordinate
+                floor_level = int(sum(z_coords) / len(z_coords) // 3)  # 3m per floor
 
-            wall_id += 1
-            walls.append({
-                'id': f"wall_{wall_id}",
-                'start': {'x': max_x, 'y': max_y},
-                'end': {'x': max_x, 'y': min_y},
-                'thickness': wall_thickness,
-                'height': wall_height
-            })
-
-            wall_id += 1
-            walls.append({
-                'id': f"wall_{wall_id}",
-                'start': {'x': max_x, 'y': min_y},
-                'end': {'x': min_x, 'y': min_y},
-                'thickness': wall_thickness,
-                'height': wall_height
-            })
-
-        return walls
-
-    def _group_rooms_into_floors(self, rooms: List[Dict]) -> List[Dict]:
-        """Group rooms into floors based on their z-coordinate and area metadata."""
-        if not rooms:
-            return []
-
-        floor_heights = {
-            0: 0.0,
-            1: 3.0,
-            2: 6.0
-        }
-
-        area_floor_map = {
-            "lounge": 0,
-            "kitchen": 0,
-            "dining_room": 0,
-            "front_porch": 0,
-            "laundry_room": 0,
-            "master_bedroom": 0,
-            "master_bathroom": 0,
-            "office": 1,
-            "dressing_room": 1,
-            "sky_floor": 1,
-            "balcony": 1,
-            "garage": 0,
-            "nova_room": 0,
-            "christian_room": 0
-        }
-
-        floors_dict = {}
-        for room in rooms:
-            try:
-                area_id = room.get('area_id')
-                if area_id and area_id in area_floor_map:
-                    floor_level = area_floor_map[area_id]
-                else:
-                    if 'center' in room and 'z' in room['center']:
-                        center_z = room['center']['z']
-                        if center_z < 1.5:
-                            floor_level = 0
-                        elif center_z < 4.5:
-                            floor_level = 1
-                        else:
-                            floor_level = 2
-                    else:
-                        logger.warning(f"Room {room.get('id', 'unknown')} is missing 'center' data, defaulting to ground floor")
-                        floor_level = 0
-
-                if floor_level not in floors_dict:
-                    floors_dict[floor_level] = []
-
-                floors_dict[floor_level].append(room['id'])
+                # Ensure room has floor info
                 room['floor'] = floor_level
 
-            except Exception as e:
-                logger.error(f"Error processing room for floor grouping: {str(e)}")
-                if 'id' in room:
-                    if 0 not in floors_dict:
-                        floors_dict[0] = []
-                    floors_dict[0].append(room['id'])
-                    room['floor'] = 0
+                # Calculate bounds for the room
+                room['bounds'] = {
+                    'min': {'x': min_x - margin, 'y': min_y - margin, 'z': min_z},
+                    'max': {'x': max_x + margin, 'y': max_y + margin, 'z': max_z}
+                }
 
-        floors = []
-        for level, room_ids in sorted(floors_dict.items()):
-            floors.append({
+                # Make sure room has center coordinates
+                room['center'] = {
+                    'x': (min_x + max_x) / 2,
+                    'y': (min_y + max_y) / 2,
+                    'z': (min_z + max_z) / 2
+                }
+            else:
+                # For rooms without enough devices, create default bounds
+                center = room.get('center', {'x': 0, 'y': 0, 'z': 0})
+                floor_level = int(center['z'] // 3)  # 3m per floor
+                room['floor'] = floor_level
+
+                room['bounds'] = {
+                    'min': {'x': center['x'] - width/2, 'y': center['y'] - length/2, 'z': 0},
+                    'max': {'x': center['x'] + width/2, 'y': center['y'] + length/2, 'z': height}
+                }
+
+            room['dimensions'] = {
+                'width': width,
+                'length': length,
+                'height': height,
+                'area': width * length
+            }
+
+            # Ensure every room has a name
+            if not room.get('name'):
+                room['name'] = room.get('id', 'Unknown Room').replace('_', ' ').title()
+
+        return rooms
+
+    def _generate_walls(self, rooms: List[Dict]) -> List[Dict]:
+        """Generate walls between rooms based on room positions and dimensions."""
+        walls = []
+        for room in rooms:
+            center = room['center']
+            dimensions = room['dimensions']
+            floor_level = room.get('floor', 0)  # Get floor level from room
+
+            # Generate 4 walls for room (basic rectangle)
+            walls.append({
+                'id': f"wall_{room['id']}_1",
+                'start': {'x': center['x'] - dimensions['width'] / 2, 'y': center['y'] - dimensions['length'] / 2},
+                'end': {'x': center['x'] + dimensions['width'] / 2, 'y': center['y'] - dimensions['length'] / 2},
+                'height': dimensions['height'],
+                'thickness': 0.15,
+                'floor': floor_level  # Add floor level to wall
+            })
+            walls.append({
+                'id': f"wall_{room['id']}_2",
+                'start': {'x': center['x'] + dimensions['width'] / 2, 'y': center['y'] - dimensions['length'] / 2},
+                'end': {'x': center['x'] + dimensions['width'] / 2, 'y': center['y'] + dimensions['length'] / 2},
+                'height': dimensions['height'],
+                'thickness': 0.15,
+                'floor': floor_level
+            })
+            walls.append({
+                'id': f"wall_{room['id']}_3",
+                'start': {'x': center['x'] + dimensions['width'] / 2, 'y': center['y'] + dimensions['length'] / 2},
+                'end': {'x': center['x'] - dimensions['width'] / 2, 'y': center['y'] + dimensions['length'] / 2},
+                'height': dimensions['height'],
+                'thickness': 0.15,
+                'floor': floor_level
+            })
+            walls.append({
+                'id': f"wall_{room['id']}_4",
+                'start': {'x': center['x'] - dimensions['width'] / 2, 'y': center['y'] + dimensions['length'] / 2},
+                'end': {'x': center['x'] - dimensions['width'] / 2, 'y': center['y'] - dimensions['length'] / 2},
+                'height': dimensions['height'],
+                'thickness': 0.15,
+                'floor': floor_level
+            })
+        return walls
+
+    def _organize_floors(self, rooms: List[Dict]) -> List[Dict]:
+        """Organize rooms into floor levels."""
+        floors = {}
+        for room in rooms:
+            # Get the floor level from the room data
+            floor_level = room.get('floor', 0)
+
+            if floor_level not in floors:
+                floors[floor_level] = []
+
+            floors[floor_level].append(room['id'])  # Just store room ID references
+
+            # Make sure room has its floor information
+            room['floor'] = floor_level
+
+        # Create floor objects with names and room references
+        floor_objects = []
+        for level, room_ids in sorted(floors.items()):
+            floor_name = "Ground Floor" if level == 0 else f"{level}{self._get_ordinal_suffix(level)} Floor"
+
+            floor_objects.append({
                 'level': level,
-                'name': f"Floor {level}",
-                'rooms': room_ids,
-                'height': 3.0,
-                'elevation': floor_heights.get(level, level * 3.0)
+                'name': floor_name,
+                'room_ids': room_ids
             })
 
-        logger.info(f"Grouped {len(rooms)} rooms into {len(floors)} floors")
-        return floors
+        logger.info(f"Organized rooms into {len(floor_objects)} floors: {', '.join(f['name'] for f in floor_objects)}")
+        return floor_objects
+
+    def _get_ordinal_suffix(self, n):
+        """Return the ordinal suffix for a number (1st, 2nd, 3rd, etc.)"""
+        if 11 <= (n % 100) <= 13:
+            return 'th'
+        else:
+            return {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
 
     def get_latest_blueprint(self):
         """Get the latest blueprint from the database."""
