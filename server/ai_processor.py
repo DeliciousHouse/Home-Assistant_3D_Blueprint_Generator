@@ -214,7 +214,10 @@ class AIProcessor:
         objects = []
         object_id = 1
 
-        for room in rooms:
+        # First, ensure all rooms have bounds
+        rooms_with_bounds = self._calculate_room_bounds(rooms)
+
+        for room in rooms_with_bounds:
             room_id = room.get('id', '')
             area_id = room.get('area_id', '').lower()
 
@@ -227,7 +230,7 @@ class AIProcessor:
             room_type = next((key for key in self.common_objects.keys() if key in area_id), 'default')
             possible_objects = self.common_objects.get(room_type, self.common_objects['default'])
 
-            # Get room dimensions and bounds
+            # Get room dimensions and bounds - now guaranteed to exist after _calculate_room_bounds
             min_x = room['bounds']['min']['x']
             max_x = room['bounds']['max']['x']
             min_y = room['bounds']['min']['y']

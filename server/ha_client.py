@@ -30,21 +30,20 @@ class HAClient:
         # Get Home Assistant connection details - with better fallbacks for add-on environment
         self.ha_url = self.ha_config.get('url')
         if not self.ha_url:
-            # Try all possible environment variables for Home Assistant URL
-            self.ha_url = os.environ.get('HASS_URL') or os.environ.get('SUPERVISOR_API') or 'http://supervisor/core'
+            # When running as Supervisor add-on, use the supervisor API URL
+            self.ha_url = os.environ.get('SUPERVISOR_API', 'http://supervisor/core')
+            logger.info(f"Using supervisor API URL: {self.ha_url}")
 
         # Get token with improved fallbacks for add-on environment
         self.ha_token = self.ha_config.get('token')
         if not self.ha_token:
-            # Try all possible environment variables for token
-            self.ha_token = os.environ.get('HASS_TOKEN') or os.environ.get('SUPERVISOR_TOKEN')
-            if not self.ha_token and os.path.exists('/data/options.json'):
-                try:
-                    with open('/data/options.json', 'r') as f:
-                        options = json.load(f)
-                        self.ha_token = options.get('ha_token', '')
-                except Exception as e:
-                    logger.error(f"Failed to read options.json: {e}")
+            # When running as an add-on, use the supervisor token
+            self.ha_token = os.environ.get('SUPERVISOR_TOKEN')
+            if self.ha_token:
+                logger.info("Using supervisor token for authentication")
+            else:
+                logger.warning("No Home Assistant token found. Add-on may not be able to connect to Home Assistant API.")
+                self.offline_mode = True
 
         # Setup request headers
         self.headers = {
