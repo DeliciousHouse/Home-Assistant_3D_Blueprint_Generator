@@ -332,45 +332,58 @@ class AIProcessor:
                 logger.error("No distance data provided for relative positioning")
                 return {}
 
-            # Debug: Print the first few records to see their structure
-            if distance_data:
+            # Debug: Print the structure of the first few records
+            if distance_data and len(distance_data) > 0:
                 logger.debug(f"First distance record: {distance_data[0]}")
+                logger.debug(f"Distance record keys: {list(distance_data[0].keys() if isinstance(distance_data[0], dict) else [])}")
 
-            # Create list of all unique device IDs
-            all_devices = set()
-            for reading in distance_data:
-                # Debug: Log the keys in each reading to understand structure
-                if isinstance(reading, dict):
-                    logger.debug(f"Reading keys: {list(reading.keys())}")
+            # IMPROVED ENTITY DETECTION
+            # Extract all unique entity IDs (devices and scanners)
+            all_entities = set()
 
-                # Check for the correct key format based on database schema
-                # The data should have tracked_device_id and scanner_id
-                tracked_device_id = reading.get('tracked_device_id')
-                scanner_id = reading.get('scanner_id')
+            # First pass - collect all entity IDs from distance records
+            for record in distance_data:
+                if not isinstance(record, dict):
+                    logger.warning(f"Skipping non-dict record: {record}")
+                    continue
 
-                if tracked_device_id and scanner_id:
-                    all_devices.add(tracked_device_id)
-                    all_devices.add(scanner_id)
-                    logger.debug(f"Added devices from distance reading: '{tracked_device_id}' and '{scanner_id}'")
-                # Fallback for alternative key names if needed
-                elif 'device_id' in reading and 'other_id' in reading:
-                    all_devices.add(reading['device_id'])
-                    all_devices.add(reading['other_id'])
-                else:
-                    logger.warning(f"Unrecognized distance reading format: {reading}")
+                # Try different possible key names for tracked device and scanner
+                device_id = None
+                scanner_id = None
 
-            # Log the unique devices found
-            logger.info(f"Found {len(all_devices)} unique devices: {all_devices}")
+                # Check for tracked_device_id
+                if 'tracked_device_id' in record:
+                    device_id = record['tracked_device_id']
+                elif 'device_id' in record:
+                    device_id = record['device_id']
 
-            # Sort them for consistent ordering
-            device_list = sorted(list(all_devices))
+                # Check for scanner_id
+                if 'scanner_id' in record:
+                    scanner_id = record['scanner_id']
+                elif 'other_id' in record:
+                    scanner_id = record['other_id']
+
+                # Add any non-empty IDs to our set
+                if device_id:
+                    all_entities.add(device_id)
+                if scanner_id:
+                    all_entities.add(scanner_id)
+
+            # Filter out any empty strings or None values
+            all_entities = {entity for entity in all_entities if entity}
+
+            # Log all entities for debugging
+            logger.info(f"Found {len(all_entities)} total entities: {all_entities}")
+
+            # Create a sorted list of all entities for MDS
+            device_list = sorted(list(all_entities))
             n_devices = len(device_list)
 
             if n_devices < 3:
-                logger.error(f"Need at least 3 devices for relative positioning (found {n_devices})")
+                logger.error(f"Not enough entities ({n_devices}) for {dimensions}D positioning. Need at least 3 entities.")
                 return {}
 
-            logger.info(f"Creating distance matrix for {n_devices} devices")
+            logger.info(f"Creating distance matrix for {n_devices} entities")
 
             # Create an empty distance matrix (fill with large values initially)
             max_distance = 50  # A large default distance
@@ -384,25 +397,35 @@ class AIProcessor:
             for reading in distance_data:
                 try:
                     # Get the device IDs using the correct keys
+                    device_a = None
+                    device_b = None
+                    distance = None
+
                     if 'tracked_device_id' in reading and 'scanner_id' in reading:
                         device_a = reading['tracked_device_id']
                         device_b = reading['scanner_id']
-                        distance = reading['distance']
+                        distance = reading.get('distance')
                     elif 'device_id' in reading and 'other_id' in reading:
                         device_a = reading['device_id']
                         device_b = reading['other_id']
-                        distance = reading['distance']
+                        distance = reading.get('distance')
                     else:
-                        continue  # Skip readings with unrecognized format
+                        logger.debug(f"Skipping reading with unrecognized format: {reading}")
+                        continue
+
+                    # Skip if distance is missing or invalid
+                    if distance is None or not isinstance(distance, (int, float)) or distance <= 0:
+                        continue
 
                     # Find indices for these devices
-                    device_idx_a = device_list.index(device_a)
-                    device_idx_b = device_list.index(device_b)
+                    if device_a in device_list and device_b in device_list:
+                        device_idx_a = device_list.index(device_a)
+                        device_idx_b = device_list.index(device_b)
 
-                    # Set the distance in both directions (symmetric matrix)
-                    distance_matrix[device_idx_a, device_idx_b] = distance
-                    distance_matrix[device_idx_b, device_idx_a] = distance
-                    measurements_added += 1
+                        # Set the distance in both directions (symmetric matrix)
+                        distance_matrix[device_idx_a, device_idx_b] = distance
+                        distance_matrix[device_idx_b, device_idx_a] = distance
+                        measurements_added += 1
                 except (ValueError, KeyError, TypeError) as e:
                     logger.warning(f"Error processing distance reading: {e}")
                     continue
@@ -419,8 +442,16 @@ class AIProcessor:
             except Exception as e:
                 logger.error(f"MDS calculation failed: {e}")
                 # Fallback to simpler approach
-                positions = np.random.rand(n_devices, dimensions) * 10
-                logger.warning("Using random positions as fallback")
+                try:
+                    mds = MDS(n_components=dimensions, dissimilarity='precomputed',
+                              random_state=42)
+                    positions = mds.fit_transform(distance_matrix)
+                    logger.info("Alternative MDS calculation successful")
+                except Exception as e2:
+                    logger.error(f"Alternative MDS calculation failed: {e2}")
+                    # Last resort fallback to random positions
+                    positions = np.random.rand(n_devices, dimensions) * 10
+                    logger.warning("Using random positions as fallback")
 
             # Create output dictionary mapping device IDs to coordinates
             result = {}
@@ -438,7 +469,7 @@ class AIProcessor:
                         'z': float(positions[i, 2]) if dimensions > 2 else 0.0
                     }
 
-            logger.info(f"Relative positioning completed successfully for {len(result)} devices")
+            logger.info(f"Relative positioning completed successfully for {len(result)} entities")
             return result
 
         except Exception as e:
@@ -527,11 +558,6 @@ class AIProcessor:
                 if any(prefix in entity_lower for prefix in scanner_prefixes) or \
                    any(entity_lower.endswith(suffix) for suffix in scanner_suffixes) or \
                    any(entity_lower.endswith(suffix) for suffix in sensor_suffixes):
-                    is_scanner = True
-
-                # Check for hex patterns often used in BLE addresses
-                if '_' in entity and any(segment for segment in entity.split('_')
-                                        if len(segment) > 10 and all(c in '0123456789abcdef' for c in segment.lower())):
                     is_scanner = True
 
                 # Check if this is explicitly a tracked device

@@ -473,15 +473,17 @@ class HAClient:
         try:
             # Try multiple area endpoint variations in order of likelihood
             area_endpoints = [
-                'api/config/areas',           # Current API endpoint
+                'api/config/area_registry',   # Most current HA API endpoint
                 'api/areas',                  # Alternative API endpoint
-                'api/area_registry',          # New alternative
+                'api/config/areas',           # Third alternative
+                'config/area_registry',       # Slightly older endpoint
+                'api/area_registry',          # Another possibility
+                'core/api/config/area_registry', # Try with core prefix
                 'api/states/area',            # Another possibility
-                'config/area_registry',       # Older API endpoint
                 'areas',                      # Legacy endpoint
-                'core/api/config/areas',      # Try with core prefix
+                'supervisor/core/api/config/area_registry',  # Try supervisor path
                 'core/api/areas',             # Another core variation
-                'supervisor/core/api/config/areas',  # Try supervisor path
+                'supervisor/core/api/config/areas',  # Try supervisor path with areas
             ]
 
             for endpoint in area_endpoints:
@@ -504,16 +506,28 @@ class HAClient:
                 area_id = tracker.get('attributes', {}).get('area_id')
                 area_name = tracker.get('attributes', {}).get('area_name') or area_id
                 if area_id:
-                    area_ids[area_id] = {"area_id": area_id, "name": area_name or area_id.replace('_', ' ').title(), "derived": True}
+                    try:
+                        area_name = area_name.replace('_', ' ').title() if area_name else area_id.replace('_', ' ').title()
+                        area_ids[area_id] = {"area_id": area_id, "name": area_name, "derived": True}
+                    except Exception as e:
+                        logger.warning(f"Error formatting area name: {e}")
+                        # Handle case where area_id is None
+                        if area_id:
+                            area_ids[area_id] = {"area_id": area_id, "name": "Unknown Area", "derived": True}
 
             # Then try all entities for more area references
             states = self.get_states()
             if states:
                 for entity in states:
                     attrs = entity.get('attributes', {})
-                    if 'area_id' in attrs and attrs['area_id'] not in area_ids:
+                    if 'area_id' in attrs and attrs['area_id'] and attrs['area_id'] not in area_ids:
                         area_id = attrs['area_id']
-                        area_name = attrs.get('area_name') or area_id.replace('_', ' ').title()
+                        area_name = attrs.get('area_name', '')
+                        if not area_name and area_id:
+                            try:
+                                area_name = area_id.replace('_', ' ').title()
+                            except Exception:
+                                area_name = "Unknown Area"
                         area_ids[area_id] = {"area_id": area_id, "name": area_name, "derived": True}
 
             if area_ids:
@@ -533,6 +547,7 @@ class HAClient:
             return standard_areas
         except Exception as e:
             logger.error(f"Error getting areas: {str(e)}")
+            # Don't return None, return mock areas if there's an error
             return self._generate_mock_areas()
 
     def get_devices(self):
