@@ -27,23 +27,16 @@ class HAClient:
         self.config = load_config(config_path)
         self.ha_config = self.config.get('home_assistant', {})
 
-        # Get Home Assistant connection details - with better fallbacks for add-on environment
-        self.ha_url = self.ha_config.get('url')
-        if not self.ha_url:
-            # When running as Supervisor add-on, use the supervisor API URL
-            self.ha_url = os.environ.get('SUPERVISOR_API', 'http://supervisor/core')
-            logger.info(f"Using supervisor API URL: {self.ha_url}")
+        # When running as a Supervisor add-on, these environment variables will be set automatically
+        self.ha_url = os.environ.get('SUPERVISOR_API', self.ha_config.get('url', 'http://supervisor/core'))
+        self.ha_token = os.environ.get('SUPERVISOR_TOKEN', self.ha_config.get('token', ''))
 
-        # Get token with improved fallbacks for add-on environment
-        self.ha_token = self.ha_config.get('token')
-        if not self.ha_token:
-            # When running as an add-on, use the supervisor token
-            self.ha_token = os.environ.get('SUPERVISOR_TOKEN')
-            if self.ha_token:
-                logger.info("Using supervisor token for authentication")
-            else:
-                logger.warning("No Home Assistant token found. Add-on may not be able to connect to Home Assistant API.")
-                self.offline_mode = True
+        # Log connection details (but not the token itself)
+        logger.info(f"Initializing Home Assistant client with URL: {self.ha_url}")
+        logger.info(f"Authentication token available: {bool(self.ha_token)}")
+
+        # Setting offline mode to False initially and letting _test_connection determine if needed
+        self.offline_mode = False
 
         # Setup request headers
         self.headers = {
@@ -51,15 +44,12 @@ class HAClient:
             'Content-Type': 'application/json',
         }
 
-        # Flag to track if we are in offline/mock mode
-        self.offline_mode = False
-
-        logger.info(f"HAClient initialized with URL: {self.ha_url}")
-
         # Validate connection on startup
         if not self._test_connection():
-            logger.warning("Unable to connect to Home Assistant. Entering offline mode with mock data.")
+            logger.warning("Unable to connect to Home Assistant API. Entering offline mode with mock data.")
             self.offline_mode = True
+        else:
+            logger.info("Successfully connected to Home Assistant API")
 
     def _test_connection(self):
         """Test connection to Home Assistant and log detailed debug info."""
