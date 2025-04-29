@@ -13,7 +13,8 @@ from scipy.optimize import minimize
 
 # Import local modules with fallbacks
 try:
-    from .ha_client import HomeAssistantClient
+    # First try relative imports (typical when imported as module)
+    from .ha_client import HAClient as HomeAssistantClient
     from .db import (
         save_distance_log, save_area_observation,
         get_recent_distances, get_recent_area_predictions,
@@ -21,9 +22,11 @@ try:
         save_device_position
     )
     from .config_loader import load_config
+    logger = logging.getLogger(__name__)
 except ImportError:
     try:
-        from ha_client import HomeAssistantClient
+        # Then try direct imports (when run as script)
+        from ha_client import HAClient as HomeAssistantClient
         from db import (
             save_distance_log, save_area_observation,
             get_recent_distances, get_recent_area_predictions,
@@ -31,12 +34,12 @@ except ImportError:
             save_device_position
         )
         from config_loader import load_config
-    except ImportError:
+        logger = logging.getLogger("bluetooth_processor")
+    except ImportError as e:
         # If both fail, handle gracefully but log error
         import sys
-        logging.error("Failed to import required modules for BluetoothProcessor")
-
-logger = logging.getLogger(__name__)
+        logging.error(f"Failed to import required modules for BluetoothProcessor: {e}")
+        sys.exit(1)  # Exit if critical modules can't be loaded
 
 class BluetoothProcessor:
     """

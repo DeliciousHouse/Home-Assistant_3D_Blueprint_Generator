@@ -25,7 +25,8 @@ from .db import (
 # --- Imports from other project files ---
 from .bluetooth_processor import BluetoothProcessor # Still needed to instantiate it for the scheduler
 from .ai_processor import AIProcessor
-from .ha_client import HomeAssistantClient
+# Import HAClient with HomeAssistantClient alias
+from .ha_client import HAClient as HomeAssistantClient
 from .config_loader import load_config
 logger = logging.getLogger(__name__)
 

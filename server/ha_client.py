@@ -163,3 +163,6 @@ class HAClient:
 
     # The rest of the class remains unchanged
     # ...
+
+# For compatibility with existing code
+HomeAssistantClient = HAClient
