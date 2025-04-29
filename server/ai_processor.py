@@ -719,6 +719,70 @@ class AIProcessor:
         logger.info(f"Generated {len(walls)} walls")
         return walls
 
+    def generate_walls(self, rooms: List[Dict]) -> List[Dict]:
+        """
+        Generate walls for the given rooms. This is a wrapper for generate_walls_between_rooms.
+
+        Args:
+            rooms: List of room definitions
+
+        Returns:
+            List of wall definitions
+        """
+        logger.info(f"Generating walls for {len(rooms)} rooms")
+
+        # First, calculate room bounds if not already present
+        processed_rooms = self._calculate_room_bounds(rooms)
+
+        # Generate walls between rooms
+        return self.generate_walls_between_rooms(processed_rooms)
+
+    def _calculate_room_bounds(self, rooms: List[Dict]) -> List[Dict]:
+        """
+        Calculate the min/max bounds for each room if not already present.
+
+        Args:
+            rooms: List of room definitions
+
+        Returns:
+            List of rooms with bounds added
+        """
+        result = []
+
+        for room in rooms:
+            room_copy = dict(room)
+
+            # If bounds already present, use them
+            if 'bounds' in room_copy:
+                result.append(room_copy)
+                continue
+
+            # Otherwise calculate bounds from center and dimensions
+            center = room_copy.get('center', {'x': 0, 'y': 0, 'z': 0})
+            dimensions = room_copy.get('dimensions', {'width': 3, 'length': 3, 'height': 2.4})
+
+            half_width = dimensions.get('width', 3) / 2
+            half_length = dimensions.get('length', 3) / 2
+            height = dimensions.get('height', 2.4)
+
+            bounds = {
+                'min': {
+                    'x': center.get('x', 0) - half_width,
+                    'y': center.get('y', 0) - half_length,
+                    'z': center.get('z', 0) - height/2
+                },
+                'max': {
+                    'x': center.get('x', 0) + half_width,
+                    'y': center.get('y', 0) + half_length,
+                    'z': center.get('z', 0) + height/2
+                }
+            }
+
+            room_copy['bounds'] = bounds
+            result.append(room_copy)
+
+        return result
+
     def _are_rooms_adjacent(self, room1: Dict, room2: Dict) -> bool:
         """Check if two rooms are adjacent to each other."""
         # Get room bounds
