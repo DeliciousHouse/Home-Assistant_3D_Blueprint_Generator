@@ -488,6 +488,11 @@ class AIProcessor:
     def get_relative_positions(self) -> Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
         """
         Calculate the relative positions of devices and anchors (scanners) using Multidimensional Scaling (MDS).
+
+        Returns:
+            Tuple of two dictionaries:
+            1. Device positions: {device_id: {'x': x, 'y': y, 'z': z}}
+            2. Anchor positions: {scanner_id: {'x': x, 'y': y, 'z': z}}
         """
         logger.info("Calculating relative positions using MDS...")
 
@@ -526,6 +531,20 @@ class AIProcessor:
             logger.info(f"Found {len(all_entities)} unique entities in distance records")
             logger.info(f"Found {len(actual_device_scanner_pairs)} device-scanner pairs")
 
+            # DETAILED LOGGING OF SAMPLE RECORDS
+            if distances and len(distances) > 0:
+                sample_indices = [0]
+                if len(distances) > 10:
+                    sample_indices.append(len(distances) // 2)
+                if len(distances) > 1:
+                    sample_indices.append(len(distances) - 1)
+
+                logger.info("=== SAMPLE DISTANCE RECORDS ===")
+                for idx in sample_indices:
+                    sample = distances[idx]
+                    logger.info(f"Record {idx}: {sample}")
+                logger.info("===============================")
+
             # Define classification patterns
             device_patterns = ['iphone', 'phone', 'pixel', 'watch', 'tag', 'tracker', 'tile', 'remote', 'key']
             scanner_patterns = ['ble_', 'bt_', 'beacon', 'rssi', 'scanner', 'to_', 'proxy', 'measured_power', 'humidity', 'battery']
@@ -539,46 +558,103 @@ class AIProcessor:
                 occurrence_as_device[device_id] += 1
                 occurrence_as_scanner[scanner_id] += 1
 
+            # Log the top entities by occurrence
+            logger.info("=== TOP ENTITIES AS DEVICES ===")
+            for entity, count in occurrence_as_device.most_common(5):
+                logger.info(f"{entity}: {count} occurrences")
+            logger.info("==============================")
+
+            logger.info("=== TOP ENTITIES AS SCANNERS ===")
+            for entity, count in occurrence_as_scanner.most_common(5):
+                logger.info(f"{entity}: {count} occurrences")
+            logger.info("================================")
+
             # Initialize sets with definite devices and scanners
             devices = set()
             scanners = set()
 
             # First, identify clear devices based on patterns and occurrence counting
+            logger.info("Starting entity classification...")
+            classification_results = {}
+
             for entity in all_entities:
                 entity_lower = entity.lower()
+                entity_info = {
+                    "name": entity,
+                    "device_matches": [],
+                    "scanner_matches": [],
+                    "as_device_count": occurrence_as_device.get(entity, 0),
+                    "as_scanner_count": occurrence_as_scanner.get(entity, 0),
+                    "classification": "unknown"
+                }
 
                 # Check for device patterns
-                if any(pattern in entity_lower for pattern in device_patterns):
+                for pattern in device_patterns:
+                    if pattern in entity_lower:
+                        entity_info["device_matches"].append(pattern)
+
+                # Check for scanner patterns
+                for pattern in scanner_patterns:
+                    if pattern in entity_lower:
+                        entity_info["scanner_matches"].append(pattern)
+
+                # Determine classification
+                if entity_info["device_matches"] and not entity_info["scanner_matches"]:
                     devices.add(entity)
-                    continue
-
-                # Is this more commonly a device than a scanner?
-                if occurrence_as_device.get(entity, 0) > occurrence_as_scanner.get(entity, 0) * 2:
+                    entity_info["classification"] = "device"
+                elif entity_info["scanner_matches"] and not entity_info["device_matches"]:
+                    scanners.add(entity)
+                    entity_info["classification"] = "scanner"
+                elif entity_info["as_device_count"] > entity_info["as_scanner_count"] * 2:
                     devices.add(entity)
-                    continue
-
-                # Check scanner patterns
-                if any(pattern in entity_lower for pattern in scanner_patterns):
+                    entity_info["classification"] = "device (by frequency)"
+                elif entity_info["as_scanner_count"] >= entity_info["as_device_count"]:
                     scanners.add(entity)
-                    continue
-
-                # Default based on occurrence
-                if occurrence_as_scanner.get(entity, 0) >= occurrence_as_device.get(entity, 0):
-                    scanners.add(entity)
+                    entity_info["classification"] = "scanner (by frequency)"
                 else:
-                    devices.add(entity)
+                    # For unclear cases, use heuristics
+                    if 'test_device' in entity_lower:
+                        devices.add(entity)
+                        entity_info["classification"] = "device (by name)"
+                    elif 'test_scanner' in entity_lower:
+                        scanners.add(entity)
+                        entity_info["classification"] = "scanner (by name)"
+                    elif entity.startswith('ble_'):
+                        scanners.add(entity)
+                        entity_info["classification"] = "scanner (by prefix)"
+                    elif entity.endswith('_ble'):
+                        scanners.add(entity)
+                        entity_info["classification"] = "scanner (by suffix)"
+                    else:
+                        # Fallback to frequency-based classification
+                        if entity_info["as_device_count"] >= entity_info["as_scanner_count"]:
+                            devices.add(entity)
+                            entity_info["classification"] = "device (default)"
+                        else:
+                            scanners.add(entity)
+                            entity_info["classification"] = "scanner (default)"
+
+                classification_results[entity] = entity_info
 
             # Handle special cases and resolve overlaps
             if 'test_device' in all_entities:
                 devices.add('test_device')
                 if 'test_device' in scanners:
                     scanners.remove('test_device')
+                classification_results['test_device']["classification"] = "device (override)"
 
             # Handle ESPrsense BLE proxies
             for entity in list(devices):
                 if entity.startswith('to_') and entity.endswith('_ble'):
                     devices.remove(entity)
                     scanners.add(entity)
+                    classification_results[entity]["classification"] = "scanner (espresense override)"
+
+            # Log all entity classifications for debugging
+            logger.info("=== ENTITY CLASSIFICATIONS ===")
+            for entity, info in classification_results.items():
+                logger.info(f"'{entity}' - {info['classification']} | Device: {info['as_device_count']} | Scanner: {info['as_scanner_count']}")
+            logger.info("=============================")
 
             # Ensure we have at least one device
             if len(devices) == 0 and len(scanners) > 0:
@@ -586,13 +662,128 @@ class AIProcessor:
                 most_common_scanner = max(scanners, key=lambda x: occurrence_as_device.get(x, 0))
                 devices.add(most_common_scanner)
                 scanners.remove(most_common_scanner)
-                logger.info(f"Converted {most_common_scanner} to a device due to lack of devices")
+                logger.info(f"Converted '{most_common_scanner}' to a device due to lack of devices")
+                classification_results[most_common_scanner]["classification"] = "device (converted due to lack of devices)"
 
-            # Log our classifications
+            # Log our final classifications
             logger.info(f"Classified {len(devices)} entities as devices: {devices}")
             logger.info(f"Classified {len(scanners)} entities as scanners: {scanners}")
 
             # Rest of the method remains similar...
+            # If we don't have enough entities for 2D positioning, handle gracefully
+            min_entities = 3
+            total_entities = len(devices) + len(scanners)
+
+            if total_entities < min_entities:
+                logger.error(f"Not enough entities ({total_entities}) for 2D positioning. Minimum required: {min_entities}")
+                return {}, {}
+
+            # If we don't have enough devices specifically, consider some scanners as devices
+            min_devices_required = 1
+            if len(devices) < min_devices_required and len(scanners) > min_devices_required:
+                logger.warning(f"Only {len(devices)} devices found. Converting some scanners to devices.")
+                # Pick scanners that don't match strong scanner patterns
+                potential_devices = [s for s in scanners if not any(p in s.lower() for p in scanner_patterns[:3])][:2]
+                for scanner in potential_devices:
+                    devices.add(scanner)
+                    scanners.remove(scanner)
+                    logger.info(f"Converted scanner '{scanner}' to a device to ensure minimum device count")
+                logger.info(f"After conversion: {len(devices)} devices and {len(scanners)} scanners")
+
+            # Combine both sets for MDS
+            all_nodes = list(devices) + list(scanners)
+            n_nodes = len(all_nodes)
+
+            if n_nodes < 3:
+                logger.error(f"Insufficient nodes for positioning (need at least 3, found {n_nodes})")
+                return {}, {}
+
+            # Create node index mapping for the distance matrix
+            node_indices = {node: i for i, node in enumerate(all_nodes)}
+            logger.info(f"Created mapping for {len(node_indices)} nodes")
+
+            # Create dissimilarity matrix for MDS
+            dissimilarity = np.ones((n_nodes, n_nodes)) * 1000.0  # Large default distance
+            np.fill_diagonal(dissimilarity, 0)  # Diagonal should be zero (distance to self)
+
+            # Fill the matrix with actual distances
+            distance_count = 0
+            for record in distances:
+                try:
+                    device_id = record.get('tracked_device_id')
+                    scanner_id = record.get('scanner_id')
+                    distance_value = float(record.get('distance', 0))
+
+                    if device_id and scanner_id and distance_value > 0:
+                        # Get matrix indices for this device-scanner pair
+                        idx1 = node_indices.get(device_id)
+                        idx2 = node_indices.get(scanner_id)
+
+                        if idx1 is not None and idx2 is not None:
+                            # Set the distance in both directions (symmetric matrix)
+                            dissimilarity[idx1, idx2] = distance_value
+                            dissimilarity[idx2, idx1] = distance_value
+                            distance_count += 1
+                except Exception as e:
+                    logger.warning(f"Error processing distance record: {e}")
+
+            logger.info(f"Added {distance_count} actual distances to the dissimilarity matrix")
+
+            # Apply MDS
+            mds_dimensions = self.config.get('generation_settings', {}).get('mds_dimensions', 2)
+            if mds_dimensions > 3:
+                mds_dimensions = 3  # Cap at 3D
+
+            seed = 42  # For reproducibility
+
+            try:
+                mds = MDS(n_components=mds_dimensions,
+                         dissimilarity='precomputed',
+                         random_state=seed,
+                         n_init=10,
+                         normalized_stress='auto')
+                positions = mds.fit_transform(dissimilarity)
+                logger.info(f"MDS calculation successful with stress: {mds.stress_:.4f}")
+            except Exception as e:
+                logger.error(f"MDS calculation failed: {e}")
+                logger.info("Trying alternative MDS approach...")
+
+                # Fall back to a simpler MDS configuration
+                try:
+                    mds = MDS(n_components=mds_dimensions,
+                             dissimilarity='precomputed',
+                             random_state=seed)
+                    positions = mds.fit_transform(dissimilarity)
+                    logger.info(f"Alternative MDS succeeded with stress: {mds.stress_:.4f}")
+                except Exception as e2:
+                    logger.error(f"Alternative MDS also failed: {e2}")
+                    logger.warning("Using random positions as fallback")
+                    # Generate random positions in a reasonable range for visualization
+                    positions = (np.random.rand(n_nodes, mds_dimensions) - 0.5) * 20
+
+            # Map positions back to devices and scanners
+            device_positions = {}
+            anchor_positions = {}
+
+            for node, idx in node_indices.items():
+                pos = positions[idx]
+                pos_dict = {'x': float(pos[0]), 'y': float(pos[1])}
+
+                if mds_dimensions >= 3:
+                    pos_dict['z'] = float(pos[2])
+                else:
+                    pos_dict['z'] = 0.0
+
+                if node in devices:
+                    device_positions[node] = pos_dict
+                else:
+                    anchor_positions[node] = pos_dict
+
+            logger.info(f"MDS positioning complete. Found {len(device_positions)} devices and {len(anchor_positions)} anchors.")
+            logger.info(f"Device positions: {device_positions}")
+            logger.info(f"First few anchor positions: {dict(list(anchor_positions.items())[:3])}")
+
+            return device_positions, anchor_positions
 
         except Exception as e:
             logger.error(f"Error calculating relative positions: {str(e)}", exc_info=True)

@@ -348,137 +348,212 @@ class BlueprintGenerator:
 
     def _calculate_transformation(self, source_centroids: Dict, target_layout: Dict) -> Dict:
         """Calculate transformation from source to target using Procrustes analysis."""
+        # Detailed logging of input data
+        logger.info(f"Source centroids: {source_centroids}")
+        logger.info(f"Target layout: {target_layout}")
+        logger.info(f"Source area IDs: {list(source_centroids.keys())}")
+        logger.info(f"Target area IDs: {list(target_layout.keys())}")
+
         # Filter for areas that exist in both source and target
         common_areas = set(source_centroids.keys()) & set(target_layout.keys())
-
-        # Add debugging information
-        logger.debug(f"Source centroids: {list(source_centroids.keys())}")
-        logger.debug(f"Target layout areas: {list(target_layout.keys())}")
-        logger.debug(f"Common areas: {list(common_areas)}")
+        logger.info(f"Common areas for transformation: {list(common_areas)}")
 
         if len(common_areas) < 2:
             logger.warning(f"Not enough common areas for transformation: {len(common_areas)}")
 
-            # FALLBACK: If we have at least one area, create a simple translation
+            # IMPROVED FALLBACK MECHANISM
             if len(source_centroids) > 0:
-                # Create a simple translation to move the first centroid to (0,0)
-                first_area = next(iter(source_centroids.keys()))
-                source_x, source_y = source_centroids[first_area]
+                logger.info("Using improved fallback transformation mechanism")
 
+                # Get first areas from each set for simple translation
+                source_area = list(source_centroids.keys())[0]
+                target_area = list(target_layout.keys())[0]
+
+                # Get centroid coordinates
+                source_coords = np.array(source_centroids[source_area])
+                target_coords = np.array(target_layout[target_area])
+
+                logger.info(f"Fallback using source area '{source_area}' at {source_coords}")
+                logger.info(f"Fallback using target area '{target_area}' at {target_coords}")
+
+                # Create simple identity transformation with translation only
                 return {
-                    'scale': 1.0,
-                    'rotation': 0.0,
-                    'translation_x': -source_x,
-                    'translation_y': -source_y
+                    'rotation': np.eye(2),  # Identity rotation matrix
+                    'scale': 1.0,            # No scaling
+                    'translation': target_coords - source_coords,
+                    'source_mean': source_coords,
+                    'target_mean': target_coords,
+                    'is_fallback': True      # Flag this as a fallback transformation
                 }
             else:
-                # No areas at all, use identity transformation
-                return {
-                    'scale': 1.0,
-                    'rotation': 0.0,
-                    'translation_x': 0.0,
-                    'translation_y': 0.0
-                }
+                logger.error("No source centroids available for transformation")
+                return None
 
-        # Extract matching points
+        # Extract matching points as numpy arrays for Procrustes analysis
         source_points = np.array([source_centroids[area] for area in common_areas])
         target_points = np.array([target_layout[area] for area in common_areas])
+
+        logger.info(f"Using {len(common_areas)} common areas for transformation")
+        logger.debug(f"Source points: {source_points}")
+        logger.debug(f"Target points: {target_points}")
 
         # Calculate means
         source_mean = source_points.mean(axis=0)
         target_mean = target_points.mean(axis=0)
+        logger.debug(f"Source mean: {source_mean}, Target mean: {target_mean}")
 
         # Center the points
         source_centered = source_points - source_mean
         target_centered = target_points - target_mean
 
-        # Calculate optimal rotation
-        covariance = source_centered.T @ target_centered
-        U, _, Vt = np.linalg.svd(covariance)
-        rotation = U @ Vt
+        try:
+            # Calculate optimal rotation
+            covariance = source_centered.T @ target_centered
+            U, _, Vt = np.linalg.svd(covariance)
+            rotation = U @ Vt
 
-        # Check for reflection
-        if np.linalg.det(rotation) < 0:
-            # Handle reflection if needed
-            V = Vt.T
-            V[:, -1] = -V[:, -1]
-            rotation = U @ V.T
+            # Check for reflection
+            if np.linalg.det(rotation) < 0:
+                # Handle reflection if needed
+                V = Vt.T
+                V[:, -1] = -V[:, -1]
+                rotation = U @ V.T
 
-        # Calculate scaling
-        source_var = np.sum(source_centered ** 2)
-        if source_var == 0:
-            scale = 1.0
-        else:
-            scale = np.sqrt(np.sum(target_centered ** 2) / source_var)
+            # Calculate scaling
+            source_var = np.sum(source_centered ** 2)
+            if source_var == 0:
+                scale = 1.0
+                logger.warning("Source variance is zero, using scale=1.0")
+            else:
+                scale = np.sqrt(np.sum(target_centered ** 2) / source_var)
 
-        # Calculate translation
-        translation = target_mean - scale * source_mean @ rotation
+            # Calculate translation
+            translation = target_mean - scale * source_mean @ rotation
 
-        return {
-            'rotation': rotation,
-            'scale': scale,
-            'translation': translation,
-            'source_mean': source_mean,
-            'target_mean': target_mean
-        }
+            logger.info(f"Transformation calculated successfully: scale={scale:.2f}, det(rotation)={np.linalg.det(rotation):.2f}")
+            logger.debug(f"Rotation matrix: {rotation}")
+            logger.debug(f"Translation vector: {translation}")
+
+            return {
+                'rotation': rotation,
+                'scale': scale,
+                'translation': translation,
+                'source_mean': source_mean,
+                'target_mean': target_mean,
+                'is_fallback': False  # This is a proper transformation
+            }
+        except Exception as e:
+            logger.error(f"Error during transformation calculation: {e}", exc_info=True)
+
+            # Emergency fallback
+            logger.warning("Using emergency fallback for transformation")
+            return {
+                'rotation': np.eye(2),
+                'scale': 1.0,
+                'translation': np.array([0.0, 0.0]),
+                'source_mean': source_mean,
+                'target_mean': target_mean,
+                'is_fallback': True
+            }
 
     def _apply_transformation(self, positions: Dict, transform_params: Dict) -> Dict:
         """Apply the calculated transformation to all positions."""
         if not transform_params:
+            logger.error("No transformation parameters provided, returning original positions")
             return positions
 
-        rotation = transform_params['rotation']
-        scale = transform_params['scale']
-        translation = transform_params['translation']
+        # Log input parameters
+        logger.info(f"Applying transformation to {len(positions)} positions")
+        logger.debug(f"Transformation params: {transform_params}")
+
+        rotation = transform_params.get('rotation')
+        scale = transform_params.get('scale', 1.0)
+        translation = transform_params.get('translation')
+        is_fallback = transform_params.get('is_fallback', False)
+
+        if rotation is None or translation is None:
+            logger.error("Missing required transformation parameters")
+            return positions
+
+        if is_fallback:
+            logger.info("Using fallback transformation (minimal adjustment)")
 
         transformed_positions = {}
 
+        # Sample some positions to log
+        sample_keys = list(positions.keys())[:2]
+        logger.debug(f"Sample position keys: {sample_keys}")
+        for key in sample_keys:
+            logger.debug(f"Original position for {key}: {positions[key]}")
+
         for entity_id, position in positions.items():
-            # Convert position to numpy array based on its format
-            if isinstance(position, dict):
-                # Handle dictionary format with 'x', 'y', 'z' keys
-                pos_array = np.array([position.get('x', 0.0), position.get('y', 0.0)])
-                has_z = 'z' in position
-                z_value = position.get('z', 0.0)
-            elif isinstance(position, (list, tuple)):
-                # Handle tuple/list format with indices
-                if len(position) >= 2:
-                    pos_array = np.array([position[0], position[1]])
-                    has_z = len(position) > 2
-                    z_value = position[2] if has_z else 0.0
+            try:
+                # Convert position to numpy array based on its format
+                if isinstance(position, dict):
+                    # Handle dictionary format with 'x', 'y', 'z' keys
+                    pos_array = np.array([float(position.get('x', 0.0)), float(position.get('y', 0.0))])
+                    has_z = 'z' in position
+                    z_value = float(position.get('z', 0.0))
+                elif isinstance(position, (list, tuple)):
+                    # Handle tuple/list format with indices
+                    if len(position) >= 2:
+                        pos_array = np.array([float(position[0]), float(position[1])])
+                        has_z = len(position) > 2
+                        z_value = float(position[2]) if has_z else 0.0
+                    else:
+                        logger.warning(f"Position for {entity_id} doesn't have enough elements: {position}")
+                        pos_array = np.array([0.0, 0.0])
+                        has_z = False
+                        z_value = 0.0
                 else:
-                    logger.warning(f"Position for {entity_id} doesn't have enough elements: {position}")
-                    pos_array = np.array([0.0, 0.0])
-                    has_z = False
-                    z_value = 0.0
-            else:
-                logger.warning(f"Unexpected position format for {entity_id}: {position}")
-                continue
+                    logger.warning(f"Unexpected position format for {entity_id}: {type(position)} - {position}")
+                    continue
 
-            # Apply transformation: scale, rotate, translate
-            transformed = scale * pos_array @ rotation + translation
-
-            # Convert back to the original format
-            if isinstance(position, dict):
-                # Return in same dictionary format
-                transformed_positions[entity_id] = {
-                    'x': float(transformed[0]),
-                    'y': float(transformed[1]),
-                    'z': z_value  # Keep original z coordinate
-                }
-            elif isinstance(position, list):
-                # Return as list
-                if has_z:
-                    transformed_positions[entity_id] = [float(transformed[0]), float(transformed[1]), z_value]
+                # Apply transformation: scale, rotate, translate
+                # Use matrix multiplication for numpy arrays
+                if isinstance(rotation, np.ndarray) and rotation.shape == (2, 2):
+                    # Matrix rotation
+                    transformed = scale * (rotation @ pos_array) + translation
                 else:
-                    transformed_positions[entity_id] = [float(transformed[0]), float(transformed[1])]
-            else:
-                # Return as tuple
-                if has_z:
-                    transformed_positions[entity_id] = (float(transformed[0]), float(transformed[1]), z_value)
-                else:
-                    transformed_positions[entity_id] = (float(transformed[0]), float(transformed[1]))
+                    # Scalar rotation (angle in radians)
+                    rot_matrix = np.array([
+                        [np.cos(rotation), -np.sin(rotation)],
+                        [np.sin(rotation), np.cos(rotation)]
+                    ])
+                    transformed = scale * (rot_matrix @ pos_array) + translation
 
+                # Convert back to the original format
+                if isinstance(position, dict):
+                    # Return in same dictionary format
+                    transformed_positions[entity_id] = {
+                        'x': float(transformed[0]),
+                        'y': float(transformed[1]),
+                        'z': z_value  # Keep original z coordinate
+                    }
+                elif isinstance(position, list):
+                    # Return as list
+                    if has_z:
+                        transformed_positions[entity_id] = [float(transformed[0]), float(transformed[1]), z_value]
+                    else:
+                        transformed_positions[entity_id] = [float(transformed[0]), float(transformed[1])]
+                else:
+                    # Return as tuple
+                    if has_z:
+                        transformed_positions[entity_id] = (float(transformed[0]), float(transformed[1]), z_value)
+                    else:
+                        transformed_positions[entity_id] = (float(transformed[0]), float(transformed[1]))
+
+            except Exception as e:
+                logger.error(f"Error transforming position for {entity_id}: {e}", exc_info=True)
+                # Keep original position in case of error
+                transformed_positions[entity_id] = position
+
+        # Log a sample of transformed positions
+        for key in sample_keys:
+            if key in transformed_positions:
+                logger.debug(f"Transformed position for {key}: {transformed_positions[key]}")
+
+        logger.info(f"Successfully transformed {len(transformed_positions)} positions")
         return transformed_positions
 
     def _generate_rooms(self, transformed_positions: Dict, device_area_groups: Dict, areas: List[Dict]) -> List[Dict]:
