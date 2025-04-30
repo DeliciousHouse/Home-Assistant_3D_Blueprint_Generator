@@ -339,6 +339,49 @@ class AIProcessor:
         logger.info(f"Predicted {len(objects)} objects across all rooms")
         return objects
 
+    def _calculate_room_bounds(self, rooms: List[Dict]) -> List[Dict]:
+        """
+        Calculate the bounds for each room in the list if they don't already have bounds.
+        Returns the rooms with bounds added.
+        """
+        logger.info(f"Calculating bounds for {len(rooms)} rooms")
+
+        for room in rooms:
+            if 'bounds' not in room:
+                # If bounds aren't already calculated, create them from dimensions
+                center = room.get('center', {})
+                dimensions = room.get('dimensions', {})
+
+                if not center or not dimensions:
+                    logger.warning(f"Room {room.get('name', 'unknown')} missing center or dimensions")
+                    continue
+
+                # Extract values with reasonable defaults
+                center_x = center.get('x', 0)
+                center_y = center.get('y', 0)
+                width = dimensions.get('width', 3)
+                length = dimensions.get('length', 3)
+                height = dimensions.get('height', 2.5)
+
+                # Calculate bounds
+                half_width = width / 2
+                half_length = length / 2
+
+                room['bounds'] = {
+                    'min': {
+                        'x': center_x - half_width,
+                        'y': center_y - half_length,
+                        'z': 0
+                    },
+                    'max': {
+                        'x': center_x + half_width,
+                        'y': center_y + half_length,
+                        'z': height
+                    }
+                }
+
+        return rooms
+
     def run_relative_positioning(self, distance_data: List[Dict], dimensions: int = 2) -> Dict[str, Dict[str, float]]:
         """
         Uses Multidimensional Scaling (MDS) to compute relative positions of devices from distance data.

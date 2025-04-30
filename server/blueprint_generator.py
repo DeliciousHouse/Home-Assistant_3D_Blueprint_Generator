@@ -178,7 +178,7 @@ class BlueprintGenerator:
             logger.info(f"Transformed {len(transformed_positions)} positions")
 
             # Step 8: Generate room geometries
-            rooms = self._generate_rooms(transformed_positions, device_area_groups, areas)
+            rooms = self._generate_rooms(device_area_groups, transformed_positions)
             logger.info(f"Generated {len(rooms)} room geometries")
 
             # Step 9: Infer walls between rooms
@@ -226,9 +226,15 @@ class BlueprintGenerator:
         # Fetch area information from Home Assistant - this provides official room assignments
         try:
             logger.info("Fetching areas from Home Assistant for direct room assignments...")
-            from .ha_client import HomeAssistantClient
-            ha_client = HomeAssistantClient()
+            from .ha_client import HAClient
+            ha_client = HAClient()
             ha_areas = ha_client.get_areas() or []
+
+            # Log area information for debugging
+            logger.info(f"Retrieved {len(ha_areas)} areas from Home Assistant")
+            for area in ha_areas:
+                entity_count = len(area.get('entities', []))
+                logger.info(f"Area: {area.get('name')} (ID: {area.get('area_id')}) - {entity_count} entities")
 
             # Create a mapping of device_id to area_id from the device trackers
             device_trackers = ha_client.get_device_trackers() or []
@@ -241,18 +247,62 @@ class BlueprintGenerator:
                     tracker_area_mappings[device_id] = area_id
                     logger.debug(f"Found device tracker area mapping: {device_id} -> {area_id}")
 
-            # Get all device entities to check for area assignments
+            # Get all entities to check for area assignments
             all_entities = ha_client.get_states() or []
             entity_area_mappings = {}
 
+            # Get light entities - these are good for determining room placement
+            lights = ha_client.get_all_lights() or []
+            logger.info(f"Found {len(lights)} light entities for area mapping")
+
+            # Collect entities with area assignments from sensors, lights, and binary sensors
             for entity in all_entities:
                 entity_id = entity.get('entity_id', '')
-                if entity_id.startswith('sensor.'):
-                    device_id = entity_id.replace('sensor.', '')
-                    area_id = entity.get('attributes', {}).get('area_id')
-                    if device_id and area_id:
-                        entity_area_mappings[device_id] = area_id
-                        logger.debug(f"Found entity area mapping: {device_id} -> {area_id}")
+                entity_type = entity_id.split('.')[0] if '.' in entity_id else ''
+
+                # Focus on certain entity types that are typically fixed in specific rooms
+                if entity_type not in ['sensor', 'light', 'binary_sensor', 'switch', 'media_player']:
+                    continue
+
+                device_id = entity_id.replace(f"{entity_type}.", '')
+                area_id = entity.get('attributes', {}).get('area_id')
+
+                if device_id and area_id:
+                    entity_area_mappings[device_id] = area_id
+                    logger.debug(f"Found entity area mapping: {device_id} -> {area_id}")
+
+                # Special handling for BLE proxy entities with location names in them
+                if 'ble' in device_id.lower() and (entity_type == 'sensor' or entity_type == 'binary_sensor'):
+                    # Handle specific naming patterns from ESP proxies (e.g., to_bathroom_ble, to_office_ble)
+                    if device_id.startswith('to_') and '_ble' in device_id:
+                        room_part = device_id.replace('to_', '').replace('_ble', '')
+
+                        # Try to match this device to an area by name
+                        matched_area = None
+                        for area in ha_areas:
+                            area_name = area.get('name', '').lower().replace(' ', '_')
+                            area_id = area.get('area_id', '')
+
+                            # Check if the room part is in the area name or area ID
+                            if room_part in area_name or room_part in area_id.lower():
+                                matched_area = area_id
+                                logger.info(f"Matched BLE proxy {device_id} to area {area_id} by name")
+                                break
+
+                        if matched_area:
+                            entity_area_mappings[device_id] = matched_area
+                            # Also map the actual BLE proxy entity to this area
+                            if entity_id:
+                                entity_area_mappings[entity_id] = matched_area
+                                logger.info(f"Also mapped BLE entity {entity_id} to area {matched_area}")
+                        else:
+                            # If no direct match, create a reasonable area name from the device ID
+                            # This ensures we have area information even without explicit matching
+                            inferred_area = room_part
+                            logger.info(f"Inferred area name '{inferred_area}' for BLE proxy {device_id}")
+                            entity_area_mappings[device_id] = inferred_area
+                            if entity_id:
+                                entity_area_mappings[entity_id] = inferred_area
 
             logger.info(f"Found {len(tracker_area_mappings)} device tracker area mappings and {len(entity_area_mappings)} entity area mappings")
         except Exception as e:
@@ -289,6 +339,15 @@ class BlueprintGenerator:
                     assigned_devices += 1
                     logger.debug(f"Assigned device {device_id} to area {area_id} from recent predictions")
 
+            # 4. For ESPresense/BLE proxies with location in name, use that
+            elif any(prefix in device_id for prefix in ['to_', 'ble_', 'esp32_']):
+                # Extract location from name (to_kitchen_ble -> kitchen)
+                if device_id.startswith('to_') and '_ble' in device_id:
+                    location = device_id.replace('to_', '').replace('_ble', '')
+                    device_areas[device_id] = location
+                    assigned_devices += 1
+                    logger.debug(f"Assigned device {device_id} to area {location} from naming pattern")
+
         # Group devices by area
         area_groups = {}
         for device_id, area_id in device_areas.items():
@@ -303,7 +362,7 @@ class BlueprintGenerator:
                 }
                 area_groups[area_id].append(device_data)
 
-        # Make sure "unknown" exists in the groups
+        # Make sure "unknown" exists in the groups (we won't skip it anymore)
         if "unknown" not in area_groups:
             area_groups["unknown"] = []
 
@@ -317,41 +376,8 @@ class BlueprintGenerator:
                 }
                 area_groups["unknown"].append(device_data)
 
-        # Add scanners without explicit assignments to appropriate areas based on naming if possible
-        for device_id, position in transformed_positions.items():
-            # Skip devices already assigned
-            if device_id in device_areas:
-                continue
-
-            # Check if this looks like a scanner/proxy based on name patterns
-            is_likely_scanner = any(pattern in device_id.lower() for pattern in
-                                   ['ble_', 'bt_', 'proxy', 'scanner', 'esp', 'beacon'])
-
-            if is_likely_scanner:
-                # Try to match with area name
-                matched_area = None
-                for area in ha_areas:
-                    area_id = area.get('area_id', '')
-                    area_name = area.get('name', '').lower().replace(' ', '_')
-
-                    if area_name and area_name in device_id.lower():
-                        matched_area = area_id
-                        logger.debug(f"Matched scanner {device_id} to area {area_id} based on name")
-                        break
-
-                if matched_area:
-                    # Add scanner to the matched area
-                    if matched_area not in area_groups:
-                        area_groups[matched_area] = []
-
-                    device_data = {
-                        "device_id": device_id,
-                        "position": position,
-                    }
-                    area_groups[matched_area].append(device_data)
-
-                    # Remove from unknown if it was there
-                    area_groups["unknown"] = [d for d in area_groups["unknown"] if d["device_id"] != device_id]
+        # Try to map scanner entities to areas based on name patterns if they weren't already assigned
+        self._map_scanners_to_areas_by_name(transformed_positions, area_groups, device_areas, ha_areas)
 
         num_areas = len(area_groups)
         total_devices = sum(len(devices) for devices in area_groups.values())
@@ -372,22 +398,269 @@ class BlueprintGenerator:
 
         return area_groups
 
-    def _determine_rooms(self, areas: List[Dict], device_coords_by_area: Dict) -> List[Dict]:
-        """Determine the rooms and their shapes based on Area and sensor data."""
+    def _map_scanners_to_areas_by_name(self, transformed_positions: Dict, area_groups: Dict, device_areas: Dict, ha_areas: List[Dict]):
+        """
+        Maps scanner devices to areas based on naming patterns if they weren't already assigned.
+
+        Args:
+            transformed_positions: The positions of all devices
+            area_groups: Current grouping of devices by area
+            device_areas: Mapping from device_id to area_id
+            ha_areas: List of areas from Home Assistant
+        """
+        # Look for scanner devices that aren't assigned to specific areas
+        for device_id, position in transformed_positions.items():
+            # Skip devices that already have area assignments
+            if device_id in device_areas:
+                continue
+
+            # Check if this looks like a scanner/proxy based on name patterns
+            is_likely_scanner = any(pattern in device_id.lower() for pattern in
+                                  ['ble_', 'bt_', 'proxy', 'scanner', 'esp', 'beacon'])
+
+            if is_likely_scanner:
+                # First, check for ESP32 BLE proxy naming pattern (to_room_ble)
+                if device_id.startswith('to_') and '_ble' in device_id.lower():
+                    room_part = device_id.replace('to_', '').replace('_ble', '')
+                    matched_area = None
+
+                    # Try to match with area names from Home Assistant
+                    for area in ha_areas:
+                        area_id = area.get('area_id', '')
+                        area_name = area.get('name', '').lower().replace(' ', '_')
+
+                        # Check if room part is in area name or area ID with fuzzy matching
+                        if (room_part in area_name or room_part in area_id.lower() or
+                            area_name in room_part or area_id.lower() in room_part):
+                            matched_area = area_id
+                            logger.info(f"Matched ESP32 BLE proxy {device_id} to area {area_id} based on name")
+                            break
+
+                    if matched_area:
+                        # Add scanner to the matched area
+                        if matched_area not in area_groups:
+                            area_groups[matched_area] = []
+
+                        device_data = {
+                            "device_id": device_id,
+                            "position": position,
+                        }
+                        area_groups[matched_area].append(device_data)
+                        device_areas[device_id] = matched_area
+
+                        # Remove from unknown if it was there
+                        if "unknown" in area_groups:
+                            area_groups["unknown"] = [d for d in area_groups["unknown"] if d["device_id"] != device_id]
+                            logger.debug(f"Moved ESP32 BLE proxy {device_id} from 'unknown' to '{matched_area}'")
+                    else:
+                        # If not matched to existing area, create its own area with its name
+                        inferred_area = room_part
+                        if inferred_area not in area_groups:
+                            area_groups[inferred_area] = []
+
+                        device_data = {
+                            "device_id": device_id,
+                            "position": position,
+                        }
+                        area_groups[inferred_area].append(device_data)
+                        device_areas[device_id] = inferred_area
+
+                        # Remove from unknown
+                        if "unknown" in area_groups:
+                            area_groups["unknown"] = [d for d in area_groups["unknown"] if d["device_id"] != device_id]
+                            logger.info(f"Created new area '{inferred_area}' for ESP32 BLE proxy {device_id}")
+
+                    continue  # Skip to next device since we've handled this one
+
+                # Try to match with area name for other scanner types
+                matched_area = None
+                for area in ha_areas:
+                    area_id = area.get('area_id', '')
+                    area_name = area.get('name', '').lower().replace(' ', '_')
+
+                    if area_name and (area_name in device_id.lower() or area_id.lower() in device_id.lower()):
+                        matched_area = area_id
+                        logger.debug(f"Matched scanner {device_id} to area {area_id} based on name")
+                        break
+
+                if matched_area:
+                    # Add scanner to the matched area
+                    if matched_area not in area_groups:
+                        area_groups[matched_area] = []
+
+                    device_data = {
+                        "device_id": device_id,
+                        "position": position,
+                    }
+                    area_groups[matched_area].append(device_data)
+                    device_areas[device_id] = matched_area
+
+                    # Remove from unknown if it was there
+                    if "unknown" in area_groups:
+                        area_groups["unknown"] = [d for d in area_groups["unknown"] if d["device_id"] != device_id]
+                        logger.debug(f"Moved scanner {device_id} from 'unknown' to '{matched_area}'")
+
+    def _generate_rooms(self, area_groups: Dict[str, List[Dict]], transformed_positions: Dict) -> List[Dict]:
+        """
+        Generate room geometries from area groups.
+
+        Args:
+            area_groups: Dictionary mapping area IDs to lists of device data
+            transformed_positions: Dictionary of all transformed positions
+
+        Returns:
+            List of room objects with geometries
+        """
+        logger.info(f"Generating rooms from {len(area_groups)} area groups")
         rooms = []
-        for area_id, devices in device_coords_by_area.items():
-            area_name = next((area['name'] for area in areas if area['area_id'] == area_id), f"Room {area_id}")
-            avg_x = sum(device['x'] for device in devices) / len(devices)
-            avg_y = sum(device['y'] for device in devices) / len(devices)
-            avg_z = sum(device['z'] for device in devices) / len(devices)
-            room = {
-                'id': f"room_{area_id}",
-                'name': area_name,
-                'center': {'x': avg_x, 'y': avg_y, 'z': avg_z},
-                'devices': devices
-            }
-            rooms.append(room)
+        room_id = 1
+
+        # Get min points per room from config
+        min_points_per_room = self.config.get('generation_settings', {}).get('min_points_per_room', 0)
+
+        for area_id, devices in area_groups.items():
+            # No longer skip 'unknown' - we'll include it if it has enough devices
+            # Instead, require a minimum number of points
+            if len(devices) < min_points_per_room:
+                logger.warning(f"Skipping area '{area_id}' with only {len(devices)} devices (minimum required: {min_points_per_room})")
+                continue
+
+            # Generate room for this area
+            try:
+                # Calculate centroid based on device positions
+                if len(devices) == 0:
+                    logger.warning(f"No devices found in area '{area_id}', skipping")
+                    continue
+
+                x_coords = []
+                y_coords = []
+                z_coords = []
+
+                for device in devices:
+                    pos = device.get('position', {})
+                    if 'x' in pos and 'y' in pos:
+                        x_coords.append(pos['x'])
+                        y_coords.append(pos['y'])
+                        z_coords.append(pos.get('z', 0))
+
+                if not x_coords or not y_coords:
+                    logger.warning(f"No valid positions in area '{area_id}', skipping")
+                    continue
+
+                # Calculate centroid
+                center_x = sum(x_coords) / len(x_coords)
+                center_y = sum(y_coords) / len(y_coords)
+                center_z = sum(z_coords) / len(z_coords) if z_coords else 0
+
+                # Generate room ID
+                room_name = area_id.replace('_', ' ').title()
+
+                # Calculate bounds and dimensions
+                min_x = min(x_coords)
+                max_x = max(x_coords)
+                min_y = min(y_coords)
+                max_y = max(y_coords)
+
+                # Expand bounds to ensure minimum room size
+                width = max_x - min_x
+                length = max_y - min_y
+                min_room_size = 2.0  # Minimum room dimension in meters
+
+                if width < min_room_size:
+                    padding = (min_room_size - width) / 2
+                    min_x -= padding
+                    max_x += padding
+                    width = min_room_size
+
+                if length < min_room_size:
+                    padding = (min_room_size - length) / 2
+                    min_y -= padding
+                    max_y += padding
+                    length = min_room_size
+
+                # Add padding for aesthetics
+                padding = 0.5  # Padding in meters
+                min_x -= padding
+                max_x += padding
+                min_y -= padding
+                max_y += padding
+                width = max_x - min_x
+                length = max_y - min_y
+
+                # Define standard room height
+                height = 2.5  # Standard room height in meters
+
+                # Create room object
+                room = {
+                    'id': f"room_{room_id}",
+                    'name': room_name,
+                    'area_id': area_id,
+                    'type': self._determine_room_type(room_name, area_id),
+                    'center': {
+                        'x': center_x,
+                        'y': center_y,
+                        'z': center_z
+                    },
+                    'bounds': {
+                        'min': {'x': min_x, 'y': min_y, 'z': 0},
+                        'max': {'x': max_x, 'y': max_y, 'z': height}
+                    },
+                    'dimensions': {
+                        'width': width,
+                        'length': length,
+                        'height': height
+                    },
+                    'devices': devices,
+                    'floor': 0  # Default to ground floor
+                }
+
+                rooms.append(room)
+                room_id += 1
+
+            except Exception as e:
+                logger.error(f"Error generating room for area '{area_id}': {str(e)}")
+
+        # Log the results
+        logger.info(f"Generated {len(rooms)} room geometries")
         return rooms
+
+    def _determine_room_type(self, room_name: str, area_id: str) -> str:
+        """
+        Determine the type of room based on its name and area ID.
+
+        Args:
+            room_name: The name of the room
+            area_id: The ID of the area
+
+        Returns:
+            The determined room type
+        """
+        # Convert to lowercase for case-insensitive matching
+        name_lower = room_name.lower()
+        area_lower = area_id.lower()
+
+        # Define room type patterns
+        type_patterns = {
+            'living_room': ['living', 'lounge', 'family'],
+            'kitchen': ['kitchen', 'cooking'],
+            'bathroom': ['bath', 'shower', 'toilet', 'wc'],
+            'bedroom': ['bed', 'master', 'guest room'],
+            'office': ['office', 'study', 'work'],
+            'dining_room': ['dining', 'breakfast'],
+            'hallway': ['hall', 'corridor', 'entrance'],
+            'laundry_room': ['laundry', 'utility'],
+            'garage': ['garage', 'carport'],
+            'balcony': ['balcony', 'terrace', 'patio']
+        }
+
+        # Check for matches in name or area_id
+        for room_type, patterns in type_patterns.items():
+            for pattern in patterns:
+                if pattern in name_lower or pattern in area_lower:
+                    return room_type
+
+        # Default to standard room
+        return 'room'
 
     def _generate_target_layout(self, areas: List[Dict]) -> Dict:
         """Generate a target layout for area centroids.
@@ -442,48 +715,6 @@ class BlueprintGenerator:
 
         return target_layout
 
-    def _group_devices_by_area(self, device_positions: Dict, area_predictions: Dict, areas: List[Dict], rssi_data: Dict) -> Dict:
-        """Group device coordinates by their predicted area or map unknown devices based on RSSI."""
-        device_area_groups = {}
-
-        for device_id, position in device_positions.items():
-            # Get predicted area for this device
-            area_id = area_predictions.get(device_id)
-
-            # If no area prediction, map based on RSSI
-            if not area_id:
-                # Find the scanner with the strongest RSSI for this device
-                if device_id in rssi_data:
-                    strongest_signal = max(rssi_data[device_id], key=rssi_data[device_id].get)
-                    # Map to the area of the scanner with the strongest signal
-                    area_id = next((area['id'] for area in areas if strongest_signal in area.get('scanners', [])), 'unknown')
-                else:
-                    area_id = 'unknown'
-
-            # Initialize the area group if it doesn't exist
-            if area_id not in device_area_groups:
-                device_area_groups[area_id] = []
-
-            # Add device with its position to the area group
-            if isinstance(position, dict):
-                # Dictionary format with 'x', 'y', 'z' keys
-                device_area_groups[area_id].append({
-                    'device_id': device_id,
-                    'x': position.get('x', 0.0),
-                    'y': position.get('y', 0.0),
-                    'z': position.get('z', 0.0)
-                })
-            else:
-                # Tuple/list format with indices
-                device_area_groups[area_id].append({
-                    'device_id': device_id,
-                    'x': position[0] if len(position) > 0 else 0.0,
-                    'y': position[1] if len(position) > 1 else 0.0,
-                    'z': position[2] if len(position) > 2 else 0.0
-                })
-
-        return device_area_groups
-
     def _calculate_area_centroids(self, device_area_groups: Dict) -> Dict:
         """Calculate the centroid of each device group by area."""
         area_centroids = {}
@@ -493,8 +724,8 @@ class BlueprintGenerator:
                 continue
 
             # Calculate average position
-            x_coords = [d['x'] for d in devices]
-            y_coords = [d['y'] for d in devices]
+            x_coords = [d['position']['x'] for d in devices]
+            y_coords = [d['position']['y'] for d in devices]
 
             # Centroid is the average position
             avg_x = sum(x_coords) / len(x_coords)
@@ -714,160 +945,6 @@ class BlueprintGenerator:
         logger.info(f"Successfully transformed {len(transformed_positions)} positions")
         return transformed_positions
 
-    def _generate_rooms(self, transformed_positions: Dict, device_area_groups: Dict, areas: List[Dict]) -> List[Dict]:
-        """Generate room geometries from transformed positions."""
-        rooms = []
-
-        # Create a mapping of area_id to area name
-        area_names = {area['area_id']: area.get('name', area['area_id']) for area in areas}
-
-        # Process each area group
-        for area_id, devices in device_area_groups.items():
-            # Only skip empty device groups
-            if not devices:
-                continue
-
-            # Extract device positions for this area
-            area_device_ids = [device['device_id'] for device in devices]
-            area_positions = []
-
-            # Get positions for each device that exists in transformed_positions
-            for device_id in area_device_ids:
-                if device_id in transformed_positions:
-                    pos = transformed_positions[device_id]
-                    # Convert position to list format if it's in dict format
-                    if isinstance(pos, dict):
-                        area_positions.append([pos['x'], pos['y'], pos.get('z', 0.0)])
-                    elif isinstance(pos, (list, tuple)):
-                        area_positions.append(list(pos))
-
-            if not area_positions:
-                logger.warning(f"No valid positions for area: {area_id} with {len(devices)} devices")
-                continue
-
-            # Convert to numpy array for easier processing
-            points = np.array(area_positions)
-
-            # Calculate room bounds
-            if len(points) >= 3:
-                # Use convex hull or alpha shape for more complex shapes
-                try:
-                    hull = Delaunay(points[:,:2]).convex_hull
-                    # Extract unique vertices from convex hull
-                    vertices = np.unique(hull.flatten())
-                    # Extract coordinates of hull vertices
-                    hull_points = points[vertices]
-
-                    # Calculate bounds from hull points
-                    min_x = float(np.min(hull_points[:,0]))
-                    max_x = float(np.max(hull_points[:,0]))
-                    min_y = float(np.min(hull_points[:,1]))
-                    max_y = float(np.max(hull_points[:,1]))
-                except:
-                    # Fallback to simple min/max if convex hull fails
-                    min_x = float(np.min(points[:,0]))
-                    max_x = float(np.max(points[:,0]))
-                    min_y = float(np.min(points[:,1]))
-                    max_y = float(np.max(points[:,1]))
-            else:
-                # Simple bounds for few points
-                min_x = float(np.min(points[:,0]))
-                max_x = float(np.max(points[:,0]))
-                min_y = float(np.min(points[:,1]))
-                max_y = float(np.max(points[:,1]))
-
-            # Add some padding around the bounds
-            padding = 0.5  # 0.5m padding
-            min_x -= padding
-            max_x += padding
-            min_y -= padding
-            max_y += padding
-
-            # Calculate room dimensions
-            width = max_x - min_x
-            length = max_y - min_y
-            height = 2.5  # Default ceiling height
-
-            # Calculate room center
-            center_x = (min_x + max_x) / 2
-            center_y = (min_y + max_y) / 2
-            center_z = 0  # Default floor level
-
-            # Use generic name for unknown areas but more descriptive than just "unknown"
-            display_name = area_names.get(area_id, area_id.replace('_', ' ').title())
-            if area_id == "unknown":
-                display_name = "Detected Space"
-
-            # Create room entry
-            room = {
-                'id': f"room_{area_id}",
-                'name': display_name,
-                'type': area_id,
-                'bounds': {
-                    'min': {'x': min_x, 'y': min_y, 'z': 0},
-                    'max': {'x': max_x, 'y': max_y, 'z': height}
-                },
-                'center': {'x': center_x, 'y': center_y, 'z': center_z},
-                'dimensions': {
-                    'width': width,
-                    'length': length,
-                    'height': height,
-                    'area': width * length
-                },
-                'devices': [{"id": device_id} for device_id in area_device_ids],
-                'floor': 0  # Default to ground floor
-            }
-
-            rooms.append(room)
-
-        # If no rooms were generated and we have device positions, create at least one room to show something
-        if not rooms and transformed_positions:
-            logger.info("No rooms were generated, creating default room from all device positions")
-
-            # Extract all device points from transformed_positions
-            all_points = []
-            for entity_id, pos in transformed_positions.items():
-                if isinstance(pos, dict):
-                    all_points.append([pos['x'], pos['y'], pos.get('z', 0.0)])
-                elif isinstance(pos, (list, tuple)) and len(pos) >= 2:
-                    all_points.append(list(pos[:3]) if len(pos) >= 3 else list(pos) + [0.0])
-
-            if all_points:
-                points = np.array(all_points)
-                min_x = float(np.min(points[:,0])) - 1.0
-                max_x = float(np.max(points[:,0])) + 1.0
-                min_y = float(np.min(points[:,1])) - 1.0
-                max_y = float(np.max(points[:,1])) + 1.0
-
-                width = max_x - min_x
-                length = max_y - min_y
-                height = 2.5
-
-                rooms.append({
-                    'id': 'room_default',
-                    'name': 'Default Space',
-                    'type': 'default',
-                    'bounds': {
-                        'min': {'x': min_x, 'y': min_y, 'z': 0},
-                        'max': {'x': max_x, 'y': max_y, 'z': height}
-                    },
-                    'center': {
-                        'x': (min_x + max_x) / 2,
-                        'y': (min_y + max_y) / 2,
-                        'z': 0
-                    },
-                    'dimensions': {
-                        'width': width,
-                        'length': length,
-                        'height': height,
-                        'area': width * length
-                    },
-                    'devices': [{"id": entity_id} for entity_id in transformed_positions.keys()],
-                    'floor': 0
-                })
-
-        return rooms
-
     def _infer_walls(self, rooms: List[Dict]) -> List[Dict]:
         """Infer walls between rooms based on proximity."""
         walls = []
@@ -941,151 +1018,6 @@ class BlueprintGenerator:
             })
 
         return floor_objects
-
-    def _calculate_room_dimensions(self, rooms: List[Dict]) -> List[Dict]:
-        """Calculate reasonable room dimensions based on their positions."""
-        for room in rooms:
-            # Default dimensions if no better calculation is available
-            width = 5.0
-            length = 5.0
-            height = 2.7
-
-            # Better approach if we have devices
-            if 'devices' in room and len(room['devices']) >= 2:
-                # Get x and y coordinates of devices in this room
-                x_coords = [device['x'] for device in room['devices']]
-                y_coords = [device['y'] for device in room['devices']]
-                z_coords = [device.get('z', 0) for device in room['devices']]
-
-                # Calculate width and length based on device spread, add margin
-                margin = 1.0  # Add 1m margin around detected points
-                min_x, max_x = min(x_coords), max(x_coords)
-                min_y, max_y = min(y_coords), max(y_coords)
-                min_z, max_z = min(z_coords), max(z_coords)
-
-                width = max(2.0, max_x - min_x + margin * 2)  # At least 2 meters wide
-                length = max(2.0, max_y - min_y + margin * 2)  # At least 2 meters long
-
-                # Determine floor number based on z-coordinate
-                floor_level = int(sum(z_coords) / len(z_coords) // 3)  # 3m per floor
-
-                # Ensure room has floor info
-                room['floor'] = floor_level
-
-                # Calculate bounds for the room
-                room['bounds'] = {
-                    'min': {'x': min_x - margin, 'y': min_y - margin, 'z': min_z},
-                    'max': {'x': max_x + margin, 'y': max_y + margin, 'z': max_z}
-                }
-
-                # Make sure room has center coordinates
-                room['center'] = {
-                    'x': (min_x + max_x) / 2,
-                    'y': (min_y + max_y) / 2,
-                    'z': (min_z + max_z) / 2
-                }
-            else:
-                # For rooms without enough devices, create default bounds
-                center = room.get('center', {'x': 0, 'y': 0, 'z': 0})
-                floor_level = int(center['z'] // 3)  # 3m per floor
-                room['floor'] = floor_level
-
-                room['bounds'] = {
-                    'min': {'x': center['x'] - width/2, 'y': center['y'] - length/2, 'z': 0},
-                    'max': {'x': center['x'] + width/2, 'y': center['y'] + length/2, 'z': height}
-                }
-
-            room['dimensions'] = {
-                'width': width,
-                'length': length,
-                'height': height,
-                'area': width * length
-            }
-
-            # Ensure every room has a name
-            if not room.get('name'):
-                room['name'] = room.get('id', 'Unknown Room').replace('_', ' ').title()
-
-        return rooms
-
-    def _generate_walls(self, rooms: List[Dict]) -> List[Dict]:
-        """Generate walls between rooms based on room positions and dimensions."""
-        walls = []
-        for room in rooms:
-            center = room['center']
-            dimensions = room['dimensions']
-            floor_level = room.get('floor', 0)  # Get floor level from room
-
-            # Generate 4 walls for room (basic rectangle)
-            walls.append({
-                'id': f"wall_{room['id']}_1",
-                'start': {'x': center['x'] - dimensions['width'] / 2, 'y': center['y'] - dimensions['length'] / 2},
-                'end': {'x': center['x'] + dimensions['width'] / 2, 'y': center['y'] - dimensions['length'] / 2},
-                'height': dimensions['height'],
-                'thickness': 0.15,
-                'floor': floor_level  # Add floor level to wall
-            })
-            walls.append({
-                'id': f"wall_{room['id']}_2",
-                'start': {'x': center['x'] + dimensions['width'] / 2, 'y': center['y'] - dimensions['length'] / 2},
-                'end': {'x': center['x'] + dimensions['width'] / 2, 'y': center['y'] + dimensions['length'] / 2},
-                'height': dimensions['height'],
-                'thickness': 0.15,
-                'floor': floor_level
-            })
-            walls.append({
-                'id': f"wall_{room['id']}_3",
-                'start': {'x': center['x'] + dimensions['width'] / 2, 'y': center['y'] + dimensions['length'] / 2},
-                'end': {'x': center['x'] - dimensions['width'] / 2, 'y': center['y'] + dimensions['length'] / 2},
-                'height': dimensions['height'],
-                'thickness': 0.15,
-                'floor': floor_level
-            })
-            walls.append({
-                'id': f"wall_{room['id']}_4",
-                'start': {'x': center['x'] - dimensions['width'] / 2, 'y': center['y'] + dimensions['length'] / 2},
-                'end': {'x': center['x'] - dimensions['width'] / 2, 'y': center['y'] - dimensions['length'] / 2},
-                'height': dimensions['height'],
-                'thickness': 0.15,
-                'floor': floor_level
-            })
-        return walls
-
-    def _organize_floors(self, rooms: List[Dict]) -> List[Dict]:
-        """Organize rooms into floor levels."""
-        floors = {}
-        for room in rooms:
-            # Get the floor level from the room data
-            floor_level = room.get('floor', 0)
-
-            if floor_level not in floors:
-                floors[floor_level] = []
-
-            floors[floor_level].append(room['id'])  # Just store room ID references
-
-            # Make sure room has its floor information
-            room['floor'] = floor_level
-
-        # Create floor objects with names and room references
-        floor_objects = []
-        for level, room_ids in sorted(floors.items()):
-            floor_name = "Ground Floor" if level == 0 else f"{level}{self._get_ordinal_suffix(level)} Floor"
-
-            floor_objects.append({
-                'level': level,
-                'name': floor_name,
-                'room_ids': room_ids
-            })
-
-        logger.info(f"Organized rooms into {len(floor_objects)} floors: {', '.join(f['name'] for f in floor_objects)}")
-        return floor_objects
-
-    def _get_ordinal_suffix(self, n):
-        """Return the ordinal suffix for a number (1st, 2nd, 3rd, etc.)"""
-        if 11 <= (n % 100) <= 13:
-            return 'th'
-        else:
-            return {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
 
     def get_latest_blueprint(self):
         """Get the latest blueprint from the database."""
