@@ -15,7 +15,7 @@ import re
 # Import local modules with fallbacks
 try:
     # First try relative imports (typical when imported as module)
-    from .ha_client import HAClient as HomeAssistantClient
+    from .ha_client import HAClient as HomeAssistantClient, get_ha_client
     from .db import (
         save_distance_log, save_area_observation,
         get_recent_distances, get_recent_area_predictions,
@@ -27,7 +27,7 @@ try:
 except ImportError:
     try:
         # Then try direct imports (when run as script)
-        from ha_client import HAClient as HomeAssistantClient
+        from ha_client import HAClient as HomeAssistantClient, get_ha_client
         from db import (
             save_distance_log, save_area_observation,
             get_recent_distances, get_recent_area_predictions,
@@ -35,12 +35,35 @@ except ImportError:
             save_device_position
         )
         from config_loader import load_config
-        logger = logging.getLogger("bluetooth_processor")
-    except ImportError as e:
-        # If both fail, handle gracefully but log error
-        import sys
-        logging.error(f"Failed to import required modules for BluetoothProcessor: {e}")
-        sys.exit(1)  # Exit if critical modules can't be loaded
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger(__name__)
+    except ImportError:
+        import logging
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger(__name__)
+        logger.error("Failed to import required modules - check your installation")
+        raise
+
+class HAClient:
+    """
+    Home Assistant Client for interacting with the Home Assistant API.
+    """
+
+    def get_bluetooth_sensors(self) -> List[Dict]:
+        """
+        Retrieve Bluetooth sensors from Home Assistant.
+        Returns a list of dictionaries representing Bluetooth sensors.
+        """
+        # Example implementation, replace with actual API call
+        try:
+            sensors = self.get_entities_by_type('sensor')
+            bt_sensors = [
+                sensor for sensor in sensors if 'bluetooth' in sensor.get('entity_id', '').lower()
+            ]
+            return bt_sensors
+        except Exception as e:
+            logger.error(f"Error retrieving Bluetooth sensors: {e}")
+            return []
 
 class BluetoothProcessor:
     """
@@ -68,8 +91,8 @@ class BluetoothProcessor:
             logger.error(f"Error loading config: {e}")
             self.config = {}
 
-        # Get Home Assistant client
-        self.ha_client = HomeAssistantClient()
+        # Use the get_ha_client() function to get a properly initialized client
+        self.ha_client = get_ha_client()
 
         # Get processing configuration
         self.processing_params = self.config.get('processing_params', {

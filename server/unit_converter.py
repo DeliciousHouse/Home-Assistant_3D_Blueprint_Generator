@@ -33,18 +33,16 @@ def feet_to_meters(feet: float) -> float:
 def meters_to_feet_inches(meters: float) -> Tuple[int, float]:
     """
     Convert meters to feet and inches.
-
-    Returns:
-        Tuple containing (feet, inches)
+    Returns a tuple of (feet, inches) where feet is an integer.
     """
-    total_inches = meters * METERS_TO_INCHES
-    feet = int(total_inches // 12)
-    inches = total_inches % 12
-    return (feet, inches)
+    total_feet = meters_to_feet(meters)
+    feet = int(total_feet)
+    inches = (total_feet - feet) * 12
+    return feet, inches
 
 def feet_inches_to_meters(feet: int, inches: float) -> float:
     """Convert feet and inches to meters."""
-    return (feet * 12 + inches) * INCHES_TO_METERS
+    return feet_to_meters(feet + (inches / 12))
 
 def square_meters_to_square_feet(square_meters: float) -> float:
     """Convert square meters to square feet."""

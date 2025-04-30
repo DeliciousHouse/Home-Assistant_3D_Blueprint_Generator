@@ -270,6 +270,27 @@ class HAClient:
             logger.error(f"Failed to get entities for area {area_id}: {str(e)}")
             return []
 
+    def get_bluetooth_sensors(self) -> List[Dict]:
+        """Get Bluetooth sensor entities from Home Assistant."""
+        try:
+            all_states = self.get_states()
+            bluetooth_sensors = []
+
+            for entity in all_states:
+                entity_id = entity.get('entity_id', '')
+
+                # Look for BLE, Bluetooth sensors, beacons, ESPresense
+                if any(term in entity_id.lower() for term in ['ble', 'bluetooth', 'beacon', 'espresense', 'presence']):
+                    # Filter out non-distance related sensors
+                    if not any(term in entity_id.lower() for term in ['battery', 'humidity', 'temperature', 'pressure']):
+                        bluetooth_sensors.append(entity)
+
+            logger.info(f"Found {len(bluetooth_sensors)} Bluetooth sensors")
+            return bluetooth_sensors
+        except Exception as e:
+            logger.error(f"Failed to get Bluetooth sensors: {str(e)}")
+            return []
+
 # Singleton instance of HAClient
 _ha_client_instance = None
 
