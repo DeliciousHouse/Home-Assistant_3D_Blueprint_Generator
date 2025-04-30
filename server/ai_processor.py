@@ -411,6 +411,7 @@ class AIProcessor:
             devices = set()
             scanners = set()
             all_entities = set()
+            device_scanner_pairs = set()
 
             # First pass - collect all entity IDs from distance records
             for record in distance_data:
@@ -426,14 +427,56 @@ class AIProcessor:
                 if not device_id or not scanner_id:
                     continue
 
-                # Add to our device and scanner sets
-                devices.add(device_id)
-                scanners.add(scanner_id)
+                # Add to our sets
                 all_entities.add(device_id)
                 all_entities.add(scanner_id)
+                device_scanner_pairs.add((device_id, scanner_id))
 
             # Filter out any empty strings or None values
             all_entities = {entity for entity in all_entities if entity}
+
+            # Apply heuristic classification of entities as devices or scanners
+            # This is crucial for correctly grouping entities
+            device_patterns = ['iphone', 'phone', 'pixel', 'watch', 'tag', 'tracker', 'tile', 'remote', 'key']
+            scanner_patterns = ['ble_', 'bt_', 'beacon', 'rssi', 'scanner', 'to_', 'proxy']
+
+            # Count occurrences to help with classification
+            from collections import Counter
+            occurrence_as_device = Counter()
+            occurrence_as_scanner = Counter()
+
+            for device_id, scanner_id in device_scanner_pairs:
+                occurrence_as_device[device_id] += 1
+                occurrence_as_scanner[scanner_id] += 1
+
+            # Classify entities based on patterns and frequency
+            for entity in all_entities:
+                entity_lower = entity.lower()
+
+                # Check for device patterns
+                is_device = any(pattern in entity_lower for pattern in device_patterns)
+                # Check for scanner patterns
+                is_scanner = any(pattern in entity_lower for pattern in scanner_patterns)
+
+                # If clearly one or the other based on name patterns
+                if is_device and not is_scanner:
+                    devices.add(entity)
+                elif is_scanner and not is_device:
+                    scanners.add(entity)
+                # Otherwise use frequency analysis
+                elif occurrence_as_device.get(entity, 0) > occurrence_as_scanner.get(entity, 0):
+                    devices.add(entity)
+                else:
+                    scanners.add(entity)
+
+            # Handle edge cases to ensure minimum required entities
+            # If we have too few devices, convert some scanners to devices
+            if len(devices) < 1 and len(scanners) > 1:
+                # Convert a scanner to a device
+                scanner_to_convert = next(iter(scanners))
+                devices.add(scanner_to_convert)
+                scanners.remove(scanner_to_convert)
+                logger.info(f"Converted {scanner_to_convert} from scanner to device to ensure minimum device count")
 
             # Log what we found - good for debugging
             logger.info(f"Found {len(devices)} tracked devices: {devices}")
@@ -448,6 +491,7 @@ class AIProcessor:
                 logger.error(f"Not enough entities ({n_devices}) for {dimensions}D positioning. Need at least 3 entities.")
                 return {}
 
+            # Rest of the function remains unchanged
             logger.info(f"Creating distance matrix for {n_devices} entities")
 
             # Create an empty distance matrix (fill with large values initially)

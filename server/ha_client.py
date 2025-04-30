@@ -269,3 +269,16 @@ class HAClient:
         except Exception as e:
             logger.error(f"Failed to get entities for area {area_id}: {str(e)}")
             return []
+
+# Singleton instance of HAClient
+_ha_client_instance = None
+
+def get_ha_client() -> HAClient:
+    """
+    Get or create a singleton instance of HAClient.
+    This ensures we're using the same client throughout the application.
+    """
+    global _ha_client_instance
+    if _ha_client_instance is None:
+        _ha_client_instance = HAClient()
+    return _ha_client_instance
