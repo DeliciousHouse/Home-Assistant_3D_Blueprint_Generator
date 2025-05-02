@@ -10,6 +10,17 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+def create_empty_response():
+    """Create an empty response object for graceful degradation"""
+    class EmptyResponse:
+        def __init__(self):
+            self.status_code = 200
+
+        def json(self):
+            return []
+
+    return EmptyResponse()
+
 class HAClient:
     """Home Assistant API Client for the Blueprint Generator add-on."""
 
@@ -25,40 +36,57 @@ class HAClient:
         # HA API URL - supervisor path for add-on mode, can be overridden for dev
         self.base_url = self.config.get('home_assistant', {}).get('url', 'http://supervisor/core')
 
-        # Authentication token - try from config first, then from constructor param
-        self.token = token or self.config.get('home_assistant', {}).get('token')
-
-        # If no token provided yet, try environment variable (preferred for add-on)
+        # Authentication token priority:
+        # 1. Explicitly passed token parameter
+        # 2. SUPERVISOR_TOKEN environment variable
+        # 3. Token from config file
+        # 4. HASS_TOKEN environment variable (for non-supervisor environments)
+        self.token = token
         if not self.token:
             self.token = os.environ.get('SUPERVISOR_TOKEN')
+            if not self.token:
+                self.token = self.config.get('home_assistant', {}).get('token')
+            if not self.token:
+                self.token = os.environ.get('HASS_TOKEN')
 
         logger.info(f"Initializing Home Assistant client with URL: {self.base_url}")
-        logger.info(f"Authentication token available: {bool(self.token)}")
+        if self.token:
+            # Don't log the entire token, just first few characters for debugging
+            token_start = self.token[:5] if len(self.token) > 5 else "****"
+            logger.info(f"Authentication token available: True (starts with {token_start}...)")
+        else:
+            logger.warning("No authentication token found. HA API calls will likely fail.")
 
         # Test the connection
         self._test_connection()
 
     def _test_connection(self) -> bool:
         """Test the connection to Home Assistant."""
-        # First check if we can access the supervisor API
+        if not self.token:
+            logger.error("Cannot test connection without an authentication token")
+            return False
+
         try:
-            supervisor_url = "http://supervisor/supervisor/info"
+            # Try to get a simple entity state to verify API access
+            endpoint = "states/sensor.time"
+            url = f"{self.base_url}/api/{endpoint}"
+
             headers = {
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json"
             }
-            response = requests.get(supervisor_url, headers=headers)
-            response.raise_for_status()
-            logger.info(f"Successfully connected to Supervisor API at {supervisor_url}")
-        except Exception as e:
-            logger.warning(f"Could not connect to Supervisor API: {str(e)}")
 
-        # Then check if we can access the HA API
-        try:
-            # Make a simple API call to check authentication
-            states = self.get_states(entity_id="sensor.time")
-            logger.info("Successfully connected to Home Assistant API")
-            return True
+            logger.debug(f"Testing API connection to {url}")
+            response = requests.get(url, headers=headers)
+
+            if response.status_code == 200:
+                logger.info("Successfully connected to Home Assistant API")
+                return True
+            else:
+                logger.error(f"API connection test failed with status {response.status_code}")
+                logger.debug(f"Response: {response.text[:100]}")
+                return False
+
         except Exception as e:
             logger.error(f"Failed to connect to Home Assistant API: {str(e)}")
             return False
@@ -66,6 +94,9 @@ class HAClient:
     def _authenticated_request(self, endpoint: str, method: str = 'GET',
                               data: Optional[Dict] = None) -> requests.Response:
         """Make an authenticated request to the HA API."""
+        if not self.token:
+            raise ValueError("No authentication token available")
+
         url = f"{self.base_url}/api/{endpoint}"
         headers = {
             "Authorization": f"Bearer {self.token}",
@@ -73,6 +104,7 @@ class HAClient:
         }
 
         try:
+            logger.debug(f"Making {method} request to {url}")
             if method.upper() == 'GET':
                 response = requests.get(url, headers=headers)
             elif method.upper() == 'POST':
@@ -82,10 +114,21 @@ class HAClient:
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
+            # Handle auth errors with more specific information
+            if response.status_code == 401:
+                logger.error(f"Authentication failed (401): Token may be invalid or expired")
+            elif response.status_code == 403:
+                logger.error(f"Authorization failed (403): Token may not have required permissions")
+
             response.raise_for_status()
             return response
         except requests.exceptions.RequestException as e:
             logger.error(f"API request failed: {e}")
+            # Return empty response for graceful degradation
+            if method.upper() == 'GET':
+                # For GET requests, return empty data instead of raising an exception
+                logger.warning("Returning empty data due to API request failure")
+                return create_empty_response()
             raise
 
     def get_states(self, entity_id: Optional[str] = None) -> List[Dict]:

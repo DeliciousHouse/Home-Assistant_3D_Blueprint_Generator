@@ -400,103 +400,40 @@ class AIProcessor:
                 logger.error("No distance data provided for relative positioning")
                 return {}
 
-            # Debug: Log the structure of the input data
+            # Debug: Log the structure of sample input data
             if distance_data and len(distance_data) > 0:
                 sample = distance_data[0]
+                logger.debug(f"Sample distance record keys: {list(sample.keys() if isinstance(sample, dict) else [])}")
                 logger.debug(f"Sample distance record: {sample}")
-                logger.debug(f"Sample record keys: {list(sample.keys() if isinstance(sample, dict) else [])}")
 
-            # ENHANCED ENTITY DETECTION
-            # Extract all unique entity IDs (devices and scanners)
-            devices = set()
-            scanners = set()
-            all_entities = set()
-            device_scanner_pairs = set()
-
-            # First pass - collect all entity IDs from distance records
+            # Extract all unique entities
+            entities = set()
             for record in distance_data:
                 if not isinstance(record, dict):
                     logger.warning(f"Skipping non-dict record: {record}")
                     continue
 
-                # Extract device ID and scanner ID from the record
                 device_id = record.get('tracked_device_id')
                 scanner_id = record.get('scanner_id')
 
-                # Skip records with missing IDs
-                if not device_id or not scanner_id:
-                    continue
+                if device_id and scanner_id:
+                    entities.add(device_id)
+                    entities.add(scanner_id)
+                    logger.debug(f"Added entities: {device_id}, {scanner_id}")
 
-                # Add to our sets
-                all_entities.add(device_id)
-                all_entities.add(scanner_id)
-                device_scanner_pairs.add((device_id, scanner_id))
+            # Convert to list for indexing
+            entity_list = sorted(list(entities))
+            n_entities = len(entity_list)
 
-            # Filter out any empty strings or None values
-            all_entities = {entity for entity in all_entities if entity}
+            logger.info(f"Extracted {n_entities} unique entities: {entity_list}")
 
-            # Apply heuristic classification of entities as devices or scanners
-            # This is crucial for correctly grouping entities
-            device_patterns = ['iphone', 'phone', 'pixel', 'watch', 'tag', 'tracker', 'tile', 'remote', 'key']
-            scanner_patterns = ['ble_', 'bt_', 'beacon', 'rssi', 'scanner', 'to_', 'proxy']
-
-            # Count occurrences to help with classification
-            from collections import Counter
-            occurrence_as_device = Counter()
-            occurrence_as_scanner = Counter()
-
-            for device_id, scanner_id in device_scanner_pairs:
-                occurrence_as_device[device_id] += 1
-                occurrence_as_scanner[scanner_id] += 1
-
-            # Classify entities based on patterns and frequency
-            for entity in all_entities:
-                entity_lower = entity.lower()
-
-                # Check for device patterns
-                is_device = any(pattern in entity_lower for pattern in device_patterns)
-                # Check for scanner patterns
-                is_scanner = any(pattern in entity_lower for pattern in scanner_patterns)
-
-                # If clearly one or the other based on name patterns
-                if is_device and not is_scanner:
-                    devices.add(entity)
-                elif is_scanner and not is_device:
-                    scanners.add(entity)
-                # Otherwise use frequency analysis
-                elif occurrence_as_device.get(entity, 0) > occurrence_as_scanner.get(entity, 0):
-                    devices.add(entity)
-                else:
-                    scanners.add(entity)
-
-            # Handle edge cases to ensure minimum required entities
-            # If we have too few devices, convert some scanners to devices
-            if len(devices) < 1 and len(scanners) > 1:
-                # Convert a scanner to a device
-                scanner_to_convert = next(iter(scanners))
-                devices.add(scanner_to_convert)
-                scanners.remove(scanner_to_convert)
-                logger.info(f"Converted {scanner_to_convert} from scanner to device to ensure minimum device count")
-
-            # Log what we found - good for debugging
-            logger.info(f"Found {len(devices)} tracked devices: {devices}")
-            logger.info(f"Found {len(scanners)} scanners: {scanners}")
-            logger.info(f"Found {len(all_entities)} total unique entities")
-
-            # Create a sorted list of all entities for MDS
-            device_list = sorted(list(all_entities))
-            n_devices = len(device_list)
-
-            if n_devices < 3:
-                logger.error(f"Not enough entities ({n_devices}) for {dimensions}D positioning. Need at least 3 entities.")
-                return {}
-
-            # Rest of the function remains unchanged
-            logger.info(f"Creating distance matrix for {n_devices} entities")
+            if n_entities < 3:
+                logger.error(f"Not enough entities ({n_entities}) for {dimensions}D positioning. Need at least 3 entities.")
+                return self._generate_fallback_positions()[0]  # Return fallback device positions
 
             # Create an empty distance matrix (fill with large values initially)
             max_distance = 50  # A large default distance
-            distance_matrix = np.ones((n_devices, n_devices)) * max_distance
+            distance_matrix = np.ones((n_entities, n_entities)) * max_distance
 
             # Fill in the diagonal with zeros (distance to self is 0)
             np.fill_diagonal(distance_matrix, 0)
@@ -513,10 +450,10 @@ class AIProcessor:
                     if not device_id or not scanner_id or distance is None or not isinstance(distance, (int, float)) or distance <= 0:
                         continue
 
-                    # Find indices for these devices
-                    if device_id in device_list and scanner_id in device_list:
-                        device_idx = device_list.index(device_id)
-                        scanner_idx = device_list.index(scanner_id)
+                    # Find indices for these entities
+                    if device_id in entity_list and scanner_id in entity_list:
+                        device_idx = entity_list.index(device_id)
+                        scanner_idx = entity_list.index(scanner_id)
 
                         # Set the distance in both directions (symmetric matrix)
                         distance_matrix[device_idx, scanner_idx] = distance
@@ -530,7 +467,7 @@ class AIProcessor:
 
             # Apply MDS to get relative positions
             mds = MDS(n_components=dimensions, dissimilarity='precomputed',
-                      random_state=42, normalized_stress='auto')
+                     random_state=42, normalized_stress='auto')
 
             try:
                 positions = mds.fit_transform(distance_matrix)
@@ -540,18 +477,18 @@ class AIProcessor:
                 # Fallback to simpler approach
                 try:
                     mds = MDS(n_components=dimensions, dissimilarity='precomputed',
-                              random_state=42)
+                             random_state=42)
                     positions = mds.fit_transform(distance_matrix)
                     logger.info("Alternative MDS calculation successful")
                 except Exception as e2:
                     logger.error(f"Alternative MDS calculation failed: {e2}")
                     # Last resort fallback to random positions
-                    positions = np.random.rand(n_devices, dimensions) * 10
+                    positions = np.random.rand(n_entities, dimensions) * 10
                     logger.warning("Using random positions as fallback")
 
             # Create output dictionary mapping device IDs to coordinates
             result = {}
-            for i, device_id in enumerate(device_list):
+            for i, device_id in enumerate(entity_list):
                 if dimensions == 2:
                     result[device_id] = {
                         'x': float(positions[i, 0]),
@@ -570,7 +507,7 @@ class AIProcessor:
 
         except Exception as e:
             logger.error(f"Error in relative positioning: {str(e)}", exc_info=True)
-            return {}
+            return self._generate_fallback_positions()[0]  # Return fallback device positions
 
     def get_relative_positions(self) -> Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
         """
