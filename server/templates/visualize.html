@@ -112,6 +112,36 @@
             cursor: pointer;
             margin-left: 5px;
         }
+        #floor-navigation {
+            position: absolute;
+            bottom: 80px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #floor-navigation button {
+            padding: 5px 10px;
+            background: #444;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 18px;
+            width: 40px;
+        }
+        #floor-navigation button:hover {
+            background: #555;
+        }
+        #current-floor-display {
+            font-weight: bold;
+            padding: 0 10px;
+        }
     </style>
 </head>
 <body>
@@ -124,6 +154,11 @@
     <div id="floor-controls">
         <span class="controls-label">Floor:</span>
         <!-- Floor buttons will be generated here -->
+    </div>
+    <div id="floor-navigation">
+        <button id="floor-up">▲</button>
+        <span id="current-floor-display">Floor 0</span>
+        <button id="floor-down">▼</button>
     </div>
     <div id="object-info"></div>
     <div id="unit-toggle">
@@ -155,6 +190,7 @@
         let unitSystem = 'metric'; // Default unit system
         let showLabels = true;
         let showFloorPlans = true;
+        let availableFloors = []; // Track available floors
 
         // Unit conversion constants
         const METERS_TO_FEET = 3.28084;
@@ -235,18 +271,25 @@
             blueprintData = JSON.parse('{{ blueprint|tojson|safe }}');
             console.log("Loaded blueprint data:", blueprintData);
 
+            // Extract all available floors from rooms
+            if (blueprintData && blueprintData.rooms) {
+                availableFloors = [...new Set(blueprintData.rooms.map(room => room.floor !== undefined ? Number(room.floor) : 0))].sort((a, b) => a - b);
+                console.log("Available floors:", availableFloors);
+            }
+
             // Update info panel
             const statsDiv = document.getElementById('blueprint-stats');
             statsDiv.innerHTML = `
                 <p>Rooms: ${blueprintData.rooms.length}</p>
                 <p>Walls: ${blueprintData.walls ? blueprintData.walls.length : 0}</p>
                 <p>Objects: ${blueprintData.objects ? blueprintData.objects.length : 0}</p>
-                <p>Floors: ${blueprintData.floors ? blueprintData.floors.length : 0}</p>
+                <p>Floors: ${availableFloors.length}</p>
                 <p><em>Click on objects for more info</em></p>
             `;
 
             // Set up floor controls
             setupFloorControls();
+            updateFloorDisplay();
         } catch (e) {
             showError("Failed to parse blueprint data: " + e.message);
         }
@@ -325,22 +368,38 @@
             renderBlueprint();
         });
 
+        // Set up floor navigation controls
+        document.getElementById('floor-up').addEventListener('click', function() {
+            changeFloor(1);
+        });
+
+        document.getElementById('floor-down').addEventListener('click', function() {
+            changeFloor(-1);
+        });
+
         // Main rendering function
         renderBlueprint();
 
         // Setup floor control buttons
         function setupFloorControls() {
-            if (!blueprintData.floors || blueprintData.floors.length === 0) {
-                document.getElementById('floor-controls').style.display = 'none';
-                return;
+            const floorControls = document.getElementById('floor-controls');
+
+            // Clear existing buttons
+            while (floorControls.childNodes.length > 1) {
+                floorControls.removeChild(floorControls.lastChild);
             }
 
-            const floorControls = document.getElementById('floor-controls');
+            // If no floor data is explicitly available, try to derive from rooms
+            if (!availableFloors || availableFloors.length === 0) {
+                document.getElementById('floor-controls').style.display = 'none';
+                document.getElementById('floor-navigation').style.display = 'none';
+                return;
+            }
 
             // Add "All Floors" button
             const allFloorsBtn = document.createElement('button');
             allFloorsBtn.textContent = 'All Floors';
-            allFloorsBtn.className = 'active';
+            allFloorsBtn.className = currentFloor === 'all' ? 'active' : '';
             allFloorsBtn.onclick = () => {
                 setCurrentFloor('all');
                 setActiveButton(allFloorsBtn);
@@ -348,15 +407,28 @@
             floorControls.appendChild(allFloorsBtn);
 
             // Add individual floor buttons
-            blueprintData.floors.sort((a, b) => a.level - b.level).forEach(floor => {
+            availableFloors.forEach(floorNum => {
                 const btn = document.createElement('button');
-                btn.textContent = floor.name || `Floor ${floor.level}`;
+                btn.textContent = getFloorName(floorNum);
+                btn.dataset.floor = floorNum; // Store floor number as data attribute
+                btn.className = currentFloor === floorNum ? 'active' : '';
                 btn.onclick = () => {
-                    setCurrentFloor(floor.level);
+                    setCurrentFloor(Number(floorNum)); // Convert to number to ensure type consistency
                     setActiveButton(btn);
                 };
                 floorControls.appendChild(btn);
             });
+        }
+
+        function getFloorName(floorNum) {
+            if (floorNum === 0) return 'Ground';
+            if (floorNum === 1) return '1st';
+            if (floorNum === 2) return '2nd';
+            if (floorNum === 3) return '3rd';
+            if (floorNum > 3) return `${floorNum}th`;
+            if (floorNum === -1) return 'Basement';
+            if (floorNum < -1) return `B${Math.abs(floorNum)}`;
+            return `Floor ${floorNum}`;
         }
 
         function setActiveButton(activeBtn) {
@@ -366,9 +438,61 @@
             });
         }
 
+        function changeFloor(direction) {
+            if (availableFloors.length === 0) return;
+
+            // Handle 'all' case
+            if (currentFloor === 'all') {
+                // When going from 'all' to a specific floor, choose either first or last floor based on direction
+                currentFloor = direction > 0 ? availableFloors[0] : availableFloors[availableFloors.length - 1];
+                setCurrentFloor(currentFloor);
+                return;
+            }
+
+            // Find current index
+            const currentIndex = availableFloors.indexOf(Number(currentFloor));
+            if (currentIndex === -1) {
+                // If current floor not found, default to first floor
+                setCurrentFloor(availableFloors[0]);
+                return;
+            }
+
+            // Calculate new index with bounds check
+            let newIndex = currentIndex + direction;
+            if (newIndex < 0) newIndex = 0;
+            if (newIndex >= availableFloors.length) newIndex = availableFloors.length - 1;
+
+            // Set new floor
+            setCurrentFloor(availableFloors[newIndex]);
+        }
+
         function setCurrentFloor(floor) {
             currentFloor = floor;
+            updateFloorDisplay();
             renderBlueprint();
+
+            // Also update the active button in the floor controls
+            const buttons = document.querySelectorAll('#floor-controls button');
+            buttons.forEach(btn => {
+                if (floor === 'all' && btn.textContent === 'All Floors') {
+                    btn.className = 'active';
+                } else if (btn.dataset.floor !== undefined && Number(btn.dataset.floor) === Number(floor)) {
+                    btn.className = 'active';
+                } else {
+                    btn.className = '';
+                }
+            });
+        }
+
+        function updateFloorDisplay() {
+            const floorDisplay = document.getElementById('current-floor-display');
+            if (floorDisplay) {
+                if (currentFloor === 'all') {
+                    floorDisplay.textContent = 'All Floors';
+                } else {
+                    floorDisplay.textContent = getFloorName(currentFloor);
+                }
+            }
         }
 
         // Helper function to get material for rooms
@@ -439,10 +563,16 @@
         function renderBlueprint() {
             clearScene();
 
+            if (!blueprintData || !blueprintData.rooms || blueprintData.rooms.length === 0) {
+                console.warn("No blueprint data to render");
+                return;
+            }
+
             // Filter rooms by current floor if specified
             const roomsToRender = blueprintData.rooms.filter(room => {
                 if (currentFloor === 'all') return true;
-                return room.floor === currentFloor;
+                // Convert both to numbers for comparison to avoid type mismatches
+                return Number(room.floor) === Number(currentFloor);
             });
 
             // Render rooms
@@ -454,8 +584,11 @@
                 const wallsToRender = currentFloor === 'all' ?
                     blueprintData.walls :
                     blueprintData.walls.filter(wall => {
-                        // Find if this wall belongs to any of the current floor's rooms
-                        // This is a simplification - in a production system, walls would have floor info
+                        if (wall.floor !== undefined) {
+                            return Number(wall.floor) === Number(currentFloor);
+                        }
+                        // For walls without floor info, try to match them to rooms on the current floor
+                        // This is a heuristic approach
                         return true;
                     });
 
@@ -469,7 +602,7 @@
                     blueprintData.objects.filter(obj => {
                         // Find the room for this object
                         const room = blueprintData.rooms.find(room => room.id === obj.room_id);
-                        return room && room.floor === currentFloor;
+                        return room && Number(room.floor) === Number(currentFloor);
                     });
 
                 renderObjects(objectsToRender);
@@ -515,7 +648,7 @@
             if (showLabels && meshes.labels.length === 0) {
                 const roomsToRender = blueprintData.rooms.filter(room => {
                     if (currentFloor === 'all') return true;
-                    return room.floor === currentFloor;
+                    return Number(room.floor) === Number(currentFloor);
                 });
                 addRoomLabels(roomsToRender);
             }
@@ -570,7 +703,7 @@
                 const width = room.dimensions.width;
                 const height = room.dimensions.height || 2.5;
                 const length = room.dimensions.length;
-                const floor = room.floor || 0;
+                const floor = Number(room.floor || 0); // Convert to number for consistent comparisons
 
                 // Create exterior (transparent) and floor/ceiling (solid)
                 const mainGeometry = new THREE.BoxGeometry(width, height, length);
@@ -605,7 +738,7 @@
 
                 // Calculate Y position based on floor number
                 const floorHeight = 3.0; // Height between floors in meters
-                const yOffset = room.floor * floorHeight;
+                const yOffset = floor * floorHeight;
 
                 roomMesh.position.set(centerX, height/2 + yOffset, centerY);
                 floorMesh.position.set(centerX, 0 + yOffset, centerY);
@@ -653,7 +786,7 @@
                 let yOffset = 0;
                 if (wall.floor !== undefined) {
                     const floorHeight = 3.0; // Height between floors in meters
-                    yOffset = wall.floor * floorHeight;
+                    yOffset = Number(wall.floor) * floorHeight;
                 }
 
                 // Position the wall
@@ -682,7 +815,7 @@
                 let yOffset = 0;
                 if (room && room.floor !== undefined) {
                     const floorHeight = 3.0; // Height between floors in meters
-                    yOffset = room.floor * floorHeight;
+                    yOffset = Number(room.floor) * floorHeight;
                 }
 
                 // Create object based on type

@@ -15,9 +15,10 @@ def create_empty_response():
     class EmptyResponse:
         def __init__(self):
             self.status_code = 200
+            self.text = "{}"
 
         def json(self):
-            return []
+            return {}
 
     return EmptyResponse()
 
@@ -35,6 +36,10 @@ class HAClient:
 
         # HA API URL - supervisor path for add-on mode, can be overridden for dev
         self.base_url = self.config.get('home_assistant', {}).get('url', 'http://supervisor/core')
+
+        # Remove trailing slash if present for consistent URL handling
+        if self.base_url.endswith('/'):
+            self.base_url = self.base_url[:-1]
 
         # Authentication token priority:
         # 1. Explicitly passed token parameter
@@ -67,25 +72,44 @@ class HAClient:
             return False
 
         try:
-            # Try to get a simple entity state to verify API access
-            endpoint = "states/sensor.time"
-            url = f"{self.base_url}/api/{endpoint}"
+            # Try multiple endpoints - Home Assistant Supervisor has specific API paths
+            test_endpoints = [
+                # Default Home Assistant API endpoint that should work in all environments
+                "config",
+                # A common API endpoint that should be available
+                "states",
+                # Fallback endpoint for supervisor mode
+                "states/sun.sun"
+            ]
 
-            headers = {
-                "Authorization": f"Bearer {self.token}",
-                "Content-Type": "application/json"
-            }
+            success = False
+            for endpoint in test_endpoints:
+                url = f"{self.base_url}/api/{endpoint}"
 
-            logger.debug(f"Testing API connection to {url}")
-            response = requests.get(url, headers=headers)
+                headers = {
+                    "Authorization": f"Bearer {self.token}",
+                    "Content-Type": "application/json"
+                }
 
-            if response.status_code == 200:
-                logger.info("Successfully connected to Home Assistant API")
-                return True
-            else:
-                logger.error(f"API connection test failed with status {response.status_code}")
-                logger.debug(f"Response: {response.text[:100]}")
-                return False
+                logger.debug(f"Testing API connection to {url}")
+                try:
+                    response = requests.get(url, headers=headers, timeout=5)
+
+                    if response.status_code == 200:
+                        logger.info(f"Successfully connected to Home Assistant API using endpoint: {endpoint}")
+                        success = True
+                        break
+                    else:
+                        logger.warning(f"Connection test for endpoint {endpoint} failed with status {response.status_code}")
+                except Exception as e:
+                    logger.warning(f"Connection test for endpoint {endpoint} failed: {str(e)}")
+
+            if not success:
+                logger.error("API connection test failed with all endpoints")
+                # Continue anyway - we don't want to block operation just because the API test failed
+                # For robustness, we'll try to recover during actual API calls
+
+            return success
 
         except Exception as e:
             logger.error(f"Failed to connect to Home Assistant API: {str(e)}")
@@ -97,6 +121,10 @@ class HAClient:
         if not self.token:
             raise ValueError("No authentication token available")
 
+        # Ensure endpoint doesn't start with a slash
+        if endpoint.startswith('/'):
+            endpoint = endpoint[1:]
+
         url = f"{self.base_url}/api/{endpoint}"
         headers = {
             "Authorization": f"Bearer {self.token}",
@@ -106,11 +134,13 @@ class HAClient:
         try:
             logger.debug(f"Making {method} request to {url}")
             if method.upper() == 'GET':
-                response = requests.get(url, headers=headers)
+                response = requests.get(url, headers=headers, timeout=10)
             elif method.upper() == 'POST':
-                response = requests.post(url, headers=headers, json=data)
+                response = requests.post(url, headers=headers, json=data, timeout=10)
             elif method.upper() == 'PUT':
-                response = requests.put(url, headers=headers, json=data)
+                response = requests.put(url, headers=headers, json=data, timeout=10)
+            elif method.upper() == 'DELETE':
+                response = requests.delete(url, headers=headers, timeout=10)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -119,6 +149,9 @@ class HAClient:
                 logger.error(f"Authentication failed (401): Token may be invalid or expired")
             elif response.status_code == 403:
                 logger.error(f"Authorization failed (403): Token may not have required permissions")
+            elif response.status_code == 404:
+                logger.error(f"API endpoint not found (404): {endpoint}")
+                logger.debug(f"Response text: {response.text[:200]}")
 
             response.raise_for_status()
             return response
