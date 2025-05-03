@@ -1,21 +1,93 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Error</title>
+    <title>Error - 3D Blueprint Generator</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
-        h1 { color: #e74c3c; }
-        .container { max-width: 800px; margin: 0 auto; }
-        .error-box { background: #f8d7da; border: 1px solid #f5c6cb; padding: 20px; border-radius: 4px; }
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .error-container {
+            background-color: #1e1e1e;
+            border-radius: 8px;
+            padding: 30px;
+            max-width: 600px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            border: 1px solid #333;
+        }
+
+        h1 {
+            color: #f44336;
+            margin-top: 0;
+        }
+
+        .error-message {
+            background-color: #2a2a2a;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border-left: 4px solid #f44336;
+            overflow-wrap: break-word;
+        }
+
+        .buttons {
+            margin-top: 25px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .btn-primary {
+            background-color: #0078d4;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: #0067b8;
+        }
+
+        .btn-secondary {
+            background-color: #3a3a3a;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background-color: #444444;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>An Error Occurred</h1>
-        <div class="error-box">
-            <p>{{ error }}</p>
+    <div class="error-container">
+        <h1>Error Encountered</h1>
+        <p>Something went wrong while generating or processing the 3D blueprint.</p>
+
+        <div class="error-message">
+            {{ error_message }}
         </div>
-        <p><a href="/">Go back to home</a></p>
+
+        <p>This could be due to invalid input data, processing issues, or a temporary server problem.</p>
+
+        <div class="buttons">
+            <a href="/" class="btn btn-primary">Return to Home</a>
+            <a href="javascript:history.back()" class="btn btn-secondary">Go Back</a>
+        </div>
     </div>
 </body>
 </html>

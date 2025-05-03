@@ -35,7 +35,7 @@ class HAClient:
             self.config = {}
 
         # HA API URL - supervisor path for add-on mode, can be overridden for dev
-        self.base_url = self.config.get('home_assistant', {}).get('url', 'http://supervisor/core')
+        self.base_url = self.config.get('home_assistant', {}).get('url', 'http://supervisor/core')  
 
         # Remove trailing slash if present for consistent URL handling
         if self.base_url.endswith('/'):

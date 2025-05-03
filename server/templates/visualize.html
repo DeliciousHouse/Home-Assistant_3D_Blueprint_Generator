@@ -179,6 +179,14 @@
     <script>
         // Blueprint data from server
         let blueprintData;
+        try {
+            blueprintData = JSON.parse('{{ blueprint|tojson|safe }}');
+            console.log("Loaded blueprint data:", blueprintData);
+        } catch (e) {
+            showError("Failed to parse blueprint data: " + e.message);
+            console.error("Blueprint data parsing error:", e);
+        }
+
         let currentFloor = 0;
         const meshes = {
             rooms: [],
@@ -267,32 +275,96 @@
             }
         };
 
-        try {
-            blueprintData = JSON.parse('{{ blueprint|tojson|safe }}');
-            console.log("Loaded blueprint data:", blueprintData);
+        // Debug floor information
+        console.debug("Analyzing floor data in rooms:");
+        if (blueprintData && blueprintData.rooms && blueprintData.rooms.length > 0) {
+            const floorValues = {};
 
-            // Extract all available floors from rooms
-            if (blueprintData && blueprintData.rooms) {
-                availableFloors = [...new Set(blueprintData.rooms.map(room => room.floor !== undefined ? Number(room.floor) : 0))].sort((a, b) => a - b);
-                console.log("Available floors:", availableFloors);
+            // Log floor values for each room
+            blueprintData.rooms.forEach((room, index) => {
+                let floorVal = room.floor !== undefined ? room.floor :
+                              (room.floor_level !== undefined ? room.floor_level : 'undefined');
+                console.debug(`Room "${room.name || 'Unnamed'}" (ID: ${room.id || index}): floor = ${floorVal}`);
+
+                // Count occurrences of each floor value
+                if (floorVal !== 'undefined') {
+                    floorVal = Number(floorVal);
+                    floorValues[floorVal] = (floorValues[floorVal] || 0) + 1;
+                }
+            });
+
+            console.debug("Floor distribution:", floorValues);
+        }
+
+        // Extract available floors from rooms
+        if (blueprintData && blueprintData.rooms && blueprintData.rooms.length > 0) {
+            // First, check if we have explicit floors array
+            if (blueprintData.floors && blueprintData.floors.length > 0) {
+                availableFloors = [...new Set(blueprintData.floors.map(floor => floor.level))].sort((a, b) => a - b);
+            }
+            // If not, extract floor information from rooms
+            else {
+                // Extract all floor values from rooms, defaulting to 0 if not specified
+                const floorValues = blueprintData.rooms.map(room => {
+                    // Handle different formats - check if floor is specified or try to extract from name
+                    if (room.floor !== undefined) {
+                        return Number(room.floor); // Convert to number to ensure proper comparison
+                    }
+
+                    // Try to extract floor number from name if possible
+                    if (room.name) {
+                        const lowerName = room.name.toLowerCase();
+                        if (lowerName.includes('floor')) {
+                            const matches = lowerName.match(/floor\s*(\d+)/i);
+                            if (matches && matches[1]) {
+                                return Number(matches[1]);
+                            }
+                        }
+                        // Check for basement, ground floor, etc.
+                        if (lowerName.includes('basement')) return -1;
+                        if (lowerName.includes('ground')) return 0;
+                        if (lowerName.includes('first')) return 1;
+                        if (lowerName.includes('second')) return 2;
+                    }
+
+                    // If no floor specified, use custom properties or just default to 0
+                    return room.floor_level !== undefined ? Number(room.floor_level) : 0;
+                });
+
+                // Get unique floor values and sort
+                availableFloors = [...new Set(floorValues)].sort((a, b) => a - b);
             }
 
-            // Update info panel
-            const statsDiv = document.getElementById('blueprint-stats');
-            statsDiv.innerHTML = `
-                <p>Rooms: ${blueprintData.rooms.length}</p>
-                <p>Walls: ${blueprintData.walls ? blueprintData.walls.length : 0}</p>
-                <p>Objects: ${blueprintData.objects ? blueprintData.objects.length : 0}</p>
-                <p>Floors: ${availableFloors.length}</p>
-                <p><em>Click on objects for more info</em></p>
-            `;
+            console.log("Detected floors:", availableFloors);
 
-            // Set up floor controls
-            setupFloorControls();
-            updateFloorDisplay();
-        } catch (e) {
-            showError("Failed to parse blueprint data: " + e.message);
+            // If no floors were detected, create at least one floor (0)
+            if (availableFloors.length === 0) {
+                availableFloors = [0];
+                console.log("No floors detected, defaulting to floor 0");
+            }
+
+            // Set initial current floor to the first available floor
+            currentFloor = availableFloors[0];
+        } else {
+            // Default if no rooms
+            availableFloors = [0];
+            currentFloor = 0;
+            console.warn("No rooms found in blueprint data");
         }
+
+        // Update info panel
+        const statsDiv = document.getElementById('blueprint-stats');
+        statsDiv.innerHTML = `
+            <p>Rooms: ${blueprintData.rooms ? blueprintData.rooms.length : 0}</p>
+            <p>Walls: ${blueprintData.walls ? blueprintData.walls.length : 0}</p>
+            <p>Objects: ${blueprintData.objects ? blueprintData.objects.length : 0}</p>
+            <p>Floors: ${availableFloors.length}</p>
+            <p><em>Click on objects for more info</em></p>
+        `;
+
+        // Set up floor controls
+        setupFloorControls();
+        updateFloorDisplay();
 
         // Set up Three.js scene
         const scene = new THREE.Scene();
@@ -379,6 +451,73 @@
 
         // Main rendering function
         renderBlueprint();
+
+        // Handle window resize
+        window.addEventListener('resize', onWindowResize, false);
+        function onWindowResize(){
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Mouse event handlers for object selection
+        document.addEventListener('mousemove', onDocumentMouseMove, false);
+        document.addEventListener('mousedown', onDocumentMouseDown, false);
+
+        function onDocumentMouseMove(event) {
+            // Calculate mouse position in normalized device coordinates
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            // Update the picking ray with the camera and mouse position
+            raycaster.setFromCamera(mouse, camera);
+
+            // Calculate objects intersecting the picking ray
+            const intersects = raycaster.intersectObjects(meshes.objects.concat(meshes.rooms));
+
+            if (intersects.length > 0) {
+                document.body.style.cursor = 'pointer';
+            } else {
+                document.body.style.cursor = 'default';
+            }
+        }
+
+        function onDocumentMouseDown(event) {
+            // Calculate mouse position in normalized device coordinates
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            // Update the picking ray with the camera and mouse position
+            raycaster.setFromCamera(mouse, camera);
+
+            // Calculate objects intersecting the picking ray
+            const intersects = raycaster.intersectObjects(meshes.objects.concat(meshes.rooms));
+
+            if (intersects.length > 0) {
+                const selectedMesh = intersects[0].object;
+
+                // Reset previous selection
+                if (selectedObject) {
+                    selectedObject.material.emissive.setHex(0x000000);
+                }
+
+                // Highlight selected object
+                selectedObject = selectedMesh;
+                selectedObject.material.emissive.setHex(0x333333);
+
+                // Show object info
+                showObjectInfo(selectedObject);
+            } else {
+                // Hide object info when clicking outside
+                hideObjectInfo();
+
+                // Reset previous selection
+                if (selectedObject) {
+                    selectedObject.material.emissive.setHex(0x000000);
+                    selectedObject = null;
+                }
+            }
+        }
 
         // Setup floor control buttons
         function setupFloorControls() {
@@ -559,6 +698,372 @@
             meshes.labels = [];
         }
 
+        // Create a text label sprite
+        function createTextLabel(text, x, y, z, userData) {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = 256;
+            canvas.height = 128;
+
+            // Draw background
+            context.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw text
+            context.font = 'Bold 24px Arial';
+            context.fillStyle = 'white';
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(text, canvas.width/2, canvas.height/2);
+
+            // Create sprite texture
+            const texture = new THREE.Texture(canvas);
+            texture.needsUpdate = true;
+
+            const spriteMaterial = new THREE.SpriteMaterial({
+                map: texture,
+                transparent: true
+            });
+
+            const sprite = new THREE.Sprite(spriteMaterial);
+            sprite.position.set(x, y, z);
+            sprite.scale.set(4, 2, 1);
+            sprite.userData = userData;
+
+            scene.add(sprite);
+            meshes.labels.push(sprite);
+
+            return sprite;
+        }
+
+        // Render rooms based on their geometry
+        function renderRooms(rooms) {
+            if (!rooms || !rooms.length) return;
+
+            rooms.forEach(room => {
+                try {
+                    if (!room.shape || !room.shape.points || room.shape.points.length < 3) {
+                        console.warn(`Room ${room.name || 'unnamed'} has invalid geometry`);
+                        return;
+                    }
+
+                    // Create room shape
+                    const shape = new THREE.Shape();
+                    const points = room.shape.points;
+
+                    // Start at the first point
+                    shape.moveTo(points[0].x, points[0].y);
+
+                    // Add lines to all other points
+                    for (let i = 1; i < points.length; i++) {
+                        shape.lineTo(points[i].x, points[i].y);
+                    }
+
+                    // Close the shape
+                    shape.lineTo(points[0].x, points[0].y);
+
+                    // Create extruded geometry for walls
+                    const height = room.dimensions?.height || 2.5; // Default 2.5m ceiling height
+                    const extrudeSettings = {
+                        steps: 1,
+                        depth: height,
+                        bevelEnabled: false
+                    };
+
+                    const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+                    geometry.rotateX(-Math.PI / 2); // Rotate to be vertical
+                    geometry.translate(0, 0, 0); // Position at floor level
+
+                    // Create room mesh
+                    const material = getRoomMaterial(room);
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.castShadow = true;
+                    mesh.receiveShadow = true;
+                    mesh.userData = room; // Attach room data to the mesh for interaction
+
+                    // Calculate floor offset based on current floor
+                    const floorOffset = room.floor ? Number(room.floor) * 3.5 : 0; // 3.5m per floor
+                    mesh.position.y = floorOffset;
+
+                    scene.add(mesh);
+                    meshes.rooms.push(mesh);
+                } catch (e) {
+                    console.error(`Error rendering room ${room.name || 'unnamed'}:`, e);
+                }
+            });
+        }
+
+        // Render walls based on wall data
+        function renderWalls(walls) {
+            if (!walls || !walls.length) return;
+
+            walls.forEach(wall => {
+                try {
+                    if (!wall.start || !wall.end) {
+                        console.warn('Wall has invalid geometry', wall);
+                        return;
+                    }
+
+                    // Create wall geometry
+                    const start = wall.start;
+                    const end = wall.end;
+
+                    // Calculate wall dimensions
+                    const length = Math.sqrt(
+                        Math.pow(end.x - start.x, 2) +
+                        Math.pow(end.z - start.z, 2)
+                    );
+
+                    const height = wall.height || 2.5;  // Default 2.5m wall height
+                    const thickness = wall.thickness || 0.15;  // Default 15cm thickness
+
+                    // Create box geometry
+                    const geometry = new THREE.BoxGeometry(length, height, thickness);
+
+                    // Calculate wall angle and position
+                    const angle = Math.atan2(end.z - start.z, end.x - start.x);
+                    const centerX = (start.x + end.x) / 2;
+                    const centerZ = (start.z + end.z) / 2;
+
+                    // Create wall mesh
+                    const material = getWallMaterial();
+                    const mesh = new THREE.Mesh(geometry, material);
+
+                    // Position and rotate wall
+                    mesh.position.set(centerX, height / 2, centerZ);
+                    mesh.rotation.y = angle;
+                    mesh.castShadow = true;
+                    mesh.receiveShadow = true;
+                    mesh.userData = wall;
+
+                    // Calculate floor offset based on current floor
+                    const floorOffset = wall.floor ? Number(wall.floor) * 3.5 : 0; // 3.5m per floor
+                    mesh.position.y += floorOffset;
+
+                    scene.add(mesh);
+                    meshes.walls.push(mesh);
+                } catch (e) {
+                    console.error('Error rendering wall:', e);
+                }
+            });
+        }
+
+        // Render furniture and other objects
+        function renderObjects(objects) {
+            if (!objects || !objects.length) return;
+
+            objects.forEach(object => {
+                try {
+                    if (!object.position) {
+                        console.warn('Object has invalid position', object);
+                        return;
+                    }
+
+                    // Get object dimensions (defaults if not specified)
+                    const width = object.dimensions?.width || 1.0;
+                    const height = object.dimensions?.height || 0.5;
+                    const depth = object.dimensions?.depth || 1.0;
+
+                    // Create object geometry based on type
+                    let geometry;
+
+                    switch (object.type?.toLowerCase()) {
+                        case 'sofa':
+                        case 'bed':
+                        case 'table':
+                            // Rounded box for furniture
+                            geometry = new THREE.BoxGeometry(width, height, depth);
+                            break;
+                        case 'chair':
+                        case 'stool':
+                            // Small cube for chairs
+                            geometry = new THREE.BoxGeometry(width, height, depth);
+                            break;
+                        case 'lamp':
+                        case 'light':
+                            // Sphere for lamps
+                            geometry = new THREE.SphereGeometry(width / 2, 16, 16);
+                            break;
+                        default:
+                            // Default to box
+                            geometry = new THREE.BoxGeometry(width, height, depth);
+                    }
+
+                    // Create object mesh
+                    const material = getObjectMaterial(object.type);
+                    const mesh = new THREE.Mesh(geometry, material);
+
+                    // Position object
+                    mesh.position.set(
+                        object.position.x,
+                        (height / 2) + (object.position.y || 0),
+                        object.position.z
+                    );
+
+                    // Apply rotation if specified
+                    if (object.rotation) {
+                        mesh.rotation.y = object.rotation.y || 0;
+                    }
+
+                    mesh.castShadow = true;
+                    mesh.receiveShadow = true;
+                    mesh.userData = object;
+
+                    // Calculate floor offset based on room's floor
+                    if (object.room_id && blueprintData.rooms) {
+                        const room = blueprintData.rooms.find(r => r.id === object.room_id);
+                        if (room && room.floor !== undefined) {
+                            const floorOffset = Number(room.floor) * 3.5; // 3.5m per floor
+                            mesh.position.y += floorOffset;
+                        }
+                    }
+
+                    scene.add(mesh);
+                    meshes.objects.push(mesh);
+                } catch (e) {
+                    console.error(`Error rendering object ${object.name || object.type || 'unnamed'}:`, e);
+                }
+            });
+        }
+
+        // Create and add room labels
+        function addRoomLabels(rooms) {
+            // Remove previous labels
+            meshes.labels.forEach(label => {
+                scene.remove(label);
+            });
+            meshes.labels = [];
+
+            // Skip if labels are disabled
+            if (!showLabels) return;
+
+            rooms.forEach(room => {
+                if (!room.name || !room.center) return;
+
+                // Get room center
+                const center = room.center;
+
+                // Create text sprite for the label
+                const labelHeight = room.dimensions?.height || 2.5;
+                const floorOffset = room.floor ? Number(room.floor) * 3.5 : 0; // 3.5m per floor
+                createTextLabel(room.name, center.x, labelHeight + 0.3 + floorOffset, center.z, room);
+            });
+        }
+
+        // Update visibility of room labels
+        function updateRoomLabels() {
+            // Show/hide existing labels
+            meshes.labels.forEach(label => {
+                label.visible = showLabels;
+            });
+
+            // If labels are now visible but none exist, add them
+            if (showLabels && meshes.labels.length === 0) {
+                const roomsToRender = blueprintData.rooms.filter(room => {
+                    if (currentFloor === 'all') return true;
+                    return Number(room.floor) === Number(currentFloor);
+                });
+                addRoomLabels(roomsToRender);
+            }
+        }
+
+        // Show object information panel
+        function showObjectInfo(object) {
+            const infoPanel = document.getElementById('object-info');
+            if (!infoPanel || !object || !object.userData) return;
+
+            const data = object.userData;
+            let html = '';
+
+            if (data.type) {
+                html += `<h3>${capitalizeFirstLetter(data.type)}</h3>`;
+            }
+
+            if (data.name) {
+                html += `<p><strong>Name:</strong> ${data.name}</p>`;
+            }
+
+            if (data.dimensions) {
+                const dims = data.dimensions;
+                if (unitSystem === 'metric') {
+                    html += `<p><strong>Dimensions:</strong><br>`;
+                    if (dims.width) html += `Width: ${dims.width.toFixed(2)} m<br>`;
+                    if (dims.length || dims.depth) html += `Length: ${(dims.length || dims.depth).toFixed(2)} m<br>`;
+                    if (dims.height) html += `Height: ${dims.height.toFixed(2)} m<br>`;
+                    if (dims.area) html += `Area: ${dims.area.toFixed(2)} m²`;
+                    html += `</p>`;
+                } else {
+                    html += `<p><strong>Dimensions:</strong><br>`;
+                    if (dims.width) {
+                        const feet = metersToFeet(dims.width);
+                        html += `Width: ${formatDistance(dims.width)}<br>`;
+                    }
+                    if (dims.length || dims.depth) {
+                        const length = dims.length || dims.depth;
+                        html += `Length: ${formatDistance(length)}<br>`;
+                    }
+                    if (dims.height) {
+                        html += `Height: ${formatDistance(dims.height)}<br>`;
+                    }
+                    if (dims.area) {
+                        html += `Area: ${formatArea(dims.area)}`;
+                    }
+                    html += `</p>`;
+                }
+            }
+
+            // Show room info if it's a room
+            if (data.room_type || data.room_category) {
+                html += `<p><strong>Room Type:</strong> ${data.room_type || data.room_category}</p>`;
+            }
+
+            // If no data could be found, display a simple message
+            if (html === '') {
+                html = '<p>No additional information available</p>';
+            }
+
+            infoPanel.innerHTML = html;
+            infoPanel.style.display = 'block';
+        }
+
+        // Hide object information panel
+        function hideObjectInfo() {
+            const infoPanel = document.getElementById('object-info');
+            if (infoPanel) {
+                infoPanel.style.display = 'none';
+            }
+        }
+
+        // Helper function to capitalize first letter
+        function capitalizeFirstLetter(string) {
+            if (!string) return '';
+            return string.charAt(0).toUpperCase() + string.slice(1);
+        }
+
+        // Display error message
+        function showError(message) {
+            const errorDiv = document.getElementById('error-message');
+            if (errorDiv) {
+                errorDiv.textContent = message;
+                errorDiv.style.display = 'block';
+
+                // Hide after 5 seconds
+                setTimeout(() => {
+                    errorDiv.style.display = 'none';
+                }, 5000);
+            }
+        }
+
+        // Main render loop
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // Start animation loop
+        animate();
+
         // Render the entire blueprint based on current floor selection
         function renderBlueprint() {
             clearScene();
@@ -612,394 +1117,6 @@
             if (showLabels) {
                 addRoomLabels(roomsToRender);
             }
-        }
-
-        // Create and add room labels
-        function addRoomLabels(rooms) {
-            // Remove previous labels
-            meshes.labels.forEach(label => {
-                scene.remove(label);
-            });
-            meshes.labels = [];
-
-            // Skip if labels are disabled
-            if (!showLabels) return;
-
-            rooms.forEach(room => {
-                if (!room.name || !room.center) return;
-
-                // Get room center
-                const center = room.center;
-
-                // Create text sprite for the label
-                const labelHeight = room.dimensions?.height || 2.5;
-                createTextLabel(room.name, center.x, labelHeight + 0.3, center.y, room);
-            });
-        }
-
-        // Update visibility of room labels
-        function updateRoomLabels() {
-            // Show/hide existing labels
-            meshes.labels.forEach(label => {
-                label.visible = showLabels;
-            });
-
-            // If labels are now visible but none exist, add them
-            if (showLabels && meshes.labels.length === 0) {
-                const roomsToRender = blueprintData.rooms.filter(room => {
-                    if (currentFloor === 'all') return true;
-                    return Number(room.floor) === Number(currentFloor);
-                });
-                addRoomLabels(roomsToRender);
-            }
-        }
-
-        // Create a text label sprite
-        function createTextLabel(text, x, y, z, userData) {
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
-            canvas.width = 256;
-            canvas.height = 128;
-
-            // Draw background
-            context.fillStyle = 'rgba(0, 0, 0, 0.7)';
-            context.fillRect(0, 0, canvas.width, canvas.height);
-
-            // Draw text
-            context.font = 'Bold 24px Arial';
-            context.fillStyle = 'white';
-            context.textAlign = 'center';
-            context.textBaseline = 'middle';
-            context.fillText(text, canvas.width/2, canvas.height/2);
-
-            // Create sprite texture
-            const texture = new THREE.CanvasTexture(canvas);
-            const spriteMaterial = new THREE.SpriteMaterial({
-                map: texture,
-                transparent: true
-            });
-
-            const sprite = new THREE.Sprite(spriteMaterial);
-            sprite.position.set(x, y, z);
-            sprite.scale.set(2, 1, 1); // Adjust scale to make text readable
-
-            // Store the room data for interaction
-            sprite.userData = { type: 'label', data: userData };
-
-            scene.add(sprite);
-            meshes.labels.push(sprite);
-
-            return sprite;
-        }
-
-        // Render rooms as 3D boxes
-        function renderRooms(rooms) {
-            rooms.forEach(room => {
-                if (!room.dimensions || !room.bounds) {
-                    console.warn("Room missing dimensions or bounds:", room);
-                    return;
-                }
-
-                const width = room.dimensions.width;
-                const height = room.dimensions.height || 2.5;
-                const length = room.dimensions.length;
-                const floor = Number(room.floor || 0); // Convert to number for consistent comparisons
-
-                // Create exterior (transparent) and floor/ceiling (solid)
-                const mainGeometry = new THREE.BoxGeometry(width, height, length);
-                const mainMaterial = getRoomMaterial(room);
-
-                const floorGeometry = new THREE.BoxGeometry(width, 0.05, length);
-                const floorMaterial = new THREE.MeshPhongMaterial({
-                    color: COLORS.FLOOR,
-                    transparent: false,
-                    opacity: 1.0
-                });
-
-                const ceilingGeometry = new THREE.BoxGeometry(width, 0.05, length);
-                const ceilingMaterial = new THREE.MeshPhongMaterial({
-                    color: COLORS.CEILING,
-                    transparent: false,
-                    opacity: 1.0
-                });
-
-                // Create the meshes
-                const roomMesh = new THREE.Mesh(mainGeometry, mainMaterial);
-                const floorMesh = new THREE.Mesh(floorGeometry, floorMaterial);
-                const ceilingMesh = new THREE.Mesh(ceilingGeometry, ceilingMaterial);
-
-                // Store room data on the mesh for selection
-                roomMesh.userData = { type: 'room', data: room };
-
-                // Position at the room's center
-                // Calculate center from bounds
-                const centerX = (room.bounds.min.x + room.bounds.max.x) / 2;
-                const centerY = (room.bounds.min.y + room.bounds.max.y) / 2;
-
-                // Calculate Y position based on floor number
-                const floorHeight = 3.0; // Height between floors in meters
-                const yOffset = floor * floorHeight;
-
-                roomMesh.position.set(centerX, height/2 + yOffset, centerY);
-                floorMesh.position.set(centerX, 0 + yOffset, centerY);
-                ceilingMesh.position.set(centerX, height + yOffset, centerY);
-
-                scene.add(roomMesh);
-                scene.add(floorMesh);
-                scene.add(ceilingMesh);
-
-                meshes.rooms.push(roomMesh);
-                meshes.rooms.push(floorMesh);
-                meshes.rooms.push(ceilingMesh);
-            });
-        }
-
-        // Render walls
-        function renderWalls(walls) {
-            walls.forEach(wall => {
-                const start = wall.start;
-                const end = wall.end;
-                const height = wall.height || 2.5;
-                const thickness = wall.thickness || 0.15;
-
-                // Calculate wall length and orientation
-                const dx = end.x - start.x;
-                const dy = end.y - start.y;
-                const length = Math.sqrt(dx * dx + dy * dy);
-
-                // Create wall geometry with proper thickness
-                const wallGeometry = new THREE.BoxGeometry(length, height, thickness);
-                const wallMaterial = getWallMaterial();
-                const wallMesh = new THREE.Mesh(wallGeometry, wallMaterial);
-
-                // Store wall data on the mesh for selection
-                wallMesh.userData = { type: 'wall', data: wall };
-
-                // Calculate midpoint and rotation
-                const midpointX = (start.x + end.x) / 2;
-                const midpointY = (start.y + end.y) / 2;
-
-                // Rotation angle
-                const angle = Math.atan2(dy, dx);
-
-                // Check if wall belongs to a specific floor
-                let yOffset = 0;
-                if (wall.floor !== undefined) {
-                    const floorHeight = 3.0; // Height between floors in meters
-                    yOffset = Number(wall.floor) * floorHeight;
-                }
-
-                // Position the wall
-                wallMesh.position.set(midpointX, height / 2 + yOffset, midpointY);
-                wallMesh.rotation.y = -angle;
-
-                scene.add(wallMesh);
-                meshes.walls.push(wallMesh);
-            });
-        }
-
-        // Render furniture/objects
-        function renderObjects(objects) {
-            objects.forEach(obj => {
-                if (!obj.dimensions || !obj.position) {
-                    console.warn("Object missing dimensions or position:", obj);
-                    return;
-                }
-
-                const width = obj.dimensions.width;
-                const height = obj.dimensions.height;
-                const length = obj.dimensions.depth || obj.dimensions.length;
-
-                // Find the room this object belongs to
-                const room = blueprintData.rooms.find(r => r.id === obj.room_id);
-                let yOffset = 0;
-                if (room && room.floor !== undefined) {
-                    const floorHeight = 3.0; // Height between floors in meters
-                    yOffset = Number(room.floor) * floorHeight;
-                }
-
-                // Create object based on type
-                let objectGeometry;
-
-                // Special shapes for different furniture types
-                switch(obj.type) {
-                    case 'toilet':
-                        objectGeometry = new THREE.CylinderGeometry(width/3, width/2.5, height, 12);
-                        break;
-                    case 'shower':
-                        objectGeometry = new THREE.BoxGeometry(width, height, length);
-                        break;
-                    case 'bathtub':
-                        objectGeometry = new THREE.BoxGeometry(width, height, length);
-                        // Round the corners slightly
-                        objectGeometry.translate(0, height/4, 0);
-                        break;
-                    case 'sofa':
-                    case 'bed':
-                    case 'king_bed':
-                        objectGeometry = new THREE.BoxGeometry(width, height, length);
-                        // Add a little elevation
-                        objectGeometry.translate(0, height/2, 0);
-                        break;
-                    default:
-                        // Default box shape for most objects
-                        objectGeometry = new THREE.BoxGeometry(width, height, length);
-                        break;
-                }
-
-                const objectMaterial = getObjectMaterial(obj.type);
-                const objectMesh = new THREE.Mesh(objectGeometry, objectMaterial);
-
-                // Store object data on the mesh for selection
-                objectMesh.userData = { type: 'object', data: obj };
-
-                // Position at the object's position
-                const x = obj.position.x;
-                const y = (obj.position.z || height/2) + yOffset;
-                const z = obj.position.y;
-
-                objectMesh.position.set(x, y, z);
-
-                // Apply rotation if specified
-                if (obj.rotation) {
-                    objectMesh.rotation.y = obj.rotation * Math.PI / 180;
-                }
-
-                scene.add(objectMesh);
-                meshes.objects.push(objectMesh);
-            });
-        }
-
-        // Handle object selection with raycaster
-        document.addEventListener('click', onDocumentClick, false);
-
-        function onDocumentClick(event) {
-            // Calculate mouse position in normalized device coordinates (-1 to +1)
-            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-            mouse.y = - (event.clientY / window.innerHeight) * 2 + 1;
-
-            // Update the picking ray with the camera and mouse position
-            raycaster.setFromCamera(mouse, camera);
-
-            // Calculate objects intersecting the picking ray
-            const intersects = raycaster.intersectObjects([...meshes.rooms, ...meshes.walls, ...meshes.objects, ...meshes.labels]);
-
-            // Reset previous selection
-            if (selectedObject) {
-                if (selectedObject.userData.type === 'object') {
-                    selectedObject.material.color.setHex(
-                        COLORS.OBJECT[selectedObject.userData.data.type] || COLORS.OBJECT.default
-                    );
-                } else if (selectedObject.userData.type === 'room') {
-                    selectedObject.material.color.setHex(COLORS.ROOM);
-                } else if (selectedObject.userData.type === 'wall') {
-                    selectedObject.material.color.setHex(COLORS.WALL);
-                }
-                document.getElementById('object-info').style.display = 'none';
-            }
-
-            selectedObject = null;
-
-            // Process new selection
-            if (intersects.length > 0) {
-                selectedObject = intersects[0].object;
-
-                // Check if we clicked on a label
-                if (selectedObject.userData.type === 'label') {
-                    // Find the actual room object instead
-                    const roomData = selectedObject.userData.data;
-                    const roomMesh = meshes.rooms.find(mesh =>
-                        mesh.userData.type === 'room' && mesh.userData.data.id === roomData.id);
-
-                    if (roomMesh) {
-                        selectedObject = roomMesh;
-                    }
-                }
-
-                // Highlight selected object
-                if (selectedObject.userData.type === 'object' ||
-                    selectedObject.userData.type === 'room' ||
-                    selectedObject.userData.type === 'wall') {
-
-                    selectedObject.material.color.setHex(COLORS.SELECTED);
-
-                    // Show info about selected object
-                    showObjectInfo(selectedObject);
-                }
-            }
-        }
-
-        function showObjectInfo(object) {
-            const infoPanel = document.getElementById('object-info');
-            const data = object.userData.data;
-            let html = '';
-
-            if (object.userData.type === 'room') {
-                html = `
-                    <h3>Room: ${data.name || data.id}</h3>
-                    <p>Type: ${data.type || 'Standard'}</p>
-                    <p>Floor: ${data.floor || 'Ground'}</p>
-                    <p>Dimensions: ${formatDistance(data.dimensions.width)} ×
-                                  ${formatDistance(data.dimensions.length)} ×
-                                  ${formatDistance(data.dimensions.height)}</p>
-                    <p>Area: ${formatArea(data.dimensions.width * data.dimensions.length)}</p>
-                `;
-            } else if (object.userData.type === 'object') {
-                html = `
-                    <h3>Object: ${data.type.replace('_', ' ')}</h3>
-                    <p>Room: ${data.room_id}</p>
-                    <p>Size: ${formatDistance(data.dimensions.width)} ×
-                              ${formatDistance(data.dimensions.depth || data.dimensions.length)} ×
-                              ${formatDistance(data.dimensions.height)}</p>
-                    <p>Position: (${formatDistance(data.position.x)},
-                                 ${formatDistance(data.position.y)},
-                                 ${formatDistance(data.position.z || 0)})</p>
-                `;
-            } else if (object.userData.type === 'wall') {
-                html = `
-                    <h3>Wall</h3>
-                    <p>ID: ${data.id}</p>
-                    <p>Height: ${formatDistance(data.height || 2.5)}</p>
-                    <p>Thickness: ${formatDistance(data.thickness || 0.15)}</p>
-                    <p>Length: ${formatDistance(calculateDistance(data.start, data.end))}</p>
-                `;
-            }
-
-            infoPanel.innerHTML = html;
-            infoPanel.style.display = 'block';
-        }
-
-        function calculateDistance(point1, point2) {
-            const dx = point2.x - point1.x;
-            const dy = point2.y - point1.y;
-            return Math.sqrt(dx * dx + dy * dy);
-        }
-
-        // Animation loop
-        function animate() {
-            requestAnimationFrame(animate);
-            controls.update();
-            renderer.render(scene, camera);
-
-            // Update label positions to face camera
-            meshes.labels.forEach(label => {
-                label.quaternion.copy(camera.quaternion);
-            });
-        }
-        animate();
-
-        // Handle window resize
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-
-        function showError(message) {
-            console.error(message);
-            const errorDiv = document.getElementById('error-message');
-            errorDiv.textContent = message;
-            errorDiv.style.display = 'block';
         }
     </script>
 </body>

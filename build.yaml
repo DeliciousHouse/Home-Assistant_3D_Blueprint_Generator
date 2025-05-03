@@ -10,5 +10,5 @@ labels:
   org.opencontainers.image.description: "Generate 3D home blueprints from Bluetooth sensor data"
   org.opencontainers.image.source: "https://github.com/delicioushouse/home-assistant_3d_blueprint_generator"
   org.opencontainers.image.licenses: "MIT"
-  org.opencontainers.image.version: "3.15"
+  org.opencontainers.image.version: "3.16"
   org.opencontainers.image.authors: "brendan3394@gmail.com"

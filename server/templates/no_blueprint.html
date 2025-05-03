@@ -1,21 +1,118 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>No Blueprint Available</title>
+    <title>No Blueprint Available - 3D Blueprint Generator</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
-        h1 { color: #2c3e50; }
-        .container { max-width: 800px; margin: 0 auto; text-align: center; }
-        .button { background: #3498db; color: white; padding: 10px 20px; border-radius: 4px; text-decoration: none; }
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            background-color: #1e1e1e;
+            border-radius: 8px;
+            padding: 30px;
+            max-width: 600px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            border: 1px solid #333;
+            text-align: center;
+        }
+
+        h1 {
+            color: #0078d4;
+            margin-top: 0;
+        }
+
+        .icon {
+            font-size: 72px;
+            margin-bottom: 20px;
+        }
+
+        .message {
+            background-color: #2a2a2a;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border-left: 4px solid #0078d4;
+            text-align: left;
+        }
+
+        .buttons {
+            margin-top: 25px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .btn {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .btn-primary {
+            background-color: #0078d4;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: #0067b8;
+        }
+
+        .btn-secondary {
+            background-color: #3a3a3a;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background-color: #444444;
+        }
+
+        .steps {
+            text-align: left;
+            margin: 20px 0;
+        }
+
+        .steps li {
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
+        <div class="icon">🏠</div>
         <h1>No Blueprint Available</h1>
-        <p>No blueprint has been generated yet. Please generate a blueprint first.</p>
-        <form action="/api/blueprint/generate" method="POST">
-            <button type="submit" class="button">Generate Blueprint</button>
-        </form>
+
+        <div class="message">
+            No 3D blueprint data is currently available for visualization. You need to generate a blueprint first.
+        </div>
+
+        <div class="steps">
+            <h3>To generate a blueprint:</h3>
+            <ol>
+                <li>Return to the main page</li>
+                <li>Upload your floorplan image or provide room data</li>
+                <li>Click on the "Generate Blueprint" button</li>
+                <li>Wait for the processing to complete</li>
+                <li>Once generated, you can return to the visualization</li>
+            </ol>
+        </div>
+
+        <div class="buttons">
+            <a href="/" class="btn btn-primary">Return to Home</a>
+            <a href="javascript:history.back()" class="btn btn-secondary">Go Back</a>
+        </div>
     </div>
 </body>
 </html>

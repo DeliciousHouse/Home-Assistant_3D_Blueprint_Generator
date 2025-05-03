@@ -1,6 +1,6 @@
 # config.yaml
 name: 3D Blueprint Generator
-version: "3.15"
+version: "3.16"
 slug: blueprint_generator
 description: "Generate 3D home blueprints from Bluetooth sensor data"
 arch:
