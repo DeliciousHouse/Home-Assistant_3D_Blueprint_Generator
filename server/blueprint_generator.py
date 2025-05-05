@@ -743,6 +743,20 @@ class BlueprintGenerator:
         logger.info(f"Source area IDs: {list(source_centroids.keys())}")
         logger.info(f"Target area IDs: {list(target_layout.keys())}")
 
+        # Check if either source_centroids or target_layout is empty
+        if not source_centroids or not target_layout:
+            logger.error(f"Cannot calculate transformation: source_centroids empty: {not source_centroids}, target_layout empty: {not target_layout}")
+
+            # Return identity transformation as emergency fallback
+            return {
+                'rotation': np.eye(2),
+                'scale': 1.0,
+                'translation': np.array([0.0, 0.0]),
+                'source_mean': np.array([0.0, 0.0]),
+                'target_mean': np.array([0.0, 0.0]),
+                'is_fallback': True
+            }
+
         # Filter for areas that exist in both source and target
         common_areas = set(source_centroids.keys()) & set(target_layout.keys())
         logger.info(f"Common areas for transformation: {list(common_areas)}")
@@ -751,7 +765,7 @@ class BlueprintGenerator:
             logger.warning(f"Not enough common areas for transformation: {len(common_areas)}")
 
             # IMPROVED FALLBACK MECHANISM
-            if len(source_centroids) > 0:
+            if len(source_centroids) > 0 and len(target_layout) > 0:
                 logger.info("Using improved fallback transformation mechanism")
 
                 # Get first areas from each set for simple translation
@@ -775,8 +789,15 @@ class BlueprintGenerator:
                     'is_fallback': True      # Flag this as a fallback transformation
                 }
             else:
-                logger.error("No source centroids available for transformation")
-                return None
+                logger.error("No source centroids or target layout available for transformation")
+                return {
+                    'rotation': np.eye(2),
+                    'scale': 1.0,
+                    'translation': np.array([0.0, 0.0]),
+                    'source_mean': np.array([0.0, 0.0]) if not source_centroids else np.mean(np.array(list(source_centroids.values())), axis=0),
+                    'target_mean': np.array([0.0, 0.0]) if not target_layout else np.mean(np.array(list(target_layout.values())), axis=0),
+                    'is_fallback': True
+                }
 
         # Extract matching points as numpy arrays for Procrustes analysis
         source_points = np.array([source_centroids[area] for area in common_areas])

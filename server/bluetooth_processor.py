@@ -159,7 +159,7 @@ class BluetoothProcessor:
             self.last_scan_time = start_time
 
             # Get Bluetooth sensors from Home Assistant
-            bt_sensors = self.ha_client.get_bluetooth_sensors()
+            bt_sensors = self.ha_client.get_bluetooth_devices()  # Changed from get_bluetooth_sensors
             logger.info(f"Found {len(bt_sensors)} Bluetooth sensors")
 
             # Get device trackers from Home Assistant
