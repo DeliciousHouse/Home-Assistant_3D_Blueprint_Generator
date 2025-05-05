@@ -1,381 +1,318 @@
 #!/usr/bin/env python3
+"""
+Home Assistant Client Module for 3D Blueprint Generator.
 
-import os
+This module handles communication with the Home Assistant API to retrieve
+devices, areas, and other information needed for blueprint generation.
+"""
+
 import logging
+import os
 import json
-import requests
 import time
+import requests
 from typing import Dict, List, Optional, Union, Any
-from datetime import datetime
+from urllib.parse import urljoin
+import re
+
+# Use the standardized config loader
+try:
+    from .config_loader import load_config
+except ImportError:
+    try:
+        from config_loader import load_config
+    except ImportError:
+        def load_config(path=None):
+            logger = logging.getLogger(__name__)
+            logger.warning("Could not import config_loader. Using empty config.")
+            return {}
 
 logger = logging.getLogger(__name__)
 
-def create_empty_response():
-    """Create an empty response object for graceful degradation"""
-    class EmptyResponse:
-        def __init__(self):
-            self.status_code = 200
-            self.text = "{}"
-
-        def json(self):
-            return {}
-
-    return EmptyResponse()
-
 class HAClient:
-    """Home Assistant API Client for the Blueprint Generator add-on."""
+    """Client for interacting with Home Assistant API."""
 
-    def __init__(self, config_path: Optional[str] = None, token: Optional[str] = None):
-        """Initialize HA client with appropriate authentication token and base URL."""
-        # Use config loader if available
-        try:
-            from .config_loader import load_config
-            self.config = load_config(config_path)
-        except (ImportError, ModuleNotFoundError):
-            self.config = {}
+    _instance = None
 
-        # HA API URL - supervisor path for add-on mode, can be overridden for dev
-        self.base_url = self.config.get('home_assistant', {}).get('url', 'http://supervisor/core')  
+    def __new__(cls, *args, **kwargs):
+        """Create or return the singleton instance."""
+        if cls._instance is None:
+            cls._instance = super(HAClient, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
 
-        # Remove trailing slash if present for consistent URL handling
-        if self.base_url.endswith('/'):
-            self.base_url = self.base_url[:-1]
+    def __init__(self, config_path: Optional[str] = None):
+        """Initialize the Home Assistant client."""
+        # Skip if already initialized
+        if hasattr(self, '_initialized') and self._initialized:
+            return
 
-        # Authentication token priority:
-        # 1. Explicitly passed token parameter
-        # 2. SUPERVISOR_TOKEN environment variable
-        # 3. Token from config file
-        # 4. HASS_TOKEN environment variable (for non-supervisor environments)
-        self.token = token
-        if not self.token:
-            self.token = os.environ.get('SUPERVISOR_TOKEN')
-            if not self.token:
-                self.token = self.config.get('home_assistant', {}).get('token')
-            if not self.token:
-                self.token = os.environ.get('HASS_TOKEN')
+        # Load configuration
+        self.config = load_config(config_path)
+        ha_config = self.config.get('home_assistant', {})
 
-        logger.info(f"Initializing Home Assistant client with URL: {self.base_url}")
-        if self.token:
-            # Don't log the entire token, just first few characters for debugging
-            token_start = self.token[:5] if len(self.token) > 5 else "****"
-            logger.info(f"Authentication token available: True (starts with {token_start}...)")
-        else:
-            logger.warning("No authentication token found. HA API calls will likely fail.")
+        # Base URL and credentials
+        self.base_url = ha_config.get('url', 'http://supervisor/core')
+        self.token = ha_config.get('token', os.environ.get('HA_TOKEN', ''))
 
-        # Test the connection
-        self._test_connection()
+        # API endpoints
+        self.api_url = f"{self.base_url}/api"
 
-    def _test_connection(self) -> bool:
-        """Test the connection to Home Assistant."""
-        if not self.token:
-            logger.error("Cannot test connection without an authentication token")
-            return False
-
-        try:
-            # Try multiple endpoints - Home Assistant Supervisor has specific API paths
-            test_endpoints = [
-                # Default Home Assistant API endpoint that should work in all environments
-                "config",
-                # A common API endpoint that should be available
-                "states",
-                # Fallback endpoint for supervisor mode
-                "states/sun.sun"
-            ]
-
-            success = False
-            for endpoint in test_endpoints:
-                url = f"{self.base_url}/api/{endpoint}"
-
-                headers = {
-                    "Authorization": f"Bearer {self.token}",
-                    "Content-Type": "application/json"
-                }
-
-                logger.debug(f"Testing API connection to {url}")
-                try:
-                    response = requests.get(url, headers=headers, timeout=5)
-
-                    if response.status_code == 200:
-                        logger.info(f"Successfully connected to Home Assistant API using endpoint: {endpoint}")
-                        success = True
-                        break
-                    else:
-                        logger.warning(f"Connection test for endpoint {endpoint} failed with status {response.status_code}")
-                except Exception as e:
-                    logger.warning(f"Connection test for endpoint {endpoint} failed: {str(e)}")
-
-            if not success:
-                logger.error("API connection test failed with all endpoints")
-                # Continue anyway - we don't want to block operation just because the API test failed
-                # For robustness, we'll try to recover during actual API calls
-
-            return success
-
-        except Exception as e:
-            logger.error(f"Failed to connect to Home Assistant API: {str(e)}")
-            return False
-
-    def _authenticated_request(self, endpoint: str, method: str = 'GET',
-                              data: Optional[Dict] = None) -> requests.Response:
-        """Make an authenticated request to the HA API."""
-        if not self.token:
-            raise ValueError("No authentication token available")
-
-        # Ensure endpoint doesn't start with a slash
-        if endpoint.startswith('/'):
-            endpoint = endpoint[1:]
-
-        url = f"{self.base_url}/api/{endpoint}"
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json"
+        # Cache for API responses
+        self._cache = {}
+        self._cache_times = {}
+        self._cache_expiry = {
+            'areas': 300,  # 5 minutes
+            'devices': 60,  # 1 minute
+            'entities': 60,  # 1 minute
+            'states': 10    # 10 seconds
         }
 
+        # Common headers for API requests
+        self._headers = {}
+        if self.token:
+            self._headers['Authorization'] = f"Bearer {self.token}"
+        self._headers['Content-Type'] = 'application/json'
+
+        # Test API connection on initialization
+        self._connection_status = self._test_connection()
+
+        self._initialized = True
+        logger.info(f"Home Assistant client initialized. API connection: {'OK' if self._connection_status else 'FAIL'}")
+
+    def _test_connection(self) -> bool:
+        """Test the connection to Home Assistant API."""
         try:
-            logger.debug(f"Making {method} request to {url}")
-            if method.upper() == 'GET':
-                response = requests.get(url, headers=headers, timeout=10)
-            elif method.upper() == 'POST':
-                response = requests.post(url, headers=headers, json=data, timeout=10)
-            elif method.upper() == 'PUT':
-                response = requests.put(url, headers=headers, json=data, timeout=10)
-            elif method.upper() == 'DELETE':
-                response = requests.delete(url, headers=headers, timeout=10)
+            response = requests.get(f"{self.api_url}/", headers=self._headers, timeout=5)
+            if response.status_code == 200:
+                logger.debug("Successfully connected to Home Assistant API")
+                return True
             else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-
-            # Handle auth errors with more specific information
-            if response.status_code == 401:
-                logger.error(f"Authentication failed (401): Token may be invalid or expired")
-            elif response.status_code == 403:
-                logger.error(f"Authorization failed (403): Token may not have required permissions")
-            elif response.status_code == 404:
-                logger.error(f"API endpoint not found (404): {endpoint}")
-                logger.debug(f"Response text: {response.text[:200]}")
-
-            response.raise_for_status()
-            return response
-        except requests.exceptions.RequestException as e:
-            logger.error(f"API request failed: {e}")
-            # Return empty response for graceful degradation
-            if method.upper() == 'GET':
-                # For GET requests, return empty data instead of raising an exception
-                logger.warning("Returning empty data due to API request failure")
-                return create_empty_response()
-            raise
-
-    def get_states(self, entity_id: Optional[str] = None) -> List[Dict]:
-        """Get entity states from Home Assistant."""
-        try:
-            if entity_id:
-                response = self._authenticated_request(f"states/{entity_id}")
-                return [response.json()]
-            else:
-                response = self._authenticated_request("states")
-                return response.json()
+                logger.warning(f"Failed to connect to Home Assistant API: {response.status_code}")
+                return False
         except Exception as e:
-            logger.error(f"Failed to get states: {str(e)}")
-            return []
+            logger.error(f"Error connecting to Home Assistant API: {e}")
+            return False
+
+    def _get_cached_or_api(self, endpoint: str, cache_key: str, params: Optional[Dict] = None) -> Any:
+        """Get data from cache or API."""
+        current_time = time.time()
+        expiry = self._cache_expiry.get(cache_key, 60)  # Default 60 seconds
+
+        # Check if we have a valid cached response
+        if (cache_key in self._cache and
+            cache_key in self._cache_times and
+            current_time - self._cache_times[cache_key] < expiry):
+            return self._cache[cache_key]
+
+        # Otherwise, make API request
+        try:
+            url = f"{self.api_url}/{endpoint}"
+            response = requests.get(url, headers=self._headers, params=params, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                # Cache the response
+                self._cache[cache_key] = data
+                self._cache_times[cache_key] = current_time
+                return data
+            else:
+                logger.error(f"API request to {endpoint} failed: {response.status_code}")
+                return None
+        except Exception as e:
+            logger.error(f"Error in API request to {endpoint}: {e}")
+            return None
 
     def get_areas(self) -> List[Dict]:
-        """Get areas from Home Assistant."""
-        try:
-            # HA API doesn't have a direct endpoint for areas, so we need to extract from entities
-            areas = []
-            areas_seen = set()
-
-            # Get all entities to look for area_id attributes
-            all_entities = self.get_states()
-
-            # Extract areas from entity attributes
-            for entity in all_entities:
-                area_id = entity.get('attributes', {}).get('area_id')
-                area_name = entity.get('attributes', {}).get('friendly_name')
-
-                if area_id and area_id not in areas_seen:
-                    areas_seen.add(area_id)
-                    areas.append({
-                        'area_id': area_id,
-                        'name': self._get_area_name_for_id(area_id, all_entities) or area_id,
-                        'entities': []
-                    })
-
-            # If we found areas, add entities to them
-            if areas:
-                for entity in all_entities:
-                    area_id = entity.get('attributes', {}).get('area_id')
-                    if area_id:
-                        for area in areas:
-                            if area['area_id'] == area_id:
-                                area['entities'].append(entity.get('entity_id'))
-                                break
-
-            logger.info(f"Extracted {len(areas)} areas from entity attributes")
+        """Retrieve areas from Home Assistant API."""
+        areas = self._get_cached_or_api('areas', 'areas')
+        if areas:
+            logger.info(f"Retrieved {len(areas)} areas from Home Assistant")
             return areas
-
-        except Exception as e:
-            logger.error(f"Failed to get areas: {str(e)}")
+        else:
+            logger.warning("Failed to retrieve areas from Home Assistant")
             return []
 
-    def _get_area_name_for_id(self, area_id: str, all_entities: List[Dict]) -> Optional[str]:
-        """Try to find a friendly name for an area ID from entity attributes."""
-        # First look for entities with matching area_id and have a 'friendly_name'
-        for entity in all_entities:
-            if (entity.get('attributes', {}).get('area_id') == area_id and
-                'friendly_name' in entity.get('attributes', {})):
-                # Extract area name from friendly_name
-                friendly_name = entity.get('attributes', {}).get('friendly_name', '')
+    def get_devices(self) -> List[Dict]:
+        """Retrieve devices from Home Assistant API."""
+        devices = self._get_cached_or_api('devices', 'devices')
+        if devices:
+            logger.info(f"Retrieved {len(devices)} devices from Home Assistant")
+            return devices
+        else:
+            logger.warning("Failed to retrieve devices from Home Assistant")
+            return []
 
-                # Use matching sensor.area_* entity if available
-                if entity.get('entity_id', '').startswith('sensor.area_'):
-                    return friendly_name
+    def get_entities(self, entity_filter: Optional[str] = None) -> List[Dict]:
+        """
+        Retrieve entities from Home Assistant API.
 
-                # Use the first part of friendly name if it contains 'area' or 'room'
-                name_parts = friendly_name.split()
-                if any(area_term in friendly_name.lower() for area_term in ['area', 'room', 'office', 'bedroom', 'kitchen', 'bathroom', 'living']):
-                    for term in ['area', 'room']:
-                        if term in friendly_name.lower():
-                            return friendly_name
+        Args:
+            entity_filter: Optional filter to get specific entity types (e.g., 'device_tracker')
+        """
+        cache_key = f'entities_{entity_filter}' if entity_filter else 'entities'
+        entities = self._get_cached_or_api('states', cache_key)
 
-        # If no good name found, try to derive from area_id
-        if area_id:
-            # Convert area_id to a readable name
-            name = area_id.replace('_', ' ').title()
-            return name
+        if entities:
+            if entity_filter:
+                filtered = [e for e in entities if e.get('entity_id', '').startswith(f"{entity_filter}.")]
+                logger.info(f"Retrieved {len(filtered)} {entity_filter} entities from Home Assistant")
+                return filtered
+            else:
+                logger.info(f"Retrieved {len(entities)} entities from Home Assistant")
+                return entities
+        else:
+            logger.warning(f"Failed to retrieve {'filtered ' if entity_filter else ''}entities from Home Assistant")
+            return []
 
+    def get_entity_registry(self) -> List[Dict]:
+        """Retrieve entity registry from Home Assistant API."""
+        registry = self._get_cached_or_api('config/entity_registry', 'entity_registry')
+        if registry:
+            logger.info(f"Retrieved entity registry with {len(registry)} entries")
+            return registry
+        else:
+            logger.warning("Failed to retrieve entity registry")
+            return []
+
+    def get_device_info(self, device_id: str) -> Optional[Dict]:
+        """
+        Get detailed information about a specific device.
+
+        Args:
+            device_id: The device ID to look up
+
+        Returns:
+            Device information dictionary or None if not found
+        """
+        # Try to find device in entity registry first
+        entity_registry = self.get_entity_registry()
+        for entity in entity_registry:
+            if entity.get('entity_id') == f'device_tracker.{device_id}' or \
+               entity.get('unique_id') == device_id:
+                device_info = {
+                    'id': entity.get('id'),
+                    'entity_id': entity.get('entity_id'),
+                    'name': entity.get('name'),
+                    'area_id': entity.get('area_id'),
+                    'device_id': entity.get('device_id')
+                }
+                return device_info
+
+        # If not found, try device registry
+        devices = self.get_devices()
+        for device in devices:
+            if device.get('id') == device_id or \
+               device.get('name', '').lower() == device_id.lower():
+                return device
+
+        logger.debug(f"No device info found for {device_id}")
         return None
 
     def get_device_trackers(self) -> List[Dict]:
-        """Get device tracker entities from Home Assistant."""
-        try:
-            all_states = self.get_states()
-            trackers = [entity for entity in all_states if entity.get('entity_id', '').startswith('device_tracker.')]
-            logger.info(f"Found {len(trackers)} device trackers")
-            return trackers
-        except Exception as e:
-            logger.error(f"Failed to get device trackers: {str(e)}")
-            return []
+        """Get all device trackers from Home Assistant."""
+        return self.get_entities('device_tracker')
+
+    def get_bluetooth_devices(self) -> List[Dict]:
+        """Get all Bluetooth-related entities from Home Assistant."""
+        all_entities = self.get_entities()
+        bluetooth_entities = []
+
+        # Pattern to match Bluetooth-related entities
+        ble_patterns = [
+            r'_ble_',
+            r'bluetooth_',
+            r'ble_',
+            r'_bt_',
+            r'_rssi$',
+            r'_distance_',
+            r'proximity_'
+        ]
+
+        for entity in all_entities:
+            entity_id = entity.get('entity_id', '')
+            for pattern in ble_patterns:
+                if re.search(pattern, entity_id, re.IGNORECASE):
+                    bluetooth_entities.append(entity)
+                    break
+
+        logger.info(f"Found {len(bluetooth_entities)} Bluetooth-related entities")
+        return bluetooth_entities
 
     def get_distance_sensors(self) -> List[Dict]:
-        """Get distance sensor entities from Home Assistant."""
-        try:
-            all_states = self.get_states()
+        """Get all distance-related sensors from Home Assistant."""
+        all_entities = self.get_entities()
+        distance_sensors = []
 
-            # Look for entities that have distance in their name or attributes
-            distance_sensors = []
-            for entity in all_states:
-                entity_id = entity.get('entity_id', '')
+        # Pattern to match distance-related entities
+        distance_patterns = [
+            r'_distance_',
+            r'_dist_',
+            r'_range_',
+            r'_proximity_',
+            r'_meters$'
+        ]
 
-                # Check if it's a sensor
-                if not entity_id.startswith('sensor.'):
-                    continue
+        for entity in all_entities:
+            entity_id = entity.get('entity_id', '')
+            if entity_id.startswith('sensor.'):
+                for pattern in distance_patterns:
+                    if re.search(pattern, entity_id, re.IGNORECASE):
+                        distance_sensors.append(entity)
+                        break
 
-                # Check if it's a distance sensor by name
-                if any(term in entity_id.lower() for term in ['distance', 'range', 'proximity']):
-                    distance_sensors.append(entity)
-                    continue
+        logger.info(f"Found {len(distance_sensors)} distance-related sensors")
+        return distance_sensors
 
-                # Check if it has a unit of measurement related to distance
-                unit = entity.get('attributes', {}).get('unit_of_measurement', '')
-                if unit in ['m', 'cm', 'in', 'ft', 'mm']:
-                    distance_sensors.append(entity)
-                    continue
+    def get_rssi_sensors(self) -> List[Dict]:
+        """Get all RSSI-related sensors from Home Assistant."""
+        all_entities = self.get_entities()
+        rssi_sensors = []
 
-                # Check if it's a BLE-related sensor
-                if 'ble' in entity_id.lower() and not any(term in entity_id.lower() for term in
-                                                        ['battery', 'humidity', 'temperature', 'pressure']):
-                    distance_sensors.append(entity)
+        # Pattern to match RSSI-related entities
+        rssi_patterns = [
+            r'_rssi',
+            r'_signal_strength',
+            r'_signal$'
+        ]
 
-            logger.info(f"Found {len(distance_sensors)} distance sensors")
-            return distance_sensors
-        except Exception as e:
-            logger.error(f"Failed to get distance sensors: {str(e)}")
-            return []
+        for entity in all_entities:
+            entity_id = entity.get('entity_id', '')
+            if entity_id.startswith('sensor.'):
+                for pattern in rssi_patterns:
+                    if re.search(pattern, entity_id, re.IGNORECASE):
+                        rssi_sensors.append(entity)
+                        break
 
-    def get_entities_by_type(self, domain: str) -> List[Dict]:
-        """Get entities of a specific domain from Home Assistant."""
-        try:
-            all_states = self.get_states()
-            entities = [entity for entity in all_states if entity.get('entity_id', '').startswith(f"{domain}.")]
-            return entities
-        except Exception as e:
-            logger.error(f"Failed to get {domain} entities: {str(e)}")
-            return []
+        logger.info(f"Found {len(rssi_sensors)} RSSI-related sensors")
+        return rssi_sensors
 
-    def get_all_lights(self) -> List[Dict]:
-        """Get all light entities from Home Assistant with their area assignments."""
-        return self.get_entities_by_type('light')
+    def get_area_entities(self, area_id: str) -> List[Dict]:
+        """
+        Get all entities associated with a specific area.
 
-    def get_all_binary_sensors(self) -> List[Dict]:
-        """Get all binary sensor entities from Home Assistant."""
-        return self.get_entities_by_type('binary_sensor')
+        Args:
+            area_id: The area ID to filter by
 
-    def get_beacon_devices(self) -> List[Dict]:
-        """Get beacon/tag/tracker device information."""
-        try:
-            # Check for ESPresense or BLE monitor sensors
-            all_states = self.get_states()
-            beacon_devices = []
+        Returns:
+            List of entities in the specified area
+        """
+        entity_registry = self.get_entity_registry()
+        area_entities = []
 
-            for entity in all_states:
-                entity_id = entity.get('entity_id', '')
+        for entity in entity_registry:
+            if entity.get('area_id') == area_id:
+                # Get the current state of this entity if available
+                entities = self.get_entities()
+                for e in entities:
+                    if e.get('entity_id') == entity.get('entity_id'):
+                        area_entities.append(e)
+                        break
 
-                # Look for ESPresense sensors
-                if entity_id.startswith('sensor.') and any(term in entity_id.lower() for term in
-                                                         ['espresense', 'ble_tracker', 'beacon', 'tag']):
-                    beacon_devices.append(entity)
+        logger.info(f"Found {len(area_entities)} entities in area {area_id}")
+        return area_entities
 
-            logger.info(f"Found {len(beacon_devices)} beacon devices")
-            return beacon_devices
-        except Exception as e:
-            logger.error(f"Failed to get beacon devices: {str(e)}")
-            return []
-
-    def get_entities_by_area(self, area_id: str) -> List[Dict]:
-        """Get all entities assigned to a specific area."""
-        try:
-            all_states = self.get_states()
-            area_entities = []
-
-            for entity in all_states:
-                if entity.get('attributes', {}).get('area_id') == area_id:
-                    area_entities.append(entity)
-
-            return area_entities
-        except Exception as e:
-            logger.error(f"Failed to get entities for area {area_id}: {str(e)}")
-            return []
-
-    def get_bluetooth_sensors(self) -> List[Dict]:
-        """Get Bluetooth sensor entities from Home Assistant."""
-        try:
-            all_states = self.get_states()
-            bluetooth_sensors = []
-
-            for entity in all_states:
-                entity_id = entity.get('entity_id', '')
-
-                # Look for BLE, Bluetooth sensors, beacons, ESPresense
-                if any(term in entity_id.lower() for term in ['ble', 'bluetooth', 'beacon', 'espresense', 'presence']):
-                    # Filter out non-distance related sensors
-                    if not any(term in entity_id.lower() for term in ['battery', 'humidity', 'temperature', 'pressure']):
-                        bluetooth_sensors.append(entity)
-
-            logger.info(f"Found {len(bluetooth_sensors)} Bluetooth sensors")
-            return bluetooth_sensors
-        except Exception as e:
-            logger.error(f"Failed to get Bluetooth sensors: {str(e)}")
-            return []
-
-# Singleton instance of HAClient
-_ha_client_instance = None
-
+# Helper function to get a properly initialized HAClient
 def get_ha_client() -> HAClient:
-    """
-    Get or create a singleton instance of HAClient.
-    This ensures we're using the same client throughout the application.
-    """
-    global _ha_client_instance
-    if _ha_client_instance is None:
-        _ha_client_instance = HAClient()
-    return _ha_client_instance
+    """Get an initialized Home Assistant client instance."""
+    return HAClient()

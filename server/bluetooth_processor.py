@@ -121,6 +121,11 @@ class BluetoothProcessor:
         self.seen_devices = set()
         self.seen_scanners = set()
 
+        # Cache for HA areas to avoid repeated API calls
+        self._area_cache = None
+        self._area_cache_time = None
+        self._area_cache_expiry = 300  # Cache areas for 5 minutes
+
         # Regular expression for extracting device and scanner IDs from sensor names
         self.distance_sensor_pattern = re.compile(r'(\w+)_distance_(\w+)')
         # Pattern to extract device ID from entity ID
@@ -376,12 +381,42 @@ class BluetoothProcessor:
         Returns number of area predictions logged.
         """
         areas_logged = 0
+        # Track devices for which we've made predictions
+        devices_processed = set()
 
-        # Create a mapping of reference_id to area_id
+        # Log current attempt for debugging
+        logger.info("Starting area prediction process")
+
+        # Get all available areas from Home Assistant (with caching)
+        areas = self._get_areas_with_cache()
+
+        if not areas:
+            logger.error("Failed to retrieve areas from Home Assistant")
+            return 0
+
+        logger.info(f"Found {len(areas)} areas in Home Assistant")
+        for area in areas:
+            logger.debug(f"Available area: {area.get('area_id')} - {area.get('name', '')}")
+
+        # Create mappings to help with area prediction
         ref_to_area = {}
+        area_id_to_name = {}
+        area_name_to_id = {}
+
+        # Build reference-to-area mapping
         for ref_id, ref_data in reference_positions.items():
-            if 'area_id' in ref_data:
+            if 'area_id' in ref_data and ref_data['area_id']:
                 ref_to_area[ref_id] = ref_data['area_id']
+
+        # Build area name mappings
+        for area in areas:
+            area_id = area.get('area_id')
+            area_name = area.get('name', '').lower()
+            if area_id and area_name:
+                area_id_to_name[area_id] = area_name
+                area_name_to_id[area_name] = area_id
+                # Also add version with underscores instead of spaces
+                area_name_to_id[area_name.replace(' ', '_')] = area_id
 
         # Get recent distance measurements
         recent_distances = get_recent_distances(
@@ -398,8 +433,7 @@ class BluetoothProcessor:
 
         logger.debug(f"Processing area predictions for {len(distances_by_device)} devices")
 
-        # Method 1: Predict areas based on closest reference point (with known area)
-        devices_processed = set()
+        # METHOD 1: Predict areas based on closest reference point (with known area)
         for device_id, measurements in distances_by_device.items():
             # Skip non-meaningful device IDs that are probably scanners themselves
             if any(pattern in device_id.lower() for pattern in ['ble_', 'bt_', 'beacon_', 'rssi_', 'scanner_']):
@@ -421,89 +455,144 @@ class BluetoothProcessor:
             # If we found a close scanner that has an area assigned
             if closest_scanner and closest_scanner in ref_to_area:
                 area_id = ref_to_area[closest_scanner]
-                logger.debug(f"Device {device_id} is closest to scanner {closest_scanner} in area {area_id}")
+                area_name = area_id_to_name.get(area_id, 'unknown')
+                logger.info(f"Device {device_id} is closest to scanner {closest_scanner} in area {area_id} ({area_name})")
 
                 # Save area observation
                 if save_area_observation(device_id, area_id):
                     areas_logged += 1
                     devices_processed.add(device_id)
 
-        # Method 2: Extract areas directly from device trackers
-        for tracker in device_trackers:
-            entity_id = tracker.get('entity_id', '')
-            if not entity_id.startswith('device_tracker.'):
-                continue
+        # METHOD 2: Extract areas directly from device trackers
+        if device_trackers:
+            logger.info(f"Checking {len(device_trackers)} device trackers for area information")
+            for tracker in device_trackers:
+                entity_id = tracker.get('entity_id', '')
+                if not entity_id.startswith('device_tracker.'):
+                    continue
 
-            device_id = entity_id.replace('device_tracker.', '')
+                device_id = entity_id.replace('device_tracker.', '')
 
-            # Don't process the same device twice
-            if device_id in devices_processed:
-                continue
-
-            attributes = tracker.get('attributes', {})
-
-            # Get area ID if present
-            area_id = attributes.get('area_id')
-
-            if area_id:
-                logger.debug(f"Device {device_id} has area_id {area_id} in tracker attributes")
-                # Save area observation
-                success = save_area_observation(device_id, area_id)
-                if success:
-                    areas_logged += 1
-                    devices_processed.add(device_id)
-
-        # If no areas logged but we have devices, try to derive areas from general patterns in entity IDs
-        if areas_logged == 0 and distances_by_device:
-            logger.warning("No areas directly determined from scanners or device attributes. Attempting heuristic mapping...")
-
-            # Method 3: Try to derive areas from entity naming patterns
-            assigned_count = 0
-            from .ha_client import HAClient
-
-            # Get the list of available areas from Home Assistant
-            ha_client = HAClient()
-            areas = ha_client.get_areas()
-            area_names = {area.get('area_id'): area.get('name', '').lower() for area in areas}
-
-            for device_id in distances_by_device.keys():
+                # Don't process the same device twice
                 if device_id in devices_processed:
                     continue
 
-                # Try to map a device to an area based on name matching
+                attributes = tracker.get('attributes', {})
+
+                # Get area ID if present
+                area_id = attributes.get('area_id')
+
+                if area_id:
+                    area_name = area_id_to_name.get(area_id, 'unknown')
+                    logger.info(f"Device {device_id} has area_id {area_id} ({area_name}) in tracker attributes")
+
+                    # Save area observation
+                    success = save_area_observation(device_id, area_id)
+                    if success:
+                        areas_logged += 1
+                        devices_processed.add(device_id)
+        else:
+            logger.warning("No device trackers available for area prediction")
+
+        # METHOD 3: Try to derive areas from entity naming patterns
+        # If we still have devices without areas, try to match based on names
+        remaining_devices = set(distances_by_device.keys()) - devices_processed
+        if remaining_devices:
+            logger.info(f"Attempting to match {len(remaining_devices)} remaining devices to areas using naming patterns")
+            assigned_count = 0
+
+            for device_id in remaining_devices:
+                # Get the device name in lowercase for matching
                 device_name = device_id.lower()
-                matched_area = None
+                matched_area_id = None
 
-                # Look for area name matches in the device ID
-                for area_id, area_name in area_names.items():
-                    # Skip empty area names
-                    if not area_name:
-                        continue
-
-                    # Clean up area name for matching
-                    clean_area_name = area_name.replace(' ', '_').lower()
-
-                    if clean_area_name in device_name:
-                        matched_area = area_id
-                        logger.debug(f"Matched device {device_id} to area {area_id} based on name")
+                # Try to find an area name within the device ID
+                for area_name, area_id in area_name_to_id.items():
+                    if area_name and area_name in device_name:
+                        matched_area_id = area_id
+                        logger.info(f"Matched device {device_id} to area {area_id} ({area_name}) based on name pattern")
                         break
 
-                # If found a matching area, record it
-                if matched_area:
-                    if save_area_observation(device_id, matched_area):
+                # If we found a match, save it
+                if matched_area_id:
+                    if save_area_observation(device_id, matched_area_id):
                         areas_logged += 1
                         assigned_count += 1
 
             if assigned_count > 0:
-                logger.info(f"Heuristically assigned {assigned_count} devices to areas based on naming patterns")
+                logger.info(f"Successfully assigned {assigned_count} devices to areas based on naming patterns")
+
+        # METHOD 4: Check if we have any devices that are part of an entity registry with area_id
+        if len(devices_processed) < len(distances_by_device):
+            logger.info("Attempting to get area information from entity registry for remaining devices")
+            remaining_devices = set(distances_by_device.keys()) - devices_processed
+
+            for device_id in remaining_devices:
+                # Try to get device info from Home Assistant
+                device_info = self.ha_client.get_device_info(device_id)
+                if device_info and 'area_id' in device_info and device_info['area_id']:
+                    area_id = device_info['area_id']
+                    area_name = area_id_to_name.get(area_id, 'unknown')
+                    logger.info(f"Found area {area_id} ({area_name}) for device {device_id} in entity registry")
+
+                    if save_area_observation(device_id, area_id):
+                        areas_logged += 1
+                        devices_processed.add(device_id)
+
+        # As a fallback, assign unplaced devices to "Unknown" area
+        remaining_devices = set(distances_by_device.keys()) - devices_processed
+        if remaining_devices:
+            # Check if we have an "Unknown" area, or create a virtual one
+            unknown_area_id = None
+            for area in areas:
+                if area.get('name', '').lower() == 'unknown':
+                    unknown_area_id = area.get('area_id')
+                    break
+
+            if not unknown_area_id:
+                # Use a consistent placeholder ID for unknown areas
+                unknown_area_id = "00000000-0000-0000-0000-000000000000"
+                logger.info(f"Created virtual 'Unknown' area with ID {unknown_area_id}")
+
+            # Assign remaining devices to unknown area
+            for device_id in remaining_devices:
+                logger.info(f"Assigning device {device_id} to 'Unknown' area as fallback")
+                if save_area_observation(device_id, unknown_area_id):
+                    areas_logged += 1
 
         # Log the results
         if areas_logged > 0:
-            logger.info(f"Processed {areas_logged} area predictions for devices")
+            logger.info(f"Successfully processed {areas_logged} area predictions for devices")
         else:
-            logger.warning("No area predictions could be made")
+            logger.warning("No area predictions could be made - check that areas are properly set up in Home Assistant")
 
         return areas_logged
+
+    def _get_areas_with_cache(self) -> List[Dict]:
+        """Get areas from Home Assistant with caching to reduce API calls."""
+        current_time = time.time()
+
+        # If cache is valid, use it
+        if (self._area_cache is not None and
+            self._area_cache_time is not None and
+            current_time - self._area_cache_time < self._area_cache_expiry):
+            logger.debug("Using cached areas")
+            return self._area_cache
+
+        # Otherwise, refresh the cache
+        try:
+            logger.debug("Refreshing areas cache from Home Assistant")
+            areas = self.ha_client.get_areas()
+            self._area_cache = areas
+            self._area_cache_time = current_time
+            return areas
+        except Exception as e:
+            logger.error(f"Error fetching areas from Home Assistant: {e}")
+            # If we have a stale cache, use it rather than nothing
+            if self._area_cache is not None:
+                logger.warning("Using stale areas cache due to error fetching fresh data")
+                return self._area_cache
+            return []
 
     def _trilaterate_position(
         self, device_id: str, scanner_distances: Dict[str, float], reference_positions: Dict
