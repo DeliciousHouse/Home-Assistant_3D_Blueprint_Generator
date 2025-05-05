@@ -64,7 +64,7 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'timestamp': time.time(),
-        'version': '2.59'  # Should match version in config.yaml
+        'version': '3.21'  # Updated to match version in repository.json and build.yaml
     })
 
 @app.route('/api/config', methods=['GET'])
