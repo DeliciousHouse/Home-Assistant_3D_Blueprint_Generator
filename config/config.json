@@ -34,6 +34,14 @@
       "use_adjacency": true,
       "min_points_per_room": 0
   },
+  "static_device_detection": {
+    "enable_dynamic_anchors": true,
+    "movement_threshold_meters": 0.5,
+    "time_window_seconds": 300,
+    "min_observations_for_static": 5,
+    "static_anchor_confidence_decay_hours": 1.0,
+    "max_dynamic_anchors": 10
+  },
   "home_assistant": {
       "url": "http://supervisor/core",
       "token": ""

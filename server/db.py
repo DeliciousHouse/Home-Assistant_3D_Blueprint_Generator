@@ -137,7 +137,6 @@ def init_sqlite_db():
         ''')
         cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_models_name ON ai_models (model_name);')
 
-
         # --- AI Blueprint Feedback Table (Optional, for RL) ---
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS ai_blueprint_feedback (
@@ -167,6 +166,43 @@ def init_sqlite_db():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_device ON device_positions (device_id);')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_timestamp ON device_positions (timestamp DESC);')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_source ON device_positions (source);')
+
+        # --- Device Position History Table (for static device detection) ---
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS device_position_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                x REAL NOT NULL,              -- X coordinate in meters
+                y REAL NOT NULL,              -- Y coordinate in meters
+                z REAL NOT NULL,              -- Z coordinate in meters
+                accuracy REAL,                -- Estimated accuracy/confidence in meters
+                source TEXT NOT NULL,         -- Source of the position data (e.g., 'trilateration', 'mds')
+                timestamp TEXT NOT NULL       -- ISO8601 timestamp
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_history_device ON device_position_history (device_id);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_history_timestamp ON device_position_history (timestamp DESC);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pos_history_device_timestamp ON device_position_history (device_id, timestamp DESC);')
+
+        # --- Static Device Detection Table ---
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS static_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                x REAL NOT NULL,              -- X coordinate in meters
+                y REAL NOT NULL,              -- Y coordinate in meters
+                z REAL NOT NULL,              -- Z coordinate in meters
+                confidence REAL NOT NULL,     -- Confidence score (0-1)
+                first_detected TEXT NOT NULL, -- ISO8601 timestamp of first detection
+                last_confirmed TEXT NOT NULL, -- ISO8601 timestamp of last confirmation
+                movement_score REAL NOT NULL, -- Movement score (lower means more static)
+                observations_count INTEGER NOT NULL, -- Number of position observations used
+                is_active BOOLEAN NOT NULL DEFAULT 1 -- Whether this static device is currently active
+            )
+        ''')
+        cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_static_devices_device_id ON static_devices (device_id);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_static_devices_active ON static_devices (is_active);')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_static_devices_confidence ON static_devices (confidence DESC);')
 
         # --- Distance Log Table ---
         cursor.execute('''
@@ -762,6 +798,267 @@ def save_device_position(device_id: str, position_data: Dict[str, Any], source: 
     except Exception as e:
         logger.error(f"Error saving device position: {e}", exc_info=True)
         return False
+
+# --- Static Device Detection Functions ---
+
+def save_device_position_history(device_id: str, x: float, y: float, z: float, accuracy: Optional[float] = None, source: str = 'calculated') -> bool:
+    """
+    Save a device position to the position history table for static device detection.
+
+    Args:
+        device_id: Unique identifier for the device
+        x: X coordinate in meters
+        y: Y coordinate in meters
+        z: Z coordinate in meters
+        accuracy: Optional estimated accuracy/confidence in meters
+        source: Source of the position data (e.g., 'trilateration', 'mds')
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Prepare query and parameters
+        query = """
+        INSERT INTO device_position_history (device_id, x, y, z, accuracy, source, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        timestamp = datetime.now().isoformat()
+        params = (device_id, x, y, z, accuracy, source, timestamp)
+
+        # Execute query
+        result = _execute_sqlite_write(query, params)
+        if result is not None:
+            logger.debug(f"Saved position history entry for device {device_id} at ({x}, {y}, {z})")
+            return True
+        else:
+            logger.error(f"Failed to save position history for device {device_id}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error saving device position history: {e}", exc_info=True)
+        return False
+
+def get_device_position_history(device_id: str, time_window_seconds: int = 300) -> List[Dict[str, Any]]:
+    """
+    Get position history for a specific device within the specified time window.
+
+    Args:
+        device_id: Unique identifier for the device
+        time_window_seconds: Time window in seconds to look back
+
+    Returns:
+        List of position history entries
+    """
+    try:
+        # Calculate cutoff time
+        cutoff_time = (datetime.now() - timedelta(seconds=time_window_seconds)).isoformat()
+
+        # Build query
+        query = """
+        SELECT device_id, x, y, z, accuracy, source, timestamp
+        FROM device_position_history
+        WHERE device_id = ? AND timestamp >= ?
+        ORDER BY timestamp ASC
+        """
+        params = (device_id, cutoff_time)
+
+        # Execute query
+        results = _execute_sqlite_read(query, params)
+        return results if results is not None else []
+
+    except Exception as e:
+        logger.error(f"Error retrieving position history for device {device_id}: {e}", exc_info=True)
+        return []
+
+def get_all_device_position_history(time_window_seconds: int = 300, min_observations: int = 5) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Get position history for all devices within the specified time window,
+    filtering to only include devices with at least min_observations.
+
+    Args:
+        time_window_seconds: Time window in seconds to look back
+        min_observations: Minimum number of observations required for a device
+
+    Returns:
+        Dictionary mapping device_id to list of position history entries
+    """
+    try:
+        # Calculate cutoff time
+        cutoff_time = (datetime.now() - timedelta(seconds=time_window_seconds)).isoformat()
+
+        # First query to find devices with enough observations
+        count_query = """
+        SELECT device_id, COUNT(*) as observation_count
+        FROM device_position_history
+        WHERE timestamp >= ?
+        GROUP BY device_id
+        HAVING COUNT(*) >= ?
+        """
+        count_params = (cutoff_time, min_observations)
+        count_results = _execute_sqlite_read(count_query, count_params)
+
+        if not count_results:
+            return {}
+
+        # Get the list of qualifying device IDs
+        device_ids = [row['device_id'] for row in count_results]
+
+        # Now query the full position history for these devices
+        device_positions = {}
+        for device_id in device_ids:
+            positions = get_device_position_history(device_id, time_window_seconds)
+            if positions:
+                device_positions[device_id] = positions
+
+        return device_positions
+
+    except Exception as e:
+        logger.error(f"Error retrieving position history for all devices: {e}", exc_info=True)
+        return {}
+
+def save_static_device(
+    device_id: str,
+    x: float,
+    y: float,
+    z: float,
+    confidence: float,
+    movement_score: float,
+    observations_count: int
+) -> bool:
+    """
+    Save or update a static device record.
+
+    Args:
+        device_id: Unique identifier for the device
+        x: X coordinate in meters
+        y: Y coordinate in meters
+        z: Z coordinate in meters
+        confidence: Confidence score (0-1)
+        movement_score: Movement score (lower means more static)
+        observations_count: Number of position observations used
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        timestamp = datetime.now().isoformat()
+
+        # Check if device already exists
+        check_query = "SELECT device_id FROM static_devices WHERE device_id = ?"
+        check_result = _execute_sqlite_read(check_query, (device_id,))
+
+        if check_result:
+            # Update existing record
+            update_query = """
+            UPDATE static_devices
+            SET x = ?, y = ?, z = ?, confidence = ?,
+                last_confirmed = ?, movement_score = ?,
+                observations_count = ?, is_active = 1
+            WHERE device_id = ?
+            """
+            params = (x, y, z, confidence, timestamp, movement_score, observations_count, device_id)
+            result = _execute_sqlite_write(update_query, params)
+        else:
+            # Insert new record
+            insert_query = """
+            INSERT INTO static_devices
+            (device_id, x, y, z, confidence, first_detected, last_confirmed,
+             movement_score, observations_count, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """
+            params = (device_id, x, y, z, confidence, timestamp, timestamp,
+                     movement_score, observations_count)
+            result = _execute_sqlite_write(insert_query, params)
+
+        if result is not None:
+            logger.info(f"Saved static device {device_id} at ({x}, {y}, {z}) with confidence {confidence}")
+            return True
+        else:
+            logger.error(f"Failed to save static device {device_id}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error saving static device {device_id}: {e}", exc_info=True)
+        return False
+
+def get_active_static_devices(min_confidence: float = 0.5, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Get a list of active static devices above the minimum confidence threshold.
+
+    Args:
+        min_confidence: Minimum confidence threshold (0-1)
+        limit: Maximum number of devices to return
+
+    Returns:
+        List of static device records ordered by confidence (highest first)
+    """
+    try:
+        query = """
+        SELECT device_id, x, y, z, confidence, first_detected, last_confirmed,
+               movement_score, observations_count
+        FROM static_devices
+        WHERE is_active = 1 AND confidence >= ?
+        ORDER BY confidence DESC
+        LIMIT ?
+        """
+        params = (min_confidence, limit)
+
+        results = _execute_sqlite_read(query, params)
+        return results if results is not None else []
+
+    except Exception as e:
+        logger.error(f"Error retrieving active static devices: {e}", exc_info=True)
+        return []
+
+def update_static_device_confidence(decay_hours: float = 1.0) -> None:
+    """
+    Update confidence of all static devices based on time decay.
+    Devices will lose confidence over time if they haven't been confirmed recently.
+
+    Args:
+        decay_hours: Number of hours after which confidence starts decaying
+    """
+    try:
+        # Calculate the cutoff time for full confidence
+        cutoff_time = (datetime.now() - timedelta(hours=decay_hours)).isoformat()
+
+        # Get all active static devices
+        query = "SELECT device_id, confidence, last_confirmed FROM static_devices WHERE is_active = 1"
+        devices = _execute_sqlite_read(query)
+
+        if not devices:
+            return
+
+        # Process each device
+        for device in devices:
+            device_id = device['device_id']
+            original_confidence = device['confidence']
+            last_confirmed = datetime.fromisoformat(device['last_confirmed'])
+
+            # Calculate new confidence based on time decay
+            if last_confirmed.isoformat() < cutoff_time:
+                # Calculate hours since the cutoff time
+                hours_since_cutoff = (datetime.now() - last_confirmed).total_seconds() / 3600 - decay_hours
+                # Apply exponential decay: confidence = original * 0.8^hours_since_cutoff
+                decay_factor = 0.8  # Can be adjusted
+                new_confidence = original_confidence * (decay_factor ** hours_since_cutoff)
+
+                # Cap at minimum 0.1
+                new_confidence = max(0.1, new_confidence)
+
+                # If confidence drops too low, mark as inactive
+                if new_confidence < 0.2:
+                    update_query = "UPDATE static_devices SET is_active = 0 WHERE device_id = ?"
+                    _execute_sqlite_write(update_query, (device_id,))
+                    logger.info(f"Static device {device_id} marked as inactive due to low confidence")
+                else:
+                    # Update with new confidence
+                    update_query = "UPDATE static_devices SET confidence = ? WHERE device_id = ?"
+                    _execute_sqlite_write(update_query, (new_confidence, device_id))
+                    logger.debug(f"Updated static device {device_id} confidence: {original_confidence} -> {new_confidence}")
+
+    except Exception as e:
+        logger.error(f"Error updating static device confidence: {e}", exc_info=True)
 
 # For compatibility with existing code
 execute_sqlite_query = _execute_sqlite_read

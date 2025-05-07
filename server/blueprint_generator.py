@@ -28,6 +28,8 @@ from .ai_processor import AIProcessor
 # Import HAClient with HomeAssistantClient alias and the get_ha_client function
 from .ha_client import HAClient as HomeAssistantClient, get_ha_client
 from .config_loader import load_config
+# Import for static device detection
+from .static_device_detector import detector as static_detector
 logger = logging.getLogger(__name__)
 
 class BlueprintGenerator:
@@ -1098,8 +1100,39 @@ def ensure_reference_positions():
     from .db import get_reference_positions_from_sqlite, save_reference_position
 
     existing_refs = get_reference_positions_from_sqlite()
+
+    # Get dynamic anchors from the static device detector
+    try:
+        dynamic_anchors = static_detector.get_dynamic_anchors()
+        if dynamic_anchors:
+            logger.info(f"Found {len(dynamic_anchors)} dynamic anchors from static device detection")
+
+            # Process dynamic anchors and add them as reference positions
+            for device_id, anchor_data in dynamic_anchors.items():
+                # Only add if not already in existing references
+                if device_id not in existing_refs:
+                    save_reference_position(
+                        device_id=device_id,
+                        x=anchor_data.get('x', 0),
+                        y=anchor_data.get('y', 0),
+                        z=anchor_data.get('z', 0),
+                        area_id=anchor_data.get('area_id'),
+                        confidence=anchor_data.get('confidence', 0.8),  # Use confidence from static device detection
+                        is_dynamic=True  # Mark as dynamically identified
+                    )
+                    logger.info(f"Added dynamic anchor as reference position: {device_id} at "
+                               f"({anchor_data.get('x', 0)}, {anchor_data.get('y', 0)}, {anchor_data.get('z', 0)}) "
+                               f"with confidence {anchor_data.get('confidence', 0.8)}")
+        else:
+            logger.info("No dynamic anchors found from static device detection")
+    except Exception as e:
+        logger.warning(f"Failed to get dynamic anchors: {e}")
+
+    # Refresh our list of reference positions after adding dynamic anchors
+    existing_refs = get_reference_positions_from_sqlite()
+
     if len(existing_refs) >= 3:
-        logger.info(f"Found {len(existing_refs)} existing reference positions, no need to create more")
+        logger.info(f"Found {len(existing_refs)} reference positions including dynamic anchors")
         return existing_refs
 
     logger.info("Insufficient reference positions found, creating initial reference points")

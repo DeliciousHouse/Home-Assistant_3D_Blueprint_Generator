@@ -61,6 +61,54 @@ def load_config(config_path: Optional[str] = None) -> Dict:
                 config.get('room_detection', {}).get('use_areas', True)  # Default to using areas
             )
 
+            # --- Static Device Detection Settings ---
+            # Ensure section exists in config with proper initialization
+            if 'static_device_detection' not in config:
+                config['static_device_detection'] = {}
+
+            # Handle primary option name with fallback to alternative name for backward compatibility
+            # For enable_dynamic_anchors (primary) or static_device_detection_enabled (alternative)
+            config['static_device_detection']['enable_dynamic_anchors'] = ha_options.get(
+                'enable_dynamic_anchors',  # Primary option name
+                ha_options.get(  # Fallback to alternative option name
+                    'static_device_detection_enabled',
+                    config.get('static_device_detection', {}).get('enable_dynamic_anchors', True)
+                )
+            )
+
+            # Movement threshold - how much movement is allowed before a device is no longer considered static
+            config['static_device_detection']['movement_threshold_meters'] = ha_options.get(
+                'movement_threshold_meters',
+                config.get('static_device_detection', {}).get('movement_threshold_meters', 0.5)
+            )
+
+            # Time window for analyzing device movements
+            config['static_device_detection']['time_window_seconds'] = ha_options.get(
+                'time_window_seconds',
+                config.get('static_device_detection', {}).get('time_window_seconds', 300)
+            )
+
+            # Minimum observations required to classify a device as static
+            config['static_device_detection']['min_observations_for_static'] = ha_options.get(
+                'min_observations_for_static',  # Primary option name
+                ha_options.get(  # Fallback to alternative option name
+                    'static_device_min_observations',
+                    config.get('static_device_detection', {}).get('min_observations_for_static', 5)
+                )
+            )
+
+            # How quickly confidence in a static anchor decays over time
+            config['static_device_detection']['static_anchor_confidence_decay_hours'] = ha_options.get(
+                'static_anchor_confidence_decay_hours',
+                config.get('static_device_detection', {}).get('static_anchor_confidence_decay_hours', 1.0)
+            )
+
+            # Maximum number of dynamic anchors to use
+            config['static_device_detection']['max_dynamic_anchors'] = ha_options.get(
+                'max_dynamic_anchors',
+                config.get('static_device_detection', {}).get('max_dynamic_anchors', 10)
+            )
+
             # Generation settings specific to MDS/Anchoring
             if 'generation_settings' not in config: config['generation_settings'] = {}
             config['generation_settings']['distance_window_minutes'] = ha_options.get(
@@ -86,9 +134,8 @@ def load_config(config_path: Optional[str] = None) -> Dict:
         # This is expected if user hasn't configured options
         logger.info(f"{ha_options_path} not found. Using default configuration only.")
 
-    # Debug output
+    # Debug output with sensitive information redacted
     safe_config = {k: v for k, v in config.items()}  # Shallow copy
-    # Remove sensitive values from debug log
     if 'home_assistant' in safe_config and 'token' in safe_config['home_assistant']:
         safe_config['home_assistant']['token'] = '***REDACTED***'
     logger.debug(f"Final config loaded: {json.dumps(safe_config, default=str)}")  # Log final structure

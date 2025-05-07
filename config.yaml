@@ -1,6 +1,6 @@
 # config.yaml
 name: 3D Blueprint Generator
-version: "3.22"
+version: "3.23"
 slug: blueprint_generator
 description: "Generate 3D home blueprints from Bluetooth sensor data"
 arch:
@@ -20,6 +20,12 @@ options:
   enable_ai_refinement: true
   use_room_areas: true
   ha_token: ""
+  static_device_detection_enabled: true
+  movement_threshold_meters: 0.5
+  static_device_min_observations: 5
+  time_window_seconds: 300
+  static_anchor_confidence_decay_hours: 1.0
+  max_dynamic_anchors: 10
 
 # Schema for configuration UI
 schema:
@@ -28,6 +34,12 @@ schema:
   enable_ai_refinement: bool
   use_room_areas: bool
   ha_token: password
+  static_device_detection_enabled: bool
+  movement_threshold_meters: float(0.1,5.0)
+  static_device_min_observations: int(3,20)
+  time_window_seconds: int(60,3600)
+  static_anchor_confidence_decay_hours: float(0.1,24.0)
+  max_dynamic_anchors: int(1,20)
 
 # Container configuration
 map:

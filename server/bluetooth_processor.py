@@ -23,6 +23,8 @@ try:
         save_device_position
     )
     from .config_loader import load_config
+    # Import for static device detection
+    from .static_device_detector import detector as static_detector
     logger = logging.getLogger(__name__)
 except ImportError:
     try:
@@ -35,6 +37,7 @@ except ImportError:
             save_device_position
         )
         from config_loader import load_config
+        from static_device_detector import detector as static_detector
         logging.basicConfig(level=logging.INFO)
         logger = logging.getLogger(__name__)
     except ImportError:
@@ -370,8 +373,30 @@ class BluetoothProcessor:
                     accuracy=position_data.get('accuracy')
                 )
 
+                # Also record position in history for static device detection
                 if success:
                     positions_calculated += 1
+
+                    # Record position in the history database for static device detection
+                    try:
+                        static_detector.record_device_position(
+                            device_id=device_id,
+                            x=position_data.get('x'),
+                            y=position_data.get('y'),
+                            z=position_data.get('z'),
+                            accuracy=position_data.get('accuracy'),
+                            source='trilateration'
+                        )
+                        logger.debug(f"Recorded position history for device {device_id} for static device detection")
+                    except Exception as e:
+                        logger.warning(f"Failed to record position history for device {device_id}: {e}")
+
+        # Process static device detection after calculating positions
+        try:
+            static_detector.process_device_history()
+            logger.info("Processed device history for static device detection")
+        except Exception as e:
+            logger.warning(f"Error processing device history for static device detection: {e}")
 
         return positions_calculated
 
