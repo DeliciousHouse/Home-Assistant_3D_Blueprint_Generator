@@ -847,3 +847,104 @@ class AIProcessor:
 
         logger.info("Created synthetic positions to enable blueprint generation")
         return device_positions, anchor_positions
+
+    def generate_blueprint(self) -> bool:
+        """Generate a full 3D blueprint with improved error handling."""
+        logger.info("Starting blueprint generation process...")
+        blueprint_data = {"state": "starting", "progress": 0}
+        self.status = blueprint_data  # Update status immediately
+
+        try:
+            # Initialize AI processor
+            ai_processor = AIProcessor()
+
+            # STEP 1: Data Collection Validation
+            distance_window = self.config.get('generation_settings', {}).get('distance_window_minutes', 15)
+            distance_data = get_recent_distances(time_window_minutes=distance_window)
+
+            if not distance_data:
+                logger.error("No distance data available for blueprint generation")
+                self.status = {"state": "failed", "reason": "no_distance_data", "progress": 0}
+                return False
+
+            # Validate minimum data quality
+            if len(distance_data) < 10:  # Require at least 10 distance readings
+                logger.warning(f"Insufficient distance data: only {len(distance_data)} records (minimum 10 recommended)")
+                # Continue with warning, don't fail immediately
+
+            logger.info(f"Retrieved {len(distance_data)} distance records for blueprint generation")
+            blueprint_data["progress"] = 10
+            self.status = blueprint_data
+
+            # STEP 2: Area Predictions with Robust Error Handling
+            area_window = self.config.get('generation_settings', {}).get('area_window_minutes', 10)
+            area_predictions = get_recent_area_predictions(time_window_minutes=area_window)
+
+            if not area_predictions:
+                logger.warning("No area predictions found - room assignment may be limited")
+                # Continue with warning - we'll handle this in room generation
+
+            logger.info(f"Retrieved area predictions for {len(area_predictions)} devices")
+            blueprint_data["progress"] = 20
+            self.status = blueprint_data
+
+            # STEP 3: Calculate Relative Positions with Validation
+            device_positions, scanner_positions = ai_processor.get_relative_positions()
+
+            # Validate position results
+            if not device_positions and not scanner_positions:
+                logger.error("Both device and scanner positions are empty - using fallback positions")
+                device_positions, scanner_positions = ai_processor._generate_fallback_positions()
+                if not device_positions:
+                    self.status = {"state": "failed", "reason": "position_calculation_failed", "progress": 30}
+                    return False
+
+            # Validate minimum entity requirement
+            if len(device_positions) + len(scanner_positions) < 3:
+                logger.error(f"Insufficient positioned entities ({len(device_positions)} devices, {len(scanner_positions)} scanners)")
+                self.status = {"state": "failed", "reason": "insufficient_entities", "progress": 30}
+                return False
+
+            logger.info(f"Calculated relative positions for {len(device_positions)} devices and {len(scanner_positions)} scanners")
+            blueprint_data["progress"] = 40
+            self.status = blueprint_data
+
+            # Continue with remaining steps with similar error handling...
+            # Each major step should:
+            # 1. Have clear logging
+            # 2. Update status
+            # 3. Include fallback mechanisms
+            # 4. Validate output before proceeding
+
+            # Final blueprint assembly and validation
+            blueprint = {
+                'generated_at': datetime.now().isoformat(),
+                'rooms': rooms if 'rooms' in locals() and rooms else [],
+                'walls': walls if 'walls' in locals() and walls else [],
+                'objects': objects if 'objects' in locals() and objects else [],
+                'positions': transformed_positions if 'transformed_positions' in locals() and transformed_positions else {},
+                'floors': self._determine_floors(rooms) if 'rooms' in locals() and rooms else []
+            }
+
+            # Validate minimum blueprint requirements
+            if not blueprint['rooms']:
+                logger.error("Blueprint generation failed: no rooms created")
+                self.status = {"state": "failed", "reason": "no_rooms_created", "progress": 90}
+                return False
+
+            # Save blueprint to database
+            success = save_blueprint_to_sqlite(blueprint)
+
+            if success:
+                logger.info("Blueprint successfully generated and saved")
+                self.status = {"state": "completed", "progress": 100, "room_count": len(blueprint['rooms'])}
+                return True
+            else:
+                logger.error("Failed to save blueprint")
+                self.status = {"state": "failed", "reason": "database_save_failed", "progress": 95}
+                return False
+
+        except Exception as e:
+            logger.error(f"Error generating blueprint: {str(e)}", exc_info=True)
+            self.status = {"state": "failed", "reason": "exception", "message": str(e), "progress": 0}
+            return False

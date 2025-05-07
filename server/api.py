@@ -150,6 +150,35 @@ def visualize_blueprint():
         tb = traceback.format_exc()
         return render_template('error.html', error=str(e), traceback=tb)
 
+@app.route('/api/blueprint/status', methods=['GET'])
+def get_blueprint_status():
+    """Get current blueprint generation status for the UI."""
+    try:
+        from .blueprint_generator import BlueprintGenerator
+        generator = BlueprintGenerator()
+        status = generator.get_status()
+
+        # Add helpful messages based on status
+        if status.get('state') == 'failed':
+            reason = status.get('reason', 'unknown')
+            user_message = {
+                'no_distance_data': 'No Bluetooth distance data available. Check your BLE scanners.',
+                'insufficient_entities': 'Not enough devices detected for positioning.',
+                'position_calculation_failed': 'Position calculation failed. Check your device placement.',
+                'no_rooms_created': 'Room layout generation failed. Try adding more reference points.',
+                'database_save_failed': 'Failed to save blueprint to database.',
+            }.get(reason, 'Blueprint generation failed. Check logs for details.')
+
+            status['user_message'] = user_message
+
+        return jsonify(status)
+    except Exception as e:
+        logger.error(f"Error getting blueprint status: {e}")
+        return jsonify({
+            'state': 'error',
+            'message': str(e)
+        }), 500
+
 @app.route('/api/data/log', methods=['POST'])
 def log_sensor_data():
     """Manual endpoint to trigger data logging."""
