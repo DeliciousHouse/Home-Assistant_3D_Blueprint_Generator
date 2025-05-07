@@ -118,11 +118,7 @@ def load_config(config_path: Optional[str] = None) -> Dict:
 
             # Home Assistant connection settings
             if 'home_assistant' not in config: config['home_assistant'] = {}
-            # Get the token from options
-            if 'ha_token' in ha_options and ha_options['ha_token']:
-                config['home_assistant']['token'] = ha_options['ha_token']
-                logger.info("Found Home Assistant token in options")
-            # Default URL for supervisor add-on
+            # Set the URL (only from options or default)
             config['home_assistant']['url'] = ha_options.get(
                 'ha_url',
                 config.get('home_assistant', {}).get('url', 'http://supervisor/core')
@@ -133,6 +129,19 @@ def load_config(config_path: Optional[str] = None) -> Dict:
     else:
         # This is expected if user hasn't configured options
         logger.info(f"{ha_options_path} not found. Using default configuration only.")
+
+    # 3. Set Home Assistant token from SUPERVISOR_TOKEN environment variable
+    # Home Assistant Add-ons should ALWAYS use SUPERVISOR_TOKEN for API access
+    if 'home_assistant' not in config:
+        config['home_assistant'] = {}
+
+    supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
+    if supervisor_token:
+        config['home_assistant']['token'] = supervisor_token
+        logger.info("Using SUPERVISOR_TOKEN from environment for Home Assistant API authentication")
+    else:
+        logger.warning("SUPERVISOR_TOKEN environment variable not found. Home Assistant API calls may fail.")
+        # Do not use any token from config.json or options.json - only use SUPERVISOR_TOKEN
 
     # Debug output with sensitive information redacted
     safe_config = {k: v for k, v in config.items()}  # Shallow copy

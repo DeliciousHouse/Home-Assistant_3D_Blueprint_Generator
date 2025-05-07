@@ -53,7 +53,16 @@ class HAClient:
 
         # Base URL and credentials
         self.base_url = ha_config.get('url', 'http://supervisor/core')
-        self.token = ha_config.get('token', os.environ.get('HA_TOKEN', ''))
+
+        # For Home Assistant add-on, ALWAYS use the SUPERVISOR_TOKEN environment variable
+        supervisor_token = os.environ.get('SUPERVISOR_TOKEN')
+        if supervisor_token:
+            self.token = supervisor_token
+            logger.info("Using SUPERVISOR_TOKEN for Home Assistant API authentication")
+        else:
+            # Fallback to token from config as a last resort (this should rarely happen in add-on context)
+            self.token = ha_config.get('token', '')
+            logger.warning("SUPERVISOR_TOKEN not found - API authentication may fail")
 
         # API endpoints
         self.api_url = f"{self.base_url}/api"
@@ -72,6 +81,9 @@ class HAClient:
         self._headers = {}
         if self.token:
             self._headers['Authorization'] = f"Bearer {self.token}"
+        else:
+            logger.error("No authentication token available for Home Assistant API!")
+
         self._headers['Content-Type'] = 'application/json'
 
         # Test API connection on initialization

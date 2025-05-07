@@ -479,6 +479,9 @@ def get_latest_blueprint_from_sqlite() -> Optional[Dict[str, Any]]:
     result = _execute_sqlite_read(query, fetch_one=True)
     if result and result.get('data'):
         try:
+            # Log the raw data for debugging
+            logger.debug(f"Raw blueprint data (first 100 chars): {result['data'][:100]}...")
+
             # Check if the data string starts with a comment and remove it
             data_str = result['data']
             if data_str.startswith('//'):
@@ -486,13 +489,16 @@ def get_latest_blueprint_from_sqlite() -> Optional[Dict[str, Any]]:
                 newline_pos = data_str.find('\n')
                 if newline_pos > 0:
                     data_str = data_str[newline_pos + 1:].strip()
+                    logger.debug("Removed comment from blueprint data")
 
             # Parse the cleaned JSON data
             blueprint_data = json.loads(data_str)
-            logger.info(f"Retrieved blueprint from {result.get('created_at', 'unknown date')}")
+            logger.info(f"Retrieved blueprint from {result.get('created_at', 'unknown date')} with {len(blueprint_data.get('rooms', []))} rooms")
             return blueprint_data
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse blueprint JSON: {e}")
+            # Log a portion of the problematic data
+            logger.error(f"Problematic JSON data (first 200 chars): {result['data'][:200]}...")
             return None
     logger.warning("No active blueprints found in SQLite database")
     return None
