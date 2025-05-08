@@ -97,51 +97,98 @@ class BlueprintGenerator:
         logger.info("AI processor initialized successfully")
 
     def generate_blueprint(self) -> bool:
-        """Generate a full 3D blueprint."""
+        """Generate a full 3D blueprint with improved error handling and status updates."""
         try:
             from .db import get_recent_distances, get_recent_area_predictions
             from .ai_processor import AIProcessor
 
             logger.info("Starting blueprint generation process...")
+            self.status = {"state": "generating", "progress": 0}
 
             # Initialize AI processor
             ai_processor = AIProcessor()
 
-            # Fetch distance data
+            # STEP 1: Fetch distance data with validation
             distance_window = self.config.get('generation_settings', {}).get('distance_window_minutes', 15)
             distance_data = get_recent_distances(time_window_minutes=distance_window)
 
             if not distance_data:
                 logger.error("No distance data available for blueprint generation")
+                self.status = {"state": "failed", "reason": "no_distance_data", "progress": 0}
                 return False
+
+            # Validate minimum data quality
+            if len(distance_data) < 10:  # Require at least 10 distance readings
+                logger.warning(f"Insufficient distance data: only {len(distance_data)} records (minimum 10 recommended)")
+                # Continue but update status to warn user
+                self.status["warning"] = "limited_data"
 
             logger.info(f"Retrieved {len(distance_data)} distance records for blueprint generation")
+            self.status["progress"] = 10
 
-            # Get area predictions
+            # STEP 2: Get area predictions with proper error handling
             area_window = self.config.get('generation_settings', {}).get('area_window_minutes', 10)
-            area_predictions = get_recent_area_predictions(time_window_minutes=area_window)
+            try:
+                area_predictions = get_recent_area_predictions(time_window_minutes=area_window)
+                logger.info(f"Retrieved area predictions for {len(area_predictions)} devices")
+            except Exception as e:
+                logger.error(f"Error retrieving area predictions: {e}")
+                area_predictions = {}  # Use empty dict as fallback
+                self.status["warning"] = "area_prediction_error"
 
-            logger.info(f"Retrieved area predictions for {len(area_predictions)} devices")
+            self.status["progress"] = 20
 
-            # Step 1: Calculate relative positions using MDS
-            # Use the improved get_relative_positions method instead of run_relative_positioning
-            device_positions, scanner_positions = ai_processor.get_relative_positions()
+            # STEP 3: Calculate relative positions with robust validation
+            try:
+                device_positions, scanner_positions = ai_processor.get_relative_positions()
 
-            if not device_positions and not scanner_positions:
-                logger.error("Failed to calculate relative positions")
+                # Validate position results
+                if not device_positions and not scanner_positions:
+                    logger.error("Both device and scanner positions are empty - using fallback positions")
+                    # Try to use fallback positioning
+                    device_positions, scanner_positions = ai_processor._generate_fallback_positions()
+                    if not device_positions:
+                        logger.error("Fallback positioning also failed")
+                        self.status = {"state": "failed", "reason": "position_calculation_failed", "progress": 30}
+                        return False
+
+                # Validate minimum entity requirement
+                total_positioned_entities = len(device_positions) + len(scanner_positions)
+                if total_positioned_entities < 3:
+                    logger.error(f"Insufficient positioned entities ({len(device_positions)} devices, {len(scanner_positions)} scanners)")
+                    self.status = {"state": "failed", "reason": "insufficient_entities", "progress": 30}
+                    return False
+
+                logger.info(f"Calculated relative positions for {len(device_positions)} devices and {len(scanner_positions)} scanners")
+            except Exception as e:
+                logger.error(f"Error calculating positions: {str(e)}", exc_info=True)
+                self.status = {"state": "failed", "reason": "position_calculation_failed", "message": str(e), "progress": 30}
                 return False
 
-            logger.info(f"Calculated relative positions for {len(device_positions)} devices and {len(scanner_positions)} scanners")
+            self.status["progress"] = 40
 
-            # Step 2: Get area definitions
+            # STEP 4: Get area definitions with error handling
             try:
                 from .ha_client import get_ha_client
                 ha_client = get_ha_client()
-                areas = ha_client.get_areas()
+                areas = ha_client.get_areas() or []
                 logger.info(f"Retrieved {len(areas)} areas from Home Assistant")
+
+                # Check for sufficient areas
+                if not areas:
+                    logger.warning("No areas retrieved from Home Assistant, using defaults")
+                    # Create default areas
+                    areas = [
+                        {"area_id": "living_room", "name": "Living Room"},
+                        {"area_id": "kitchen", "name": "Kitchen"},
+                        {"area_id": "bedroom", "name": "Bedroom"},
+                        {"area_id": "bathroom", "name": "Bathroom"},
+                        {"area_id": "office", "name": "Office"}
+                    ]
+                    self.status["warning"] = "using_default_areas"
             except Exception as e:
-                logger.error(f"Error retrieving areas: {e}")
-                # Create some default areas
+                logger.error(f"Error retrieving areas: {e}", exc_info=True)
+                # Create default areas as fallback
                 areas = [
                     {"area_id": "living_room", "name": "Living Room"},
                     {"area_id": "kitchen", "name": "Kitchen"},
@@ -149,71 +196,116 @@ class BlueprintGenerator:
                     {"area_id": "bathroom", "name": "Bathroom"},
                     {"area_id": "office", "name": "Office"}
                 ]
-                logger.warning(f"Using {len(areas)} default areas")
+                self.status["warning"] = "using_default_areas"
 
-            # Step 3: Generate target layout
-            target_layout = self._generate_target_layout(areas)
-            logger.info("Generated target layout for areas")
+            self.status["progress"] = 50
 
-            # Step 4: Get RSSI data and group devices by area
-            rssi_data = ai_processor.get_rssi_data()
-            device_area_groups = self._extract_device_area_mappings(device_positions)
-            logger.info(f"Grouped devices into {len(device_area_groups)} areas")
+            # STEP 5-7: Generate target layout and transform positions
+            try:
+                # Generate target layout
+                target_layout = self._generate_target_layout(areas)
+                logger.info("Generated target layout for areas")
 
-            # Step 5: Calculate centroids for each area group
-            area_centroids = self._calculate_area_centroids(device_area_groups)
-            logger.info(f"Calculated centroids for {len(area_centroids)} areas")
+                # Get RSSI data
+                rssi_data = ai_processor.get_rssi_data()
 
-            # Step 6: Calculate transformation using Procrustes analysis
-            transform_params = self._calculate_transformation(area_centroids, target_layout)
-            if not transform_params:
-                logger.error("Failed to calculate transformation")
+                # Group devices by area
+                device_area_groups = self._extract_device_area_mappings(device_positions)
+                logger.info(f"Grouped devices into {len(device_area_groups)} areas")
+
+                # Calculate area centroids
+                area_centroids = self._calculate_area_centroids(device_area_groups)
+                logger.info(f"Calculated centroids for {len(area_centroids)} areas")
+
+                # Calculate transformation
+                transform_params = self._calculate_transformation(area_centroids, target_layout)
+                if not transform_params:
+                    logger.error("Failed to calculate transformation")
+                    self.status = {"state": "failed", "reason": "transformation_failed", "progress": 60}
+                    return False
+
+                # Apply transformation
+                transformed_positions = self._apply_transformation(
+                    {**device_positions, **scanner_positions},
+                    transform_params
+                )
+                logger.info(f"Transformed {len(transformed_positions)} positions")
+            except Exception as e:
+                logger.error(f"Error in layout generation or transformation: {str(e)}", exc_info=True)
+                self.status = {"state": "failed", "reason": "layout_transformation_failed", "message": str(e), "progress": 60}
                 return False
 
-            logger.info("Calculated spatial transformation parameters")
+            self.status["progress"] = 70
 
-            # Step 7: Transform all positions (devices and scanners)
-            transformed_positions = self._apply_transformation(
-                {**device_positions, **scanner_positions},
-                transform_params
-            )
-            logger.info(f"Transformed {len(transformed_positions)} positions")
+            # STEP 8-9: Generate room geometries and walls
+            try:
+                # Generate rooms
+                rooms = self._generate_rooms(device_area_groups, transformed_positions)
 
-            # Step 8: Generate room geometries
-            rooms = self._generate_rooms(device_area_groups, transformed_positions)
-            logger.info(f"Generated {len(rooms)} room geometries")
+                # Check if rooms were generated successfully
+                if not rooms:
+                    logger.error("Failed to generate room geometries - no rooms created")
+                    self.status = {"state": "failed", "reason": "no_rooms_created", "progress": 80}
+                    return False
 
-            # Step 9: Infer walls between rooms
-            walls = self._infer_walls(rooms)
-            logger.info(f"Inferred {len(walls)} walls")
+                logger.info(f"Generated {len(rooms)} room geometries")
 
-            # Step 10: Predict objects for each room
-            objects = ai_processor.predict_objects(rooms)
-            logger.info(f"Predicted {len(objects)} objects")
+                # Infer walls
+                walls = self._infer_walls(rooms)
+                logger.info(f"Inferred {len(walls)} walls")
+            except Exception as e:
+                logger.error(f"Error generating rooms or walls: {str(e)}", exc_info=True)
+                self.status = {"state": "failed", "reason": "room_generation_failed", "message": str(e), "progress": 80}
+                return False
 
-            # Step 11: Assemble and save the blueprint
-            blueprint = {
-                'generated_at': datetime.now().isoformat(),
-                'rooms': rooms,
-                'walls': walls,
-                'objects': objects,
-                'positions': transformed_positions,
-                'floors': self._determine_floors(rooms)
+            self.status["progress"] = 90
+
+            # STEP 10-11: Predict objects and assemble blueprint
+            try:
+                # Predict objects
+                objects = ai_processor.predict_objects(rooms)
+                logger.info(f"Predicted {len(objects)} objects")
+
+                # Assemble blueprint
+                blueprint = {
+                    'generated_at': datetime.now().isoformat(),
+                    'rooms': rooms,
+                    'walls': walls,
+                    'objects': objects,
+                    'positions': transformed_positions,
+                    'floors': self._determine_floors(rooms)
+                }
+
+                # Save blueprint to database
+                from .db import save_blueprint_to_sqlite
+                success = save_blueprint_to_sqlite(blueprint)
+
+                if not success:
+                    logger.error("Failed to save blueprint to database")
+                    self.status = {"state": "failed", "reason": "database_save_failed", "progress": 95}
+                    return False
+
+                # Store the blueprint in memory for quick access
+                self.latest_generated_blueprint = blueprint
+            except Exception as e:
+                logger.error(f"Error with object prediction or blueprint saving: {str(e)}", exc_info=True)
+                self.status = {"state": "failed", "reason": "object_prediction_or_save_failed", "message": str(e), "progress": 95}
+                return False
+
+            # Final success update
+            logger.info("Blueprint successfully generated and saved")
+            self.status = {
+                "state": "completed",
+                "progress": 100,
+                "room_count": len(rooms),
+                "wall_count": len(walls),
+                "object_count": len(objects)
             }
-
-            # Save blueprint to database
-            from .db import save_blueprint_to_sqlite
-            success = save_blueprint_to_sqlite(blueprint)
-
-            if success:
-                logger.info("Blueprint successfully generated and saved")
-                return True
-            else:
-                logger.error("Failed to save blueprint")
-                return False
+            return True
 
         except Exception as e:
-            logger.error(f"Error generating blueprint: {str(e)}", exc_info=True)
+            logger.error(f"Unhandled error generating blueprint: {str(e)}", exc_info=True)
+            self.status = {"state": "failed", "reason": "exception", "message": str(e), "progress": 0}
             return False
 
     def _extract_device_area_mappings(self, transformed_positions: Dict) -> Dict[str, List[Dict]]:

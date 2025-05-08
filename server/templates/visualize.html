@@ -343,8 +343,50 @@
                 console.log("No floors detected, defaulting to floor 0");
             }
 
-            // Set initial current floor to the first available floor
-            currentFloor = availableFloors[0];
+            // Count rooms per floor to find a floor with content
+            const roomsPerFloor = {};
+            blueprintData.rooms.forEach(room => {
+                const floorNum = room.floor !== undefined ? Number(room.floor) : 0;
+                roomsPerFloor[floorNum] = (roomsPerFloor[floorNum] || 0) + 1;
+            });
+
+            console.log("Rooms per floor:", roomsPerFloor);
+
+            // Set initial current floor prioritizing floors with content
+            // First try Ground Floor (0) if it has rooms
+            if (roomsPerFloor[0] && roomsPerFloor[0] > 0 && availableFloors.includes(0)) {
+                currentFloor = 0;
+                console.log("Setting initial floor to Ground Floor (0) - has content");
+            }
+            // Then try 1st Floor if it has rooms
+            else if (roomsPerFloor[1] && roomsPerFloor[1] > 0 && availableFloors.includes(1)) {
+                currentFloor = 1;
+                console.log("Setting initial floor to 1st Floor (1) - has content");
+            }
+            // Then try any other floor with content starting from the lowest positive floor
+            else {
+                const floorsWithContent = Object.keys(roomsPerFloor)
+                    .filter(floor => roomsPerFloor[floor] > 0)
+                    .map(Number)
+                    .sort((a, b) => a - b);
+
+                if (floorsWithContent.length > 0) {
+                    // Prefer positive floors first
+                    const positiveFloors = floorsWithContent.filter(f => f >= 0);
+                    if (positiveFloors.length > 0) {
+                        currentFloor = positiveFloors[0];
+                        console.log(`Setting initial floor to ${currentFloor} - has content`);
+                    } else {
+                        currentFloor = floorsWithContent[0];
+                        console.log(`Setting initial floor to ${currentFloor} - has content (negative floor)`);
+                    }
+                }
+                // If no floor has content or we couldn't determine, use first available floor
+                else {
+                    currentFloor = availableFloors[0];
+                    console.log(`Setting initial floor to ${currentFloor} - no floor has content`);
+                }
+            }
         } else {
             // Default if no rooms
             availableFloors = [0];

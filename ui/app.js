@@ -22,7 +22,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const blueprintCanvas = document.getElementById('blueprint-canvas');
     const loadingSpinner = document.getElementById('loading-spinner');
     const statusMessage = document.getElementById('status-message');
-    const canvasContainer = document.querySelector('.canvas-container');
+    const canvasContainer = document.querySelector('.canvas-container');;
 
     // Initialize UI state
     initializeUI();
@@ -122,6 +122,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 blueprint = data;
                 console.log("Blueprint loaded successfully:", blueprint);
+
+                // Select initial floor with content
+                selectInitialFloorWithContent();
+
                 showLoading(false);
                 updateBlueprintDisplay();
                 showStatus('Blueprint loaded successfully', 'success');
@@ -136,6 +140,59 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Also show in status area
                 showStatus(error.message || 'Could not load blueprint. Please generate one.', 'error', 10000);
             });
+    }
+
+    function selectInitialFloorWithContent() {
+        if (!blueprint || !blueprint.rooms || blueprint.rooms.length === 0) return;
+
+        // Count rooms per floor
+        const roomsPerFloor = {};
+        blueprint.rooms.forEach(room => {
+            const floorNum = room.floor !== undefined ? Number(room.floor) : 0;
+            roomsPerFloor[floorNum] = (roomsPerFloor[floorNum] || 0) + 1;
+        });
+
+        console.log("Rooms per floor:", roomsPerFloor);
+
+        // Get floors that actually have rooms
+        const floorsWithContent = Object.keys(roomsPerFloor)
+            .filter(floor => roomsPerFloor[floor] > 0)
+            .map(Number)
+            .sort((a, b) => a - b);
+
+        // If no floors have any rooms, default to ground floor
+        if (floorsWithContent.length === 0) {
+            currentFloor = 0;
+            console.log("No floors contain any rooms, defaulting to Ground Floor (0)");
+            return;
+        }
+
+        // First try Ground Floor (0) if it has rooms
+        if (roomsPerFloor[0] && roomsPerFloor[0] > 0) {
+            currentFloor = 0;
+            console.log("Setting initial floor to Ground Floor (0) - has content");
+        }
+        // Then try 1st Floor (1) if it has rooms
+        else if (roomsPerFloor[1] && roomsPerFloor[1] > 0) {
+            currentFloor = 1;
+            console.log("Setting initial floor to 1st Floor (1) - has content");
+        }
+        // Otherwise, use the lowest floor that has rooms (prefer positive floors)
+        else {
+            // Prefer positive floors first
+            const positiveFloors = floorsWithContent.filter(f => f >= 0);
+            if (positiveFloors.length > 0) {
+                currentFloor = positiveFloors[0];
+                console.log(`Setting initial floor to ${currentFloor} - lowest floor with content`);
+            } else {
+                // If there are only negative floors with content, use the highest of those
+                currentFloor = floorsWithContent[floorsWithContent.length - 1];
+                console.log(`Setting initial floor to ${currentFloor} - highest negative floor with content`);
+            }
+        }
+
+        // Update the floor indicator in UI
+        updateFloorIndicator();
     }
 
     function showNoBlueprintMessage(message) {
@@ -223,7 +280,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const noBlueprintMsg = document.getElementById('no-blueprint-message');
         if (noBlueprintMsg) {
             noBlueprintMsg.remove();
-        }
+      ccccccccccccccccccccccccccccccccccc                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               }
 
         // Filter rooms for the current floor
         const currentFloorRooms = blueprint.rooms.filter(room => {
@@ -233,77 +290,118 @@ document.addEventListener('DOMContentLoaded', function() {
 
         console.log(`Displaying ${currentFloorRooms.length} rooms on floor ${currentFloor}`);
 
-        // Here you would update the canvas to display the rooms
-        // For now, just log the number of rooms
+        // Check if there are no rooms on this floor
         if (currentFloorRooms.length === 0) {
-            showStatus(`No rooms found on floor ${currentFloor}`, 'info');
-        } else {
-            // Basic canvas rendering - draw simple boxes for rooms
+            // Show a clear message in the canvas area when floor exists but has no rooms
+            let noRoomsMsg = document.createElement('div');
+            noRoomsMsg.id = 'no-rooms-message';
+            noRoomsMsg.style.position = 'absolute';
+            noRoomsMsg.style.top = '50%';
+            noRoomsMsg.style.left = '50%';
+            noRoomsMsg.style.transform = 'translate(-50%, -50%)';
+            noRoomsMsg.style.textAlign = 'center';
+            noRoomsMsg.style.padding = '20px';
+            noRoomsMsg.style.backgroundColor = 'rgba(0,0,0,0.5)';
+            noRoomsMsg.style.color = 'white';
+            noRoomsMsg.style.borderRadius = '8px';
+            noRoomsMsg.style.maxWidth = '80%';
+            noRoomsMsg.style.zIndex = '50';
+
+            // Get the floor name for the message
+            const floorName = currentFloor === 0
+                ? 'Ground Floor'
+                : (currentFloor > 0 ? `Floor ${currentFloor}` : `Basement ${Math.abs(currentFloor)}`);
+
+            noRoomsMsg.innerHTML = `<h3>No Rooms on ${floorName}</h3><p>This floor does not have any rooms defined.</p>`;
+
+            // Clear canvas first
             const canvas = document.getElementById('blueprint-canvas');
             if (canvas) {
                 const ctx = canvas.getContext('2d');
                 if (ctx) {
-                    // Resize canvas to fit container
                     canvas.width = canvas.parentElement.clientWidth;
                     canvas.height = canvas.parentElement.clientHeight;
-
-                    // Clear canvas
                     ctx.clearRect(0, 0, canvas.width, canvas.height);
+                }
+            }
 
-                    // Draw rooms
-                    const scale = 50;  // pixels per meter
-                    const offsetX = canvas.width / 2;
-                    const offsetY = canvas.height / 2;
+            // Add message to canvas container
+            canvasContainer.appendChild(noRoomsMsg);
+            showStatus(`No rooms found on ${floorName}`, 'info');
+            return;
+        }
 
-                    ctx.fillStyle = '#e3f2fd';
-                    ctx.strokeStyle = '#1976d2';
-                    ctx.lineWidth = 2;
+        // Remove any "no rooms" message if it exists
+        const noRoomsMsg = document.getElementById('no-rooms-message');
+        if (noRoomsMsg) {
+            noRoomsMsg.remove();
+        }
 
-                    currentFloorRooms.forEach(room => {
-                        if (room.shape && room.shape.points && room.shape.points.length > 2) {
-                            ctx.beginPath();
-                            ctx.moveTo(
-                                offsetX + room.shape.points[0].x * scale,
-                                offsetY + room.shape.points[0].y * scale
+        // Draw rooms for current floor
+        const canvas = document.getElementById('blueprint-canvas');
+        if (canvas) {
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+                // Resize canvas to fit container
+                canvas.width = canvas.parentElement.clientWidth;
+                canvas.height = canvas.parentElement.clientHeight;
+
+                // Clear canvas
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Draw rooms
+                const scale = 50;  // pixels per meter
+                const offsetX = canvas.width / 2;
+                const offsetY = canvas.height / 2;
+
+                ctx.fillStyle = '#e3f2fd';
+                ctx.strokeStyle = '#1976d2';
+                ctx.lineWidth = 2;
+
+                currentFloorRooms.forEach(room => {
+                    if (room.shape && room.shape.points && room.shape.points.length > 2) {
+                        ctx.beginPath();
+                        ctx.moveTo(
+                            offsetX + room.shape.points[0].x * scale,
+                            offsetY + room.shape.points[0].y * scale
+                        );
+
+                        for (let i = 1; i < room.shape.points.length; i++) {
+                            ctx.lineTo(
+                                offsetX + room.shape.points[i].x * scale,
+                                offsetY + room.shape.points[i].y * scale
+                            );
+                        }
+
+                        ctx.closePath();
+                        ctx.fill();
+                        ctx.stroke();
+
+                        // Add room name
+                        if (room.name) {
+                            // Calculate center of the room
+                            let centerX = 0, centerY = 0;
+                            room.shape.points.forEach(point => {
+                                centerX += point.x;
+                                centerY += point.y;
+                            });
+                            centerX /= room.shape.points.length;
+                            centerY /= room.shape.points.length;
+
+                            ctx.fillStyle = '#000';
+                            ctx.font = '14px Arial';
+                            ctx.textAlign = 'center';
+                            ctx.fillText(
+                                room.name,
+                                offsetX + centerX * scale,
+                                offsetY + centerY * scale
                             );
 
-                            for (let i = 1; i < room.shape.points.length; i++) {
-                                ctx.lineTo(
-                                    offsetX + room.shape.points[i].x * scale,
-                                    offsetY + room.shape.points[i].y * scale
-                                );
-                            }
-
-                            ctx.closePath();
-                            ctx.fill();
-                            ctx.stroke();
-
-                            // Add room name
-                            if (room.name) {
-                                // Calculate center of the room
-                                let centerX = 0, centerY = 0;
-                                room.shape.points.forEach(point => {
-                                    centerX += point.x;
-                                    centerY += point.y;
-                                });
-                                centerX /= room.shape.points.length;
-                                centerY /= room.shape.points.length;
-
-                                ctx.fillStyle = '#000';
-                                ctx.font = '14px Arial';
-                                ctx.textAlign = 'center';
-                                ctx.fillText(
-                                    room.name,
-                                    offsetX + centerX * scale,
-                                    offsetY + centerY * scale
-                                );
-
-                                // Reset fill style
-                                ctx.fillStyle = '#e3f2fd';
-                            }
+                            // Reset fill style
+                            ctx.fillStyle = '#e3f2fd';
                         }
-                    });
-                }
+                    }
+                });
             }
         }
     }
@@ -314,6 +412,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // Update if floor exists in blueprint
         if (blueprint && blueprint.rooms) {
+            // Check if any rooms exist on the target floor
             const floorExists = blueprint.rooms.some(room => room.floor === newFloor);
 
             if (floorExists) {
@@ -323,24 +422,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 return;
             }
 
-            // If floor doesn't exist in blueprint but direction is valid, still allow navigation
-            // This assumes we might not have all floors populated yet
-            if ((direction > 0 && newFloor <= 10) || (direction < 0 && newFloor >= -3)) {
-                currentFloor = newFloor;
-                updateFloorIndicator();
-                updateBlueprintDisplay();
-                showStatus(`No rooms on floor ${currentFloor} yet`, 'info');
-            } else {
-                showStatus(`Cannot navigate to floor ${newFloor}`, 'warning');
-            }
+            // Don't allow navigation to non-existent floors
+            showStatus(`No rooms found on floor ${newFloor}`, 'warning');
         } else {
-            // No blueprint loaded, just navigate within reasonable limits
-            if ((direction > 0 && newFloor <= 10) || (direction < 0 && newFloor >= -3)) {
+            // No blueprint loaded, just navigate within reasonable limits (ground floor only)
+            if (newFloor === 0) {
                 currentFloor = newFloor;
                 updateFloorIndicator();
-                showStatus(`Floor changed to ${currentFloor}, but no blueprint is loaded`, 'info');
+                showStatus(`Floor changed to Ground Floor, but no blueprint is loaded`, 'info');
             } else {
-                showStatus(`Cannot navigate beyond floor limits`, 'warning');
+                showStatus(`Cannot navigate to floor ${newFloor} - no blueprint loaded`, 'warning');
             }
         }
     }
