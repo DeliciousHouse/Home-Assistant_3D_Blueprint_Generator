@@ -52,5 +52,26 @@
   "room_detection": {
       "use_areas": true
   },
+  "ai_image_generation": {
+      "enabled": true,
+      "provider": "gemini",
+      "model": "gemini-2.0-flash-preview-image-generation",
+      "api_key": "AIzaSyCL_0VcKYtGzYI-KQYbRvBPL4bp3VtbxGM",
+      "image_size": "1024x1024",
+      "quality": "high",
+      "output_dir": "data/generated_images"
+  },
+  "room_description": {
+      "default_style": "modern",
+      "style_presets": {
+          "modern": "modern, clean lines, minimalist, natural light, neutral colors",
+          "traditional": "traditional, classic, warm colors, detailed woodwork, cozy",
+          "industrial": "industrial, exposed brick, metal accents, concrete floors, open concept",
+          "scandinavian": "scandinavian, light woods, white walls, functional, hygge",
+          "farmhouse": "farmhouse style, rustic elements, wooden beams, vintage accents, warm",
+          "mid_century": "mid-century modern, clean lines, organic curves, bold colors",
+          "coastal": "coastal, light blues, white, natural textures, airy, beachy"
+      }
+  },
   "log_level": "debug"
 }

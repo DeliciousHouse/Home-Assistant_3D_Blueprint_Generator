@@ -11,6 +11,9 @@ from scipy.spatial import Delaunay
 
 from .bluetooth_processor import BluetoothProcessor
 from .ai_processor import AIProcessor
+# Import new AI Image Generation modules
+from .room_description_generator import description_generator
+from .ai_image_generator import image_generator
 from .db import (
     get_recent_distances,          # ESSENTIAL: To get data for relative positioning
     get_recent_area_predictions,   # ESSENTIAL: To get data for anchoring
@@ -258,13 +261,16 @@ class BlueprintGenerator:
                 self.status = {"state": "failed", "reason": "room_generation_failed", "message": str(e), "progress": 80}
                 return False
 
-            self.status["progress"] = 90
+            self.status["progress"] = 85
 
             # STEP 10-11: Predict objects and assemble blueprint
             try:
                 # Predict objects
                 objects = ai_processor.predict_objects(rooms)
                 logger.info(f"Predicted {len(objects)} objects")
+
+                # Determine floors
+                floors = self._determine_floors(rooms)
 
                 # Assemble blueprint
                 blueprint = {
@@ -273,8 +279,101 @@ class BlueprintGenerator:
                     'walls': walls,
                     'objects': objects,
                     'positions': transformed_positions,
-                    'floors': self._determine_floors(rooms)
+                    'floors': floors
                 }
+
+                self.status["progress"] = 90
+
+                # STEP 12: Generate AI room images if enabled
+                ai_image_config = self.config.get('ai_image_generation', {})
+                if ai_image_config.get('enabled', False):
+                    try:
+                        logger.info("AI image generation is enabled, generating images...")
+                        self.status["progress"] = 91
+                        self.status["message"] = "Generating AI room images..."
+
+                        # Create an organized structure for floors
+                        floor_data_by_number = {}
+                        for room in rooms:
+                            floor_num = room.get('floor', 0)
+                            if floor_num not in floor_data_by_number:
+                                floor_data_by_number[floor_num] = {
+                                    'floor_number': floor_num,
+                                    'name': f"Floor {floor_num}" if floor_num > 0 else ("Ground Floor" if floor_num == 0 else f"Basement {abs(floor_num)}"),
+                                    'rooms': []
+                                }
+                            floor_data_by_number[floor_num]['rooms'].append(room)
+
+                        # Check if AI image generation is enabled
+                        ai_image_config = self.config.get('ai_image_generation', {})
+                        ai_images_enabled = ai_image_config.get('enabled', False)
+
+                        if ai_images_enabled:
+                            # Generate images for each room
+                            room_count = len(rooms)
+                            for i, room in enumerate(rooms):
+                                room_name = room.get('name', f"Room {i+1}")
+                                if i % 5 == 0:  # Update progress periodically
+                                    self.status["progress"] = 91 + int((i / room_count) * 4)
+                                    self.status["message"] = f"Generating room image {i+1}/{room_count}..."
+
+                                try:
+                                    # Get style preset from config
+                                    style = self.config.get('room_description', {}).get('default_style', 'modern')
+                                    room_image_path = image_generator.generate_room_image(room, style)
+                                    if room_image_path:
+                                        room['room_image'] = room_image_path
+                                        logger.info(f"Added AI-generated image for {room_name}")
+                                except Exception as e:
+                                    logger.error(f"Failed to generate image for room {room_name}: {str(e)}")
+
+                            logger.info("Completed room image generation")
+                        else:
+                            logger.info("AI image generation is disabled, skipping room image generation")
+
+                        # Generate floor plan images if AI image generation is enabled
+                        self.status["progress"] = 95
+                        self.status["message"] = "Generating floor plan images..."
+
+                        if ai_images_enabled:
+                            for floor_num, floor_data in floor_data_by_number.items():
+                                try:
+                                    # Get style preset from config
+                                    style = self.config.get('room_description', {}).get('default_style', 'modern')
+                                    floor_image_path = image_generator.generate_floor_plan(floor_data, style)
+                                    if floor_image_path:
+                                        # Find the corresponding floor in the blueprint
+                                        for floor in floors:
+                                            if floor.get('floor_number') == floor_num:
+                                                floor['floor_plan_image'] = floor_image_path
+                                                break
+                                        logger.info(f"Added AI-generated floor plan for floor {floor_num}")
+                                except Exception as e:
+                                    logger.error(f"Failed to generate floor plan for floor {floor_num}: {str(e)}")
+
+                            # Generate home exterior image
+                            self.status["progress"] = 97
+                            self.status["message"] = "Generating exterior view..."
+                            try:
+                                # Get style preset from config
+                                style = self.config.get('room_description', {}).get('default_style', 'modern')
+                                exterior_image_path = image_generator.generate_home_exterior(blueprint, style)
+                                if exterior_image_path:
+                                    blueprint['exterior_image'] = exterior_image_path
+                                    logger.info("Added AI-generated exterior view image")
+                            except Exception as e:
+                                logger.error(f"Failed to generate exterior view image: {str(e)}")
+
+                        # Complete the blueprint generation
+                        self.status["progress"] = 98
+                        self.status["message"] = "Finalizing blueprint..."
+
+                    except Exception as e:
+                        logger.error(f"Error during AI image generation: {str(e)}")
+                        # Continue with saving blueprint even if image generation fails
+
+                self.status["progress"] = 98
+                self.status["message"] = "Saving blueprint..."
 
                 # Save blueprint to database
                 from .db import save_blueprint_to_sqlite
@@ -282,7 +381,7 @@ class BlueprintGenerator:
 
                 if not success:
                     logger.error("Failed to save blueprint to database")
-                    self.status = {"state": "failed", "reason": "database_save_failed", "progress": 95}
+                    self.status = {"state": "failed", "reason": "database_save_failed", "progress": 98}
                     return False
 
                 # Store the blueprint in memory for quick access

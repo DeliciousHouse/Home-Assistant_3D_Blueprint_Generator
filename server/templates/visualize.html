@@ -49,10 +49,156 @@
             margin: 0 5px;
             padding: 5px 10px;
             background: #444;
+        }
+        /* AI Image Gallery Styles */
+        #ai-images-button {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px 15px;
+            border: 1px solid #0078d4;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            z-index: 99;
+        }
+        #ai-images-button:hover {
+            background: rgba(0, 120, 212, 0.7);
+        }
+        .ai-image-modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0, 0, 0, 0.85);
+        }
+        .ai-image-modal-content {
+            position: relative;
+            background-color: #1e1e1e;
+            margin: 2% auto;
+            padding: 0;
+            border: 1px solid #444;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 1200px;
+            height: 90%;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+        }
+        .ai-image-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            border-bottom: 1px solid #444;
+        }
+        .ai-image-title {
+            font-size: 20px;
+            font-weight: bold;
+            color: #fff;
+        }
+        .ai-image-close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .ai-image-close:hover {
+            color: #fff;
+        }
+        .ai-image-tabs {
+            display: flex;
+            background-color: #252525;
+            border-bottom: 1px solid #444;
+        }
+        .ai-image-tab {
+            padding: 12px 20px;
+            cursor: pointer;
+            color: #ccc;
+            transition: background-color 0.3s;
+        }
+        .ai-image-tab:hover {
+            background-color: #333;
+        }
+        .ai-image-tab.active {
+            color: white;
+            background-color: #0078d4;
+            font-weight: bold;
+        }
+        .ai-image-body {
+            flex: 1;
+            overflow: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+        }
+        .ai-image-tab-content {
+            display: none;
+            height: 100%;
+            flex: 1;
+        }
+        .ai-image-selector {
+            margin-bottom: 15px;
+        }
+        .ai-image-select {
+            width: 100%;
+            padding: 8px;
+            background-color: #333;
+            color: white;
+            border: 1px solid #555;
+            border-radius: 4px;
+        }
+        .ai-image-display {
+            display: flex;
+            flex-direction: column;
+            height: calc(100% - 40px);
+        }
+        .ai-image-container {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            background-color: #252525;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        .ai-image {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        .ai-image-description {
+            padding: 10px;
+            background-color: #333;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .ai-image-footer {
+            padding: 15px 20px;
+            border-top: 1px solid #444;
+            display: flex;
+            justify-content: flex-end;
+        }
+        .ai-image-footer-btn {
+            padding: 8px 16px;
+            background-color: #4285F4;
             color: white;
             border: none;
-            border-radius: 3px;
+            border-radius: 4px;
             cursor: pointer;
+            margin-left: 10px;
+        }
+        .ai-image-footer-btn:hover {
+            background-color: #3367D6;
         }
         #floor-controls button.active {
             background: #0078d4;
@@ -63,7 +209,7 @@
         #object-info {
             position: absolute;
             bottom: 20px;
-            right: 20px;
+            right: 100px;
             background: rgba(0, 0, 0, 0.7);
             color: white;
             padding: 10px;
@@ -129,6 +275,24 @@
             padding: 5px 10px;
             background: #444;
             color: white;
+        }
+        #ai-images-button {
+            position: absolute;
+            top: 70px;
+            right: 10px;
+            background: rgba(33, 150, 243, 0.7);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 5px;
+            border: none;
+            cursor: pointer;
+            z-index: 100;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        #ai-images-button:hover {
+            background: rgba(33, 150, 243, 0.9);
+        }
             border: none;
             border-radius: 3px;
             cursor: pointer;
@@ -142,25 +306,207 @@
             font-weight: bold;
             padding: 0 10px;
         }
+
+        /* AI Image Modal */
+        .ai-image-modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            overflow: auto;
+        }
+
+        .ai-image-content {
+            position: relative;
+            margin: 5% auto;
+            padding: 20px;
+            width: 80%;
+            max-width: 1200px;
+            background-color: #1e1e1e;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
+        }
+
+        .ai-image-close {
+            position: absolute;
+            top: 10px;
+            right: 20px;
+            color: #aaa;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .ai-image-close:hover {
+            color: white;
+        }
+
+        .ai-image-display {
+            margin-top: 15px;
+            text-align: center;
+        }
+
+        .ai-image-display img {
+            max-width: 100%;
+            max-height: 70vh;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .ai-image-title {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #90caf9;
+        }
+
+        .ai-image-description {
+            margin-top: 15px;
+            color: #ddd;
+            line-height: 1.5;
+        }
+
+        .ai-image-controls {
+            display: flex;
+            justify-content: center;
+            margin-top: 20px;
+        }
+
+        .ai-image-button {
+            background-color: #2196f3;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 0 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+
+        .ai-image-button:hover {
+            background-color: #0d8bf2;
+        }
+
+        .ai-image-tab {
+            display: inline-block;
+            padding: 8px 16px;
+            cursor: pointer;
+            background-color: #333;
+            color: #ddd;
+            border-radius: 5px 5px 0 0;
+            margin-right: 5px;
+        }
+
+        .ai-image-tab.active {
+            background-color: #2196f3;
+            color: white;
+        }
+
+        .view-ai-button {
+            background-color: #2196f3;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            margin-top: 5px;
+        }
+
+        .view-ai-button:hover {
+            background-color: #0d8bf2;
+        }
     </style>
 </head>
 <body>
     <div id="blueprint-container"></div>
     <div id="error-message"></div>
+
     <div id="info-panel">
-        <h3>Blueprint Info</h3>
-        <div id="blueprint-stats"></div>
+        <h3>3D Blueprint Viewer</h3>
+        <p>Home Assistant 3D Blueprint Generator</p>
+        <div id="controls">
+            <label>
+                <input type="checkbox" id="toggle-labels" checked> Show Labels
+            </label>
+            <br>
+            <label>
+                <input type="checkbox" id="toggle-shadows" checked> Show Shadows
+            </label>
+        </div>
     </div>
-    <div id="floor-controls">
-        <span class="controls-label">Floor:</span>
-        <!-- Floor buttons will be generated here -->
+
+    <div id="floor-controls"></div>
+
+    <div id="object-info"></div>
+
+    <!-- AI Images Button -->
+    <button id="ai-images-button">AI Images</button>
+
+    <!-- AI Image Modal -->
+    <div id="ai-image-modal" class="ai-image-modal">
+        <div class="ai-image-modal-content">
+            <div class="ai-image-header">
+                <div class="ai-image-title" id="ai-image-title">Room Images</div>
+                <span class="ai-image-close">&times;</span>
+            </div>
+
+            <div class="ai-image-tabs">
+                <div class="ai-image-tab active" data-tab="rooms">Rooms</div>
+                <div class="ai-image-tab" data-tab="floors">Floor Plans</div>
+                <div class="ai-image-tab" data-tab="exterior">Exterior View</div>
+            </div>
+
+            <div class="ai-image-body">
+                <!-- Room Images Tab Content -->
+                <div id="rooms-tab" class="ai-image-tab-content" style="display: block;">
+                    <div class="ai-image-selector" id="room-list"></div>
+                    <div class="ai-image-display">
+                        <div class="ai-image-container">
+                            <img id="room-image" class="ai-image" src="" alt="Room Image">
+                        </div>
+                        <div class="ai-image-description" id="room-description"></div>
+                    </div>
+                </div>
+
+                <!-- Floor Plans Tab Content -->
+                <div id="floors-tab" class="ai-image-tab-content">
+                    <div class="ai-image-selector" id="floor-list"></div>
+                    <div class="ai-image-display">
+                        <div class="ai-image-container">
+                            <img id="floor-image" class="ai-image" src="" alt="Floor Plan Image">
+                        </div>
+                        <div class="ai-image-description" id="floor-description"></div>
+                    </div>
+                </div>
+
+                <!-- Exterior View Tab Content -->
+                <div id="exterior-tab" class="ai-image-tab-content">
+                    <div class="ai-image-display">
+                        <div class="ai-image-container">
+                            <img id="exterior-image" class="ai-image" src="" alt="Exterior View Image">
+                        </div>
+                        <div class="ai-image-description" id="exterior-description"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="ai-image-footer">
+                <button id="close-modal" class="ai-image-footer-btn">Close</button>
+                <button id="download-image" class="ai-image-footer-btn">Download Image</button>
+            </div>
+        </div>
     </div>
+
     <div id="floor-navigation">
         <button id="floor-up">▲</button>
         <span id="current-floor-display">Floor 0</span>
         <button id="floor-down">▼</button>
     </div>
-    <div id="object-info"></div>
     <div id="unit-toggle">
         <span id="unit-toggle-icon">📏</span>
         <span id="current-unit">Metric (m)</span>
@@ -1160,6 +1506,231 @@
                 addRoomLabels(roomsToRender);
             }
         }
+    </script>
+
+    <!-- AI Image Modal Scripts -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const blueprint = JSON.parse('{{ blueprint|safe }}');
+            const modal = document.getElementById('ai-image-modal');
+            const closeBtn = document.querySelector('.ai-image-close');
+            const downloadBtn = document.getElementById('download-image');
+            const closeModalBtn = document.getElementById('close-modal');
+            const tabs = document.querySelectorAll('.ai-image-tab');
+            const roomImage = document.getElementById('room-image');
+            const floorImage = document.getElementById('floor-image');
+            const exteriorImage = document.getElementById('exterior-image');
+            const roomDescription = document.getElementById('room-description');
+            const floorDescription = document.getElementById('floor-description');
+            const exteriorDescription = document.getElementById('exterior-description');
+            const roomList = document.getElementById('room-list');
+            const floorList = document.getElementById('floor-list');
+
+            let currentImage = null;
+
+            // Initialize AI Image Button if images are available
+            const aiImagesButton = document.getElementById('ai-images-button');
+
+            // Check if blueprint has AI-generated images
+            function hasAiImages() {
+                // Check for exterior image
+                if (blueprint.exterior_image) return true;
+
+                // Check for room images
+                const rooms = blueprint.rooms || [];
+                for (const room of rooms) {
+                    if (room.room_image) return true;
+                }
+
+                // Check for floor plan images
+                const floors = blueprint.floors || [];
+                for (const floor of floors) {
+                    if (floor.floor_plan_image) return true;
+                }
+
+                return false;
+            }
+
+            // Hide the button if no AI images available
+            if (!hasAiImages()) {
+                aiImagesButton.style.display = 'none';
+            }
+
+            // Open modal when AI Images button is clicked
+            aiImagesButton.addEventListener('click', openModal);
+
+            function openModal() {
+                modal.style.display = 'block';
+                showTab('rooms');
+                populateRoomsList();
+                populateFloorsList();
+                loadExteriorImage();
+            }
+
+            // Close modal with close button
+            closeBtn.addEventListener('click', closeModal);
+            closeModalBtn.addEventListener('click', closeModal);
+
+            // Close modal with Escape key
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape' && modal.style.display === 'block') {
+                    closeModal();
+                }
+            });
+
+            // Close modal when clicking outside the content
+            window.addEventListener('click', function(e) {
+                if (e.target === modal) {
+                    closeModal();
+                }
+            });
+
+            function closeModal() {
+                modal.style.display = 'none';
+                currentImage = null;
+            }
+
+            // Tab switching
+            tabs.forEach(tab => {
+                tab.addEventListener('click', function() {
+                    const tabName = this.getAttribute('data-tab');
+                    showTab(tabName);
+                });
+            });
+
+            function showTab(tabName) {
+                // Update active tab
+                tabs.forEach(tab => {
+                    if (tab.getAttribute('data-tab') === tabName) {
+                        tab.classList.add('active');
+                    } else {
+                        tab.classList.remove('active');
+                    }
+                });
+
+                // Update tab content visibility
+                document.getElementById('rooms-tab').style.display = tabName === 'rooms' ? 'block' : 'none';
+                document.getElementById('floors-tab').style.display = tabName === 'floors' ? 'block' : 'none';
+                document.getElementById('exterior-tab').style.display = tabName === 'exterior' ? 'block' : 'none';
+
+                // Update modal title
+                document.getElementById('ai-image-title').textContent =
+                    tabName === 'rooms' ? 'Room Images' :
+                    tabName === 'floors' ? 'Floor Plans' : 'Exterior View';
+            }
+
+            // Populate rooms list
+            function populateRoomsList() {
+                roomList.innerHTML = '';
+                const rooms = blueprint.rooms || [];
+
+                const roomsWithImages = rooms.filter(room => room.room_image);
+
+                if (roomsWithImages.length === 0) {
+                    roomList.innerHTML = '<p>No room images available</p>';
+                    roomImage.src = '';
+                    roomDescription.textContent = 'No AI-generated room images are available.';
+                    return;
+                }
+
+                const select = document.createElement('select');
+                select.className = 'ai-image-select';
+
+                roomsWithImages.forEach(room => {
+                    const option = document.createElement('option');
+                    option.value = room.room_image;
+                    option.textContent = room.name || `Room ${room.id}`;
+                    select.appendChild(option);
+                });
+
+                select.addEventListener('change', function() {
+                    const selectedRoom = roomsWithImages.find(room => room.room_image === this.value);
+                    if (selectedRoom) {
+                        roomImage.src = `/api/images/${selectedRoom.room_image.split('/').pop()}`;
+                        roomDescription.textContent = `${selectedRoom.name} - ${selectedRoom.dimensions?.width.toFixed(1)}m × ${selectedRoom.dimensions?.length.toFixed(1)}m`;
+                        currentImage = roomImage;
+                    }
+                });
+
+                roomList.appendChild(select);
+
+                // Select first room by default
+                if (roomsWithImages.length > 0) {
+                    select.value = roomsWithImages[0].room_image;
+                    roomImage.src = `/api/images/${roomsWithImages[0].room_image.split('/').pop()}`;
+                    roomDescription.textContent = `${roomsWithImages[0].name} - ${roomsWithImages[0].dimensions?.width.toFixed(1)}m × ${roomsWithImages[0].dimensions?.length.toFixed(1)}m`;
+                    currentImage = roomImage;
+                }
+            }
+
+            // Populate floors list
+            function populateFloorsList() {
+                floorList.innerHTML = '';
+                const floors = blueprint.floors || [];
+
+                const floorsWithImages = floors.filter(floor => floor.floor_plan_image);
+
+                if (floorsWithImages.length === 0) {
+                    floorList.innerHTML = '<p>No floor plan images available</p>';
+                    floorImage.src = '';
+                    floorDescription.textContent = 'No AI-generated floor plan images are available.';
+                    return;
+                }
+
+                const select = document.createElement('select');
+                select.className = 'ai-image-select';
+
+                floorsWithImages.forEach(floor => {
+                    const option = document.createElement('option');
+                    option.value = floor.floor_plan_image;
+                    option.textContent = floor.name || `Floor ${floor.floor_number}`;
+                    select.appendChild(option);
+                });
+
+                select.addEventListener('change', function() {
+                    const selectedFloor = floorsWithImages.find(floor => floor.floor_plan_image === this.value);
+                    if (selectedFloor) {
+                        floorImage.src = `/api/images/${selectedFloor.floor_plan_image.split('/').pop()}`;
+                        floorDescription.textContent = selectedFloor.name || `Floor ${selectedFloor.floor_number}`;
+                        currentImage = floorImage;
+                    }
+                });
+
+                floorList.appendChild(select);
+
+                // Select first floor by default
+                if (floorsWithImages.length > 0) {
+                    select.value = floorsWithImages[0].floor_plan_image;
+                    floorImage.src = `/api/images/${floorsWithImages[0].floor_plan_image.split('/').pop()}`;
+                    floorDescription.textContent = floorsWithImages[0].name || `Floor ${floorsWithImages[0].floor_number}`;
+                    currentImage = floorImage;
+                }
+            }
+
+            // Load exterior image
+            function loadExteriorImage() {
+                if (blueprint.exterior_image) {
+                    exteriorImage.src = `/api/images/${blueprint.exterior_image.split('/').pop()}`;
+                    exteriorDescription.textContent = 'AI-generated exterior view of your home';
+                } else {
+                    exteriorImage.src = '';
+                    exteriorDescription.textContent = 'No AI-generated exterior image is available.';
+                }
+            }
+
+            // Download current image
+            downloadBtn.addEventListener('click', function() {
+                if (currentImage && currentImage.src) {
+                    // Create a temporary link element and trigger download
+                    const a = document.createElement('a');
+                    a.href = currentImage.src;
+                    a.download = currentImage.src.split('/').pop();
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                }
+            });
+        });
     </script>
 </body>
 </html>

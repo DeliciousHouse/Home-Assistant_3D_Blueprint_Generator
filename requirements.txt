@@ -14,6 +14,7 @@ websocket-client
 PyYAML
 protobuf
 python-json-logger
+google-genai
 
 # ML/AI dependencies
 tensorflow

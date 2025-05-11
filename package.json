@@ -1,0 +1,27 @@
+{
+  "name": "home-assistant-3d-blueprint-generator",
+  "version": "1.0.0",
+  "description": "Generate 3D blueprints from Home Assistant sensor data with AI image generation",
+  "main": "run.py",
+  "scripts": {
+    "start": "python run.py",
+    "setup": "python setup_directories.py",
+    "install-deps": "pip install -r requirements.txt",
+    "install-ai-deps": "pip install google-generativeai Pillow"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DeliciousHouse/Home-Assistant_3D_Blueprint_Generator"
+  },
+  "keywords": [
+    "home-assistant",
+    "3d",
+    "blueprint",
+    "ai",
+    "image-generation",
+    "gemini"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {}
+}

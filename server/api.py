@@ -2,7 +2,7 @@ import json
 import logging
 import requests
 from typing import Dict, Optional
-from flask import Flask, jsonify, request, send_from_directory, render_template, redirect
+from flask import Flask, jsonify, request, send_from_directory, render_template, redirect, send_file
 from flask_cors import CORS
 import os
 import random  # Added for random offsets in estimated scanner locations
@@ -212,6 +212,44 @@ def show_debug():
     except Exception as e:
         logger.error(f"Error showing debug info: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/images/<path:filename>', methods=['GET'])
+def serve_images(filename):
+    """Serve AI-generated image files."""
+    try:
+        # Get the current configuration
+        config = load_config()
+        output_dir = config.get('ai_image_generation', {}).get('output_dir', 'data/generated_images')
+
+        # Ensure path is absolute
+        if not os.path.isabs(output_dir):
+            output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), output_dir)
+
+        # Check if file exists
+        file_path = os.path.join(output_dir, filename)
+        if not os.path.exists(file_path):
+            logger.warning(f"Requested image file not found: {file_path}")
+            return jsonify({'error': 'Image not found'}), 404
+
+        # Determine content type based on file extension
+        content_type = None
+        if filename.lower().endswith('.png'):
+            content_type = 'image/png'
+        elif filename.lower().endswith('.jpg') or filename.lower().endswith('.jpeg'):
+            content_type = 'image/jpeg'
+        elif filename.lower().endswith('.webp'):
+            content_type = 'image/webp'
+        else:
+            content_type = 'application/octet-stream'
+
+        logger.debug(f"Serving image file: {filename} with content-type: {content_type}")
+        return send_file(file_path, mimetype=content_type)
+    except Exception as e:
+        logger.error(f"Error serving image file {filename}: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
+    except Exception as e:
+        logger.error(f"Error serving image: {e}")
+        return jsonify({"error": str(e)}), 500
 
 def start_api(host='0.0.0.0', port=8001, debug=False, use_reloader=False):
     """Start the Flask API server."""

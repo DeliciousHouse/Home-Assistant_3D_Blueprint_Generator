@@ -12,6 +12,7 @@ Generate dynamic 3D home blueprints from Bluetooth sensor data in Home Assistant
 - **Local Processing**: All data processing happens locally for maximum privacy
 - **Home Assistant Integration**: Direct integration with Home Assistant's Bluetooth devices
 - **Manual Adjustments**: Interface for fine-tuning room layouts and dimensions
+- **AI Image Generation**: Creates realistic room and floor plan images using AI (Google Gemini, OpenAI DALL-E, etc.)
 
 ## Quick Start
 
@@ -57,6 +58,53 @@ pytest                 # Run all tests
 pytest -v             # Verbose output
 pytest --cov         # With coverage report
 ```
+
+## AI Image Generation
+
+The 3D Blueprint Generator now includes AI-powered image generation capabilities that create realistic visualizations of:
+
+1. Individual rooms based on their dimensions and features
+2. Floor plans with accurate room layouts
+3. Exterior views of your home
+
+### Supported AI Providers
+
+- **Google Gemini** (Default) - Using the new Gemini 2.0 Flash Preview Image Generation model
+- **OpenAI DALL-E** - Compatible with DALL-E 3 for photorealistic room images
+- **Replicate** - Supports various models like Stable Diffusion XL
+- **Ollama** - For local image generation using models like LLaVA
+
+### Configuration
+
+AI image generation is disabled by default. To enable it, update your `config.json`:
+
+```json
+{
+  "ai_image_generation": {
+    "enabled": true,
+    "provider": "gemini",
+    "api_key": "YOUR_API_KEY",
+    "model": "gemini-2.0-flash-preview-image-generation",
+    "image_size": "1024x1024",
+    "quality": "high"
+  },
+  "room_description": {
+    "default_style": "modern"
+  }
+}
+```
+
+Available style presets include: modern, traditional, industrial, scandinavian, farmhouse, mid_century, and coastal.
+
+### API Keys
+
+To use the AI image generation feature, you'll need to provide an API key for your chosen provider:
+
+- **Google Gemini**: Obtain from [Google AI Studio](https://makersuite.google.com/)
+- **OpenAI**: Create at [OpenAI Platform](https://platform.openai.com/)
+- **Replicate**: Get from [Replicate](https://replicate.com/)
+
+For better security, you can set the API key as an environment variable `GOOGLE_API_KEY` or `AI_IMAGE_API_KEY` instead of putting it directly in the config file.
 
 ## License
 
