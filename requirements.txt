@@ -14,7 +14,8 @@ websocket-client
 PyYAML
 protobuf
 python-json-logger
-google-genai
+google-generativeai
+Pillow  # Required for Gemini image handling
 
 # ML/AI dependencies
 tensorflow

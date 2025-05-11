@@ -36,8 +36,8 @@ WORKDIR /opt/blueprint_generator
 COPY requirements.txt .
 RUN pip install --upgrade pip wheel setuptools
 RUN pip install --no-cache-dir -r requirements.txt
-# Add missing package
-RUN pip install python-json-logger
+# Add missing packages
+RUN pip install python-json-logger google-generativeai Pillow
 
 # Copy your application code
 COPY . .

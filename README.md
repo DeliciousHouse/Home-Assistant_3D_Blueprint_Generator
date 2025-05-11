@@ -12,7 +12,10 @@ Generate dynamic 3D home blueprints from Bluetooth sensor data in Home Assistant
 - **Local Processing**: All data processing happens locally for maximum privacy
 - **Home Assistant Integration**: Direct integration with Home Assistant's Bluetooth devices
 - **Manual Adjustments**: Interface for fine-tuning room layouts and dimensions
-- **AI Image Generation**: Creates realistic room and floor plan images using AI (Google Gemini, OpenAI DALL-E, etc.)
+- **AI Image Generation**: Creates realistic room and floor plan images using AI
+  - **Google Gemini 2.0 Image Generation**: Generate photorealistic room, floor plan, and exterior visualizations
+  - **Multiple Provider Support**: Options for OpenAI DALL-E, Replicate, and local models
+  - **Style Customization**: Generate images in different interior design styles
 
 ## Quick Start
 
@@ -27,8 +30,20 @@ Generate dynamic 3D home blueprints from Bluetooth sensor data in Home Assistant
 - [Installation Guide](blueprint_generator/DOCS.md#installation)
 - [Configuration](blueprint_generator/DOCS.md#configuration)
 - [Usage Guide](blueprint_generator/DOCS.md#usage)
+- [AI Image Generation](docs/ai_image_generation.md)
 - [Troubleshooting](blueprint_generator/DOCS.md#troubleshooting)
 - [Contributing](CONTRIBUTING.md)
+
+## AI Image Generation
+
+The Blueprint Generator can create photorealistic visualizations of your home using AI image generation:
+
+- **Room Visualizations**: See how each room could look based on its dimensions and purpose
+- **Floor Plan Images**: Generate visual floor plans for each level of your home
+- **Exterior Views**: Create exterior visualizations of your home
+- **Style Options**: Choose from modern, traditional, industrial, scandinavian, farmhouse, and other interior design styles
+
+To configure AI image generation, see the [dedicated documentation](docs/ai_image_generation.md).
 
 ## Support
 

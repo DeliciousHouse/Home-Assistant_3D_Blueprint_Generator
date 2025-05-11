@@ -17,12 +17,9 @@ from pathlib import Path
 from io import BytesIO
 
 from .config_loader import load_config
-from .room_description_generator import description_generator
-
-# Add Google Gemini imports
+from .room_description_generator import description_generator    # Add Google Gemini imports
 try:
-    from google import genai
-    from google.genai import types
+    import google.generativeai as genai
     from PIL import Image
     GEMINI_AVAILABLE = True
 except ImportError:
@@ -46,29 +43,46 @@ class AIImageGenerator:
         self.model = self.image_gen_config.get('model', 'llava')  # Default model
         self.image_size = self.image_gen_config.get('image_size', '1024x1024')
         self.quality = self.image_gen_config.get('quality', 'standard')
-        self.output_dir = self.image_gen_config.get('output_dir', os.path.join(
+        # Use an absolute path that's accessible for testing
+        default_output_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             'data', 'generated_images'
-        ))
+        )
+
+        # Check if the default directory is writable, otherwise use /tmp
+        if not os.access(os.path.dirname(default_output_dir), os.W_OK):
+            default_output_dir = '/tmp/blueprint_generator_images'
+
+        self.output_dir = self.image_gen_config.get('output_dir', default_output_dir)
 
         # Initialize Google Gemini client if needed
         self.gemini_client = None
         if self.provider == 'gemini':
-            try:
-                import google.generativeai as genai
+            if not GEMINI_AVAILABLE:
+                logger.error("Google Generative AI package not installed. Install with: pip install google-generativeai")
+                # Don't fail here, continue initialization to allow other operations
+            else:
                 gemini_api_key = self.api_key or os.environ.get('GOOGLE_API_KEY', '')
                 if gemini_api_key:
-                    genai.configure(api_key=gemini_api_key)
-                    self.gemini_client = genai.GenerativeModel("gemini-2.0-flash-preview-image-generation")
-                    logger.info("Google Gemini client initialized successfully")
+                    try:
+                        genai.configure(api_key=gemini_api_key)
+                        self.gemini_client = genai.GenerativeModel("gemini-2.0-flash-preview-image-generation")
+                        logger.info("Google Gemini client initialized successfully")
+                    except Exception as e:
+                        logger.error(f"Failed to initialize Gemini client: {str(e)}")
                 else:
                     logger.error("No Google API key found for Gemini image generation")
-            except ImportError:
-                logger.error("Google Generative AI package not installed. Install with: pip install google-generativeai")
 
-        # Create output directory if it doesn't exist
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
+        # Create output directory if it doesn't exist and we have permissions
+        try:
+            if not os.path.exists(self.output_dir):
+                os.makedirs(self.output_dir, exist_ok=True)
+                logger.info(f"Created image output directory: {self.output_dir}")
+        except PermissionError:
+            # If we can't create the specified directory, fall back to /tmp
+            self.output_dir = '/tmp/blueprint_generator_images'
+            os.makedirs(self.output_dir, exist_ok=True)
+            logger.warning(f"Permission denied for original output directory, using: {self.output_dir}")
 
         logger.info(f"AI Image Generator initialized (enabled: {self.enabled}, provider: {self.provider}, model: {self.model})")
 
@@ -179,8 +193,11 @@ class AIImageGenerator:
             return self._call_replicate(prompt, filename_base)
         elif self.provider == 'local':
             return self._call_local_model(prompt, filename_base)
-        elif self.provider == 'gemini' and self.gemini_client:
-            return self._call_gemini(prompt, filename_base)
+        elif self.provider == 'gemini':
+            if self.gemini_client:
+                return self._call_gemini(prompt, filename_base)
+            else:
+                raise ValueError("Gemini client not initialized. Install google-generativeai package and check API key.")
         else:
             raise ValueError(f"Unsupported AI provider: {self.provider}")
 
@@ -403,41 +420,77 @@ class AIImageGenerator:
             raise ValueError("Gemini client not initialized. Check API key and package installation.")
 
         try:
-            import google.generativeai as genai
             from PIL import Image
             from io import BytesIO
+            import google.generativeai as genai
 
-            # Configure response to include image
-            config = genai.types.GenerateContentConfig(
-                response_modalities=['TEXT', 'IMAGE']
+            logger.info(f"Calling Gemini API with prompt: {prompt[:100]}...")
+
+            # Prepare the prompt for the image generation model
+            enhanced_prompt = f"Generate a photorealistic image: {prompt}"
+
+            # Configure the generation parameters for the image generation model
+            generation_config = genai.types.GenerationConfig(
+                temperature=0.4,  # Lower temperature for more consistent results
+                top_p=0.95,
+                top_k=32,
+                max_output_tokens=2048
             )
 
             # Generate image
-            response = self.gemini_client.generate_content(
-                prompt,
-                config=config
-            )
+            response = self.gemini_client.generate_content(enhanced_prompt, generation_config=generation_config)
 
-            # Process the response
+            if not response or not hasattr(response, 'candidates') or not response.candidates:
+                logger.error("Invalid or empty response from Gemini API")
+                raise ValueError("Invalid response from Gemini API")
+
+            # Process the response - extract image data
             image_data = None
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, 'inline_data') and part.inline_data:
-                    image_data = part.inline_data.data
-                    break
+
+            # Loop through all candidates and parts to find image data
+            for candidate in response.candidates:
+                if hasattr(candidate, 'content') and candidate.content:
+                    for part in candidate.content.parts:
+                        # Check for inline_data containing image
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            mime_type = getattr(part.inline_data, 'mime_type', '')
+                            if mime_type and mime_type.startswith('image/'):
+                                image_data = part.inline_data.data
+                                break
 
             if not image_data:
+                logger.error("No image data found in Gemini response")
                 raise ValueError("No image was generated by Gemini API")
 
             # Save the image
-            filename = f"{filename_base}_{int(time.time())}.png"
+            # Use appropriate file extension based on mime type
+            file_ext = "png"  # Default
+            if hasattr(part, 'inline_data') and hasattr(part.inline_data, 'mime_type'):
+                if "jpeg" in part.inline_data.mime_type or "jpg" in part.inline_data.mime_type:
+                    file_ext = "jpg"
+                elif "webp" in part.inline_data.mime_type:
+                    file_ext = "webp"
+
+            filename = f"{filename_base}_{int(time.time())}.{file_ext}"
             filepath = os.path.join(self.output_dir, filename)
 
-            # Decode and save the image
-            image = Image.open(BytesIO(base64.b64decode(image_data)))
-            image.save(filepath)
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
-            logger.info(f"Gemini generated image saved to {filepath}")
-            return filepath
+            # Decode and save the image
+            try:
+                image_bytes = base64.b64decode(image_data)
+                image = Image.open(BytesIO(image_bytes))
+                image.save(filepath)
+                logger.info(f"Gemini generated image saved to {filepath}")
+                return filepath
+            except Exception as e:
+                logger.error(f"Failed to save image: {str(e)}")
+                # Try to save the raw bytes as a fallback
+                with open(filepath, 'wb') as f:
+                    f.write(image_bytes)
+                logger.info(f"Saved raw image bytes to {filepath}")
+                return filepath
 
         except ImportError as e:
             logger.error(f"Error importing required libraries for Gemini: {str(e)}")

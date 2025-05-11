@@ -27,15 +27,19 @@ def test_gemini_image_generation(api_key=None, prompt=None, output_dir=None):
     """Test Gemini image generation with specified parameters."""
     # Use provided API key or the one from the environment
     api_key = api_key or os.environ.get('GOOGLE_API_KEY', 'AIzaSyCL_0VcKYtGzYI-KQYbRvBPL4bp3VtbxGM')
-    
-    # Create test configuration
-    output_dir = output_dir or os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "data", "generated_images"
-    )
+
+    # Create test configuration - use /tmp directory by default for testing
+    output_dir = output_dir or '/tmp/blueprint_generator_images'
 
     # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"Using output directory: {output_dir}")
+    except PermissionError:
+        # If we can't create the specified directory, fall back to /tmp
+        output_dir = '/tmp/blueprint_generator_images'
+        os.makedirs(output_dir, exist_ok=True)
+        logger.warning(f"Permission denied for original output directory, using: {output_dir}")
 
     # Create instance with test configuration
     generator = AIImageGenerator()
