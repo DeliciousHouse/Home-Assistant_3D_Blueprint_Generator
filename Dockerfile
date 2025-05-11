@@ -51,8 +51,8 @@ COPY nginx.conf /etc/nginx/nginx.conf
 # Create log directories
 RUN mkdir -p /var/log/ /var/log/nginx
 
-# Create data directory
-RUN mkdir -p /data
+# Create data directory and subdirectories
+RUN mkdir -p /data/generated_images
 # Explicitly set ownership to root (common for container processes)
 # Or use 'nginx:nginx' if your entrypoint switches user
 RUN chown -R root:root /data

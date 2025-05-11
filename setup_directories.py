@@ -13,6 +13,9 @@ def setup_directories():
     dirs_to_create = [
         os.path.join(base_dir, "data"),
         os.path.join(base_dir, "data", "generated_images"),
+        os.path.join(base_dir, "data", "models"),
+        "/data/generated_images",  # For container environment
+        "/tmp/blueprint_generator_images",  # Fallback directory
     ]
 
     for directory in dirs_to_create:

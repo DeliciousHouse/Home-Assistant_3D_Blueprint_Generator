@@ -43,35 +43,69 @@ class AIImageGenerator:
         self.model = self.image_gen_config.get('model', 'llava')  # Default model
         self.image_size = self.image_gen_config.get('image_size', '1024x1024')
         self.quality = self.image_gen_config.get('quality', 'standard')
-        # Use an absolute path that's accessible for testing
-        default_output_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            'data', 'generated_images'
-        )
+        # Try multiple possible paths in order of preference:
+        # 1. Container volume path
+        # 2. Local path relative to code
+        # 3. Fallback to /tmp
+        possible_paths = [
+            '/data/generated_images',  # Container volume path
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'generated_images'),
+            '/tmp/blueprint_generator_images'
+        ]
 
-        # Check if the default directory is writable, otherwise use /tmp
-        if not os.access(os.path.dirname(default_output_dir), os.W_OK):
+        # Find the first writable directory
+        default_output_dir = None
+        for path in possible_paths:
+            try:
+                parent_dir = os.path.dirname(path)
+                if os.path.exists(parent_dir) and os.access(parent_dir, os.W_OK):
+                    default_output_dir = path
+                    break
+            except Exception:
+                continue
+
+        # If no writable directory found, fall back to /tmp
+        if not default_output_dir:
             default_output_dir = '/tmp/blueprint_generator_images'
 
+        # Get the directory from config or use the default
         self.output_dir = self.image_gen_config.get('output_dir', default_output_dir)
 
         # Initialize Google Gemini client if needed
         self.gemini_client = None
         if self.provider == 'gemini':
-            if not GEMINI_AVAILABLE:
-                logger.error("Google Generative AI package not installed. Install with: pip install google-generativeai")
-                # Don't fail here, continue initialization to allow other operations
-            else:
-                gemini_api_key = self.api_key or os.environ.get('GOOGLE_API_KEY', '')
-                if gemini_api_key:
-                    try:
-                        genai.configure(api_key=gemini_api_key)
-                        self.gemini_client = genai.GenerativeModel("gemini-2.0-flash-preview-image-generation")
-                        logger.info("Google Gemini client initialized successfully")
-                    except Exception as e:
-                        logger.error(f"Failed to initialize Gemini client: {str(e)}")
-                else:
-                    logger.error("No Google API key found for Gemini image generation")
+            self._initialize_gemini_client()
+
+    def _initialize_gemini_client(self):
+        """Initialize the Google Gemini client with error handling"""
+        if not GEMINI_AVAILABLE:
+            logger.error("Google Generative AI package not installed. Install with: pip install google-generativeai")
+            return
+
+        gemini_api_key = self.api_key or os.environ.get('GOOGLE_API_KEY', '')
+        if not gemini_api_key:
+            logger.error("No Google API key found for Gemini image generation")
+            return
+
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=gemini_api_key)
+            # Use the correct model and no extra parameters
+            self.gemini_client = genai.GenerativeModel("gemini-2.0-flash-preview-image-generation")
+            logger.info("Google Gemini client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Gemini client: {str(e)}")
+            # Try a retry with a different client setup if needed
+            try:
+                self.gemini_client = genai.GenerativeModel(
+                    model_name="gemini-2.0-flash-preview-image-generation",
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.4
+                    )
+                )
+                logger.info("Google Gemini client initialized with backup configuration")
+            except Exception as retry_error:
+                logger.error(f"Gemini client retry initialization failed: {str(retry_error)}")
 
         # Create output directory if it doesn't exist and we have permissions
         try:
@@ -424,21 +458,43 @@ class AIImageGenerator:
             from io import BytesIO
             import google.generativeai as genai
 
-            logger.info(f"Calling Gemini API with prompt: {prompt[:100]}...")
-
-            # Prepare the prompt for the image generation model
+            logger.info(f"Calling Gemini API with prompt: {prompt[:100]}...")            # Prepare the prompt for the image generation model
             enhanced_prompt = f"Generate a photorealistic image: {prompt}"
 
-            # Configure the generation parameters for the image generation model
+            # For Gemini 2.0 Flash Preview Image Generation model,
+            # we don't need to specify response modalities as it always returns image
             generation_config = genai.types.GenerationConfig(
-                temperature=0.4,  # Lower temperature for more consistent results
+                temperature=0.4,
                 top_p=0.95,
-                top_k=32,
-                max_output_tokens=2048
+                top_k=32
             )
 
-            # Generate image
-            response = self.gemini_client.generate_content(enhanced_prompt, generation_config=generation_config)
+            # Response section settings for the image generation model
+            safety_settings = [
+                {
+                    "category": "HARM_CATEGORY_HARASSMENT",
+                    "threshold": "BLOCK_NONE",
+                },
+                {
+                    "category": "HARM_CATEGORY_HATE_SPEECH",
+                    "threshold": "BLOCK_NONE",
+                },
+                {
+                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "threshold": "BLOCK_NONE",
+                },
+                {
+                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                    "threshold": "BLOCK_NONE",
+                },
+            ]
+
+            # Generate image - don't add any extra configuration that might interfere with response modalities
+            response = self.gemini_client.generate_content(
+                enhanced_prompt,
+                generation_config=generation_config,
+                safety_settings=safety_settings
+            )
 
             if not response or not hasattr(response, 'candidates') or not response.candidates:
                 logger.error("Invalid or empty response from Gemini API")
