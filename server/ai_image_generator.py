@@ -89,21 +89,24 @@ class AIImageGenerator:
 
         try:
             import google.generativeai as genai
+            # Configure the API key
             genai.configure(api_key=gemini_api_key)
-            # Use the correct model and no extra parameters
-            self.gemini_client = genai.GenerativeModel("gemini-2.0-flash-preview-image-generation")
+
+            # Create client using the correct model name for image generation
+            self.gemini_client = genai.GenerativeModel(
+                model_name="gemini-2.0-flash-preview-image-generation",
+                # No additional parameters to avoid conflicts with response modalities
+            )
             logger.info("Google Gemini client initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Gemini client: {str(e)}")
-            # Try a retry with a different client setup if needed
+            # Try one more time with a minimal approach
             try:
-                self.gemini_client = genai.GenerativeModel(
-                    model_name="gemini-2.0-flash-preview-image-generation",
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.4
-                    )
-                )
-                logger.info("Google Gemini client initialized with backup configuration")
+                import google.generativeai as genai
+                genai.configure(api_key=gemini_api_key)
+                # Absolute minimal configuration
+                self.gemini_client = genai.GenerativeModel("gemini-2.0-flash-preview-image-generation")
+                logger.info("Google Gemini client initialized with minimal configuration")
             except Exception as retry_error:
                 logger.error(f"Gemini client retry initialization failed: {str(retry_error)}")
 
@@ -456,45 +459,11 @@ class AIImageGenerator:
         try:
             from PIL import Image
             from io import BytesIO
-            import google.generativeai as genai
 
-            logger.info(f"Calling Gemini API with prompt: {prompt[:100]}...")            # Prepare the prompt for the image generation model
-            enhanced_prompt = f"Generate a photorealistic image: {prompt}"
+            logger.info(f"Calling Gemini API with prompt: {prompt[:100]}...")
 
-            # For Gemini 2.0 Flash Preview Image Generation model,
-            # we don't need to specify response modalities as it always returns image
-            generation_config = genai.types.GenerationConfig(
-                temperature=0.4,
-                top_p=0.95,
-                top_k=32
-            )
-
-            # Response section settings for the image generation model
-            safety_settings = [
-                {
-                    "category": "HARM_CATEGORY_HARASSMENT",
-                    "threshold": "BLOCK_NONE",
-                },
-                {
-                    "category": "HARM_CATEGORY_HATE_SPEECH",
-                    "threshold": "BLOCK_NONE",
-                },
-                {
-                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                    "threshold": "BLOCK_NONE",
-                },
-                {
-                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                    "threshold": "BLOCK_NONE",
-                },
-            ]
-
-            # Generate image - don't add any extra configuration that might interfere with response modalities
-            response = self.gemini_client.generate_content(
-                enhanced_prompt,
-                generation_config=generation_config,
-                safety_settings=safety_settings
-            )
+            # Generate the image with minimal parameters
+            response = self.gemini_client.generate_content(prompt)
 
             if not response or not hasattr(response, 'candidates') or not response.candidates:
                 logger.error("Invalid or empty response from Gemini API")

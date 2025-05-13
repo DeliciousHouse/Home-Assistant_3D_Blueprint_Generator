@@ -44,6 +44,14 @@ Once configured, the Blueprint Generator will automatically generate images for:
 2. Floor plans showing the layout of each floor
 3. An exterior view of your home
 
+### Important Notes for Gemini 2.0
+
+When using Google's Gemini 2.0 Flash Preview Image Generation model:
+
+1. Use a simple configuration with minimal parameters to avoid errors
+2. The model can be sensitive to prompt formatting - keep prompts descriptive but concise
+3. If you encounter errors related to "response modalities", try updating to the latest version of the `google-generativeai` package
+
 These images will be accessible in the 3D Blueprint Viewer via the "AI Images" button.
 
 ## Customizing Image Styles
