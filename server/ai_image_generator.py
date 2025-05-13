@@ -82,9 +82,14 @@ class AIImageGenerator:
             logger.error("Google Generative AI package not installed. Install with: pip install google-generativeai")
             return
 
-        gemini_api_key = self.api_key or os.environ.get('GOOGLE_API_KEY', '')
+        # Check all possible environment variables for the API key
+        gemini_api_key = (self.api_key or
+                         os.environ.get('GOOGLE_API_KEY', '') or
+                         os.environ.get('AI_IMAGE_API_KEY', ''))
+
         if not gemini_api_key:
-            logger.error("No Google API key found for Gemini image generation")
+            logger.error("No Google API key found for Gemini image generation. "
+                        "Please set it in config.json or as GOOGLE_API_KEY/AI_IMAGE_API_KEY environment variable")
             return
 
         try:
@@ -93,20 +98,18 @@ class AIImageGenerator:
             genai.configure(api_key=gemini_api_key)
 
             # Create client using the correct model name for image generation
-            self.gemini_client = genai.GenerativeModel(
-                model_name="gemini-2.0-flash-preview-image-generation",
-                # No additional parameters to avoid conflicts with response modalities
-            )
+            # Use minimal configuration to avoid response modality conflicts
+            self.gemini_client = genai.GenerativeModel("gemini-2.0-flash-preview-image-generation")
             logger.info("Google Gemini client initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Gemini client: {str(e)}")
-            # Try one more time with a minimal approach
+            # Try one more time with a minimal approach and different model name
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=gemini_api_key)
-                # Absolute minimal configuration
-                self.gemini_client = genai.GenerativeModel("gemini-2.0-flash-preview-image-generation")
-                logger.info("Google Gemini client initialized with minimal configuration")
+                # Try the model name without the preview suffix as fallback
+                self.gemini_client = genai.GenerativeModel("gemini-2.0-flash-image-generation")
+                logger.info("Google Gemini client initialized with fallback model name")
             except Exception as retry_error:
                 logger.error(f"Gemini client retry initialization failed: {str(retry_error)}")
 
@@ -452,77 +455,90 @@ class AIImageGenerator:
             raise Exception("No image data received from local model")
 
     def _call_gemini(self, prompt: str, filename_base: str) -> str:
-        """Call Google's Gemini API for image generation"""
+        """Call Google Gemini model to generate an image."""
         if not self.gemini_client:
-            raise ValueError("Gemini client not initialized. Check API key and package installation.")
+            logger.error("Gemini client not initialized")
+            raise Exception("Gemini client not initialized")
 
         try:
-            from PIL import Image
-            from io import BytesIO
+            import google.generativeai as genai
 
             logger.info(f"Calling Gemini API with prompt: {prompt[:100]}...")
 
-            # Generate the image with minimal parameters
+            # Use the initialized client directly without additional parameters
+            # This is to avoid the "The requested combination of response modalities is not supported" error
             response = self.gemini_client.generate_content(prompt)
 
-            if not response or not hasattr(response, 'candidates') or not response.candidates:
-                logger.error("Invalid or empty response from Gemini API")
-                raise ValueError("Invalid response from Gemini API")
+            # Check if we got a valid response
+            if not response:
+                logger.error("Gemini API returned an empty response")
+                raise Exception("Empty response from Gemini API")
 
-            # Process the response - extract image data
+            # Debug response structure
+            logger.debug(f"Response type: {type(response)}")
+
+            # Different versions of the API have different response structures
+            # Handle both the old and new response formats
+            if hasattr(response, 'parts'):
+                parts = response.parts
+            elif hasattr(response, 'candidates') and response.candidates:
+                parts = []
+                for candidate in response.candidates:
+                    if hasattr(candidate, 'content') and candidate.content:
+                        parts.extend(candidate.content.parts)
+            else:
+                logger.error("Gemini API returned an invalid response structure")
+                raise Exception("Invalid response format from Gemini API")
+
+            # Find the image part in the response using the variable 'parts' we defined above
             image_data = None
+            mime_type = None
 
-            # Loop through all candidates and parts to find image data
-            for candidate in response.candidates:
-                if hasattr(candidate, 'content') and candidate.content:
-                    for part in candidate.content.parts:
-                        # Check for inline_data containing image
-                        if hasattr(part, 'inline_data') and part.inline_data:
-                            mime_type = getattr(part.inline_data, 'mime_type', '')
-                            if mime_type and mime_type.startswith('image/'):
-                                image_data = part.inline_data.data
-                                break
+            # First try the standard image attribute
+            for part in parts:
+                if hasattr(part, 'image') and part.image:
+                    image_data = part.image.to_bytes()
+                    mime_type = 'image/png'  # Assume PNG for direct image objects
+                    break
+
+                # Alternative format with inline_data (used in some versions)
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    inline_data = part.inline_data
+                    if hasattr(inline_data, 'mime_type') and inline_data.mime_type.startswith('image/'):
+                        mime_type = inline_data.mime_type
+                        image_data = base64.b64decode(inline_data.data)
+                        break
 
             if not image_data:
-                logger.error("No image data found in Gemini response")
-                raise ValueError("No image was generated by Gemini API")
+                logger.error("No image found in Gemini API response")
+                raise Exception("No image found in Gemini API response")
 
-            # Save the image
-            # Use appropriate file extension based on mime type
-            file_ext = "png"  # Default
-            if hasattr(part, 'inline_data') and hasattr(part.inline_data, 'mime_type'):
-                if "jpeg" in part.inline_data.mime_type or "jpg" in part.inline_data.mime_type:
-                    file_ext = "jpg"
-                elif "webp" in part.inline_data.mime_type:
-                    file_ext = "webp"
+            # Generate a filename with timestamp to avoid collisions
+            extension = 'png' if mime_type == 'image/png' else 'jpg'
+            filename = f"{filename_base}_{int(time.time())}.{extension}"
+            full_path = os.path.join(self.output_dir, filename)
 
-            filename = f"{filename_base}_{int(time.time())}.{file_ext}"
-            filepath = os.path.join(self.output_dir, filename)
+            # Write the image data to a file
+            with open(full_path, 'wb') as f:
+                f.write(image_data)
 
-            # Ensure output directory exists
-            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            logger.info(f"Saved image to {full_path}")
+            return full_path  # Return full path rather than just filename for better usability
 
-            # Decode and save the image
-            try:
-                image_bytes = base64.b64decode(image_data)
-                image = Image.open(BytesIO(image_bytes))
-                image.save(filepath)
-                logger.info(f"Gemini generated image saved to {filepath}")
-                return filepath
-            except Exception as e:
-                logger.error(f"Failed to save image: {str(e)}")
-                # Try to save the raw bytes as a fallback
-                with open(filepath, 'wb') as f:
-                    f.write(image_bytes)
-                logger.info(f"Saved raw image bytes to {filepath}")
-                return filepath
-
-        except ImportError as e:
-            logger.error(f"Error importing required libraries for Gemini: {str(e)}")
-            raise Exception(f"Required libraries missing for Gemini: {str(e)}")
         except Exception as e:
-            logger.error(f"Gemini API error: {str(e)}")
-            raise Exception(f"Gemini API error: {str(e)}")
+            error_message = str(e)
+            logger.error(f"Gemini API error: {error_message}")
+
+            # Check for specific error messages and provide more helpful information
+            if "response modalities" in error_message:
+                logger.error("This is likely due to the Gemini model configuration not supporting the requested output format.")
+                logger.error("Try updating the google-generativeai package to the latest version: pip install -U google-generativeai")
+                raise Exception("Gemini API modality error: The model doesn't support the requested output format. Update the google-generativeai package.")
+            elif "API key" in error_message or "authentication" in error_message.lower():
+                logger.error("This is likely due to an invalid API key. Check that your GOOGLE_API_KEY is valid and has access to Gemini.")
+                raise Exception("Gemini API authentication error: Check your API key.")
+            else:
+                raise Exception(f"Gemini API error: {error_message}")
 
 # Singleton instance for convenience
 image_generator = AIImageGenerator()
